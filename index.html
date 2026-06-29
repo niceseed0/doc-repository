@@ -333,14 +333,7 @@ function showLoginScreen() {
 async function signIn() {
   document.getElementById('authStatus').textContent = '로그인 중...';
   try {
-    // Try popup first, fall back to redirect
-    try {
-      const result = await msalInstance.loginPopup({ scopes: SCOPES });
-      await onSignedIn(result);
-    } catch(popupError) {
-      // If popup blocked, use redirect
-      await msalInstance.loginRedirect({ scopes: SCOPES });
-    }
+    await msalInstance.loginRedirect({ scopes: SCOPES });
   } catch(e) {
     document.getElementById('authStatus').textContent = '로그인 실패: ' + e.message;
   }
