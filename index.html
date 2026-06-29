@@ -239,6 +239,7 @@ var it,at,st,ct,ut,lt,dt,ht,pt=function(){function e(e){this.networkInterface=e}
         <span class="user-name" id="userName"></span>
       </div>
       <button class="btn btn-secondary btn-sm" id="signOutBtn" style="display:none">로그아웃</button>
+      <button class="btn btn-secondary" id="importBtn" style="display:none">📥 Import Data</button>
       <button class="btn btn-secondary" id="exportBtn">⬇ Export CSV</button>
       <button class="btn btn-primary" id="addEntryBtn">＋ Add Entry</button>
     </div>
@@ -347,6 +348,7 @@ async function onSignedIn(result) {
   document.getElementById('userAvatar').textContent = name.charAt(0).toUpperCase();
   document.getElementById('userInfo').style.display = 'flex';
   document.getElementById('signOutBtn').style.display = 'block';
+  document.getElementById('importBtn').style.display = 'block';
   setSyncStatus('syncing', '● SharePoint 연결 중...');
   await initSharePoint();
   renderTabs();
@@ -717,8 +719,82 @@ function toast(msg,type=''){
   setTimeout(()=>el.classList.remove('show'),2800);
 }
 
+// ─── IMPORT INITIAL DATA ─────────────────────────────────────────────────────
+async function importInitialData() {
+  if (!useSharePoint) { toast('SharePoint 연결 필요', 'error'); return; }
+  if (!confirm('초기 데이터 325개를 SharePoint에 가져올까요?\n이미 데이터가 있으면 중복될 수 있어요.')) return;
+  
+  setSyncStatus('syncing', '● 데이터 가져오는 중...');
+  document.getElementById('importBtn').disabled = true;
+  document.getElementById('importBtn').textContent = '⏳ 가져오는 중...';
+  
+  let success = 0, fail = 0;
+  
+  for (const key of TAB_KEYS) {
+    const d = INITIAL_DATA[key];
+    if (!d || d.welcome) continue;
+    const headers = d.headers;
+    const deptName = TAB_DISPLAY[key];
+    
+    for (const row of d.rows) {
+      // Skip empty rows
+      const docIdx = headers.findIndex(h => h === 'DOCUMENT');
+      const teamIdx = headers.findIndex(h => h === 'TEAM');
+      const catIdx = headers.findIndex(h => h === 'CATEGORY');
+      if (!row[docIdx] && !row[teamIdx] && !row[catIdx]) continue;
+      
+      try {
+        const fields = { 
+          Title: row[docIdx] || row[teamIdx] || deptName,
+          Department: deptName 
+        };
+        headers.forEach((h, i) => {
+          const hu = (h||'').toUpperCase().replace(/-/g,'').replace(/ /g,'');
+          const val = String(row[i]||'');
+          if (!val) return;
+          if (hu === 'TEAM') fields.TEAM = val;
+          else if (hu === 'FOLDER') fields.Folder = val;
+          else if (hu === 'CATEGORY') fields.Category = val;
+          else if (hu === 'SUBCATEGORY') fields['Sub_x002d_Category'] = val;
+          else if (hu === 'DOCUMENT') fields.DOCUMENT = val;
+          else if (hu === 'DESCRIPTION') fields.DESCRIPTION = val;
+          else if (hu === 'OWNER') fields.OWNER = val;
+          else if (hu === 'LINK' && val !== '[LINK]') fields.LINK = val;
+          else if (hu === 'UPDATECYCLE') fields['Update_x0020_Cycle'] = val;
+          else if (hu === 'UPDATESTATUS') fields['Update_x0020_Status'] = val;
+          else if (hu.includes('DATE')) fields['Last_x0020_Updated_x0020_Date'] = val;
+        });
+        
+        await graphFetch(`/sites/${siteId}/lists/${listId}/items`, {
+          method: 'POST',
+          body: JSON.stringify({ fields })
+        });
+        success++;
+        setSyncStatus('syncing', `● 가져오는 중... ${success}개 완료`);
+      } catch(e) {
+        fail++;
+        console.warn('Import failed for row:', row, e);
+      }
+      
+      // Small delay to avoid throttling
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  
+  document.getElementById('importBtn').disabled = false;
+  document.getElementById('importBtn').textContent = '✅ Import 완료';
+  setSyncStatus('synced', '● SharePoint 연결됨');
+  toast(`✅ ${success}개 가져오기 완료! ${fail>0?`(${fail}개 실패)`:''}`, 'success');
+  
+  // Reload data from SharePoint
+  await loadFromSharePoint();
+  renderTabs();
+  renderContent();
+}
+
 // ─── EVENT LISTENERS ─────────────────────────────────────────────────────────
 document.getElementById('loginBtn').addEventListener('click', signIn);
+document.getElementById('importBtn').addEventListener('click', importInitialData);
 document.getElementById('signOutBtn').addEventListener('click', signOut);
 document.getElementById('exportBtn').addEventListener('click', exportCSV);
 document.getElementById('addEntryBtn').addEventListener('click', openAddModal);
