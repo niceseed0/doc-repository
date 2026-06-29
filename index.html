@@ -386,6 +386,8 @@ async function initSharePoint() {
     const found = lists.value.find(l => l.name === LIST_NAME);
     if (found) {
       listId = found.id;
+      // Get actual field names from SharePoint
+      await detectFieldNames();
       await loadFromSharePoint();
       useSharePoint = true;
       setSyncStatus('synced', '● SharePoint 연결됨');
@@ -399,6 +401,26 @@ async function initSharePoint() {
     useSharePoint = false;
     toast('SharePoint 연결 실패 — 로컬 모드', 'error');
   }
+}
+
+// Detect actual internal field names from SharePoint
+let FIELD_MAP = {};
+async function detectFieldNames() {
+  try {
+    const cols = await graphFetch(`/sites/${siteId}/lists/${listId}/columns?$select=name,displayName`);
+    cols.value.forEach(col => {
+      const dn = col.displayName.toUpperCase().replace(/-/g,'').replace(/ /g,'').replace(/_/g,'');
+      FIELD_MAP[dn] = col.name;
+    });
+    console.log('Field map:', FIELD_MAP);
+  } catch(e) {
+    console.warn('Could not detect field names:', e);
+  }
+}
+
+function getFieldName(humanKey) {
+  const hu = humanKey.toUpperCase().replace(/-/g,'').replace(/ /g,'').replace(/_/g,'');
+  return FIELD_MAP[hu] || humanKey;
 }
 
 async function loadFromSharePoint() {
@@ -415,25 +437,13 @@ async function loadFromSharePoint() {
   spItems.forEach(item => {
     const f = item.fields;
     const dept = f.Department || '';
-    // Map dept to tab key
     const key = TAB_KEYS.find(k => TAB_DISPLAY[k] === dept) || null;
     if (!key || data[key]?.welcome) return;
 
     const headers = data[key].headers;
     const row = headers.map(h => {
-      const hu = (h||'').toUpperCase().replace(/-/g,'').replace(/ /g,'');
-      if (hu === 'TEAM') return f.TEAM || f.Team || null;
-      if (hu === 'FOLDER') return f.Folder || null;
-      if (hu === 'CATEGORY') return f.Category || null;
-      if (hu === 'SUBCATEGORY') return f['Sub_x002d_Category'] || f.SubCategory || null;
-      if (hu === 'DOCUMENT') return f.DOCUMENT || f.Document || null;
-      if (hu === 'DESCRIPTION') return f.DESCRIPTION || f.Description || null;
-      if (hu === 'OWNER') return f.OWNER || f.Owner || null;
-      if (hu === 'LINK') return f.LINK || f.Link || null;
-      if (hu === 'UPDATECYCLE') return f['Update_x0020_Cycle'] || f.UpdateCycle || null;
-      if (hu === 'UPDATESTATUS') return f['Update_x0020_Status'] || f.UpdateStatus || null;
-      if (hu.includes('DATE')) return f['Last_x0020_Updated_x0020_Date'] || f.LastUpdatedDate || null;
-      return null;
+      const fieldName = getFieldName(h||'');
+      return f[fieldName] || null;
     });
     data[key].rows.push(row);
     data[key]._spIds = data[key]._spIds || [];
@@ -449,19 +459,9 @@ async function saveToSharePoint(key, rowIdx) {
     const headers = data[key].headers;
     const fields = { Department: TAB_DISPLAY[key] };
     headers.forEach((h, i) => {
-      const hu = (h||'').toUpperCase().replace(/-/g,'').replace(/ /g,'');
-      const val = String(row[i]||'');
-      if (hu === 'TEAM') fields.TEAM = val;
-      else if (hu === 'FOLDER') fields.Folder = val;
-      else if (hu === 'CATEGORY') fields.Category = val;
-      else if (hu === 'SUBCATEGORY') fields['Sub_x002d_Category'] = val;
-      else if (hu === 'DOCUMENT') fields.DOCUMENT = val;
-      else if (hu === 'DESCRIPTION') fields.DESCRIPTION = val;
-      else if (hu === 'OWNER') fields.OWNER = val;
-      else if (hu === 'LINK') fields.LINK = val;
-      else if (hu === 'UPDATECYCLE') fields['Update_x0020_Cycle'] = val;
-      else if (hu === 'UPDATESTATUS') fields['Update_x0020_Status'] = val;
-      else if (hu.includes('DATE')) fields['Last_x0020_Updated_x0020_Date'] = val;
+      if (!row[i]) return;
+      const fieldName = getFieldName(h||'');
+      fields[fieldName] = String(row[i]);
     });
     fields.Title = row[headers.findIndex(h=>h==='DOCUMENT')] || String(rowIdx);
 
@@ -752,17 +752,11 @@ async function importInitialData() {
           const hu = (h||'').toUpperCase().replace(/-/g,'').replace(/ /g,'');
           const val = String(row[i]||'');
           if (!val) return;
-          if (hu === 'TEAM') fields.TEAM = val;
-          else if (hu === 'FOLDER') fields.Folder = val;
-          else if (hu === 'CATEGORY') fields.Category = val;
-          else if (hu === 'SUBCATEGORY') fields['Sub_x002d_Category'] = val;
-          else if (hu === 'DOCUMENT') fields.DOCUMENT = val;
-          else if (hu === 'DESCRIPTION') fields.DESCRIPTION = val;
-          else if (hu === 'OWNER') fields.OWNER = val;
-          else if (hu === 'LINK' && val !== '[LINK]') fields.LINK = val;
-          else if (hu === 'UPDATECYCLE') fields['Update_x0020_Cycle'] = val;
-          else if (hu === 'UPDATESTATUS') fields['Update_x0020_Status'] = val;
-          else if (hu.includes('DATE')) fields['Last_x0020_Updated_x0020_Date'] = val;
+          if (val && val !== '[LINK]' || hu !== 'LINK') {
+            const fieldName = getFieldName(h||'');
+            if (val && val !== '[LINK]') fields[fieldName] = val;
+            else if (hu !== 'LINK' && val) fields[fieldName] = val;
+          }
         });
         
         await graphFetch(`/sites/${siteId}/lists/${listId}/items`, {
