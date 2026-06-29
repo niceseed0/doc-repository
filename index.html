@@ -437,7 +437,9 @@ async function loadFromSharePoint() {
   spItems.forEach(item => {
     const f = item.fields;
     const dept = f.Department || '';
-    const key = TAB_KEYS.find(k => TAB_DISPLAY[k] === dept) || null;
+    // Normalize comparison: ignore apostrophes, case, spaces
+    const normalize = s => s.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const key = TAB_KEYS.find(k => normalize(TAB_DISPLAY[k]) === normalize(dept)) || null;
     if (!key || data[key]?.welcome) return;
 
     const headers = data[key].headers;
