@@ -239,7 +239,7 @@ var it,at,st,ct,ut,lt,dt,ht,pt=function(){function e(e){this.networkInterface=e}
         <span class="user-name" id="userName"></span>
       </div>
       <button class="btn btn-secondary btn-sm" id="signOutBtn" style="display:none">로그아웃</button>
-      <button class="btn btn-secondary" id="importBtn" style="display:none">📥 Import Data</button>
+      <button class="btn btn-secondary" id="importBtn" style="display:none">📥 Import</button>
       <button class="btn btn-secondary" id="exportBtn">⬇ Export CSV</button>
       <button class="btn btn-primary" id="addEntryBtn">＋ Add Entry</button>
     </div>
@@ -260,6 +260,18 @@ var it,at,st,ct,ut,lt,dt,ht,pt=function(){function e(e){this.networkInterface=e}
   </div>
 </div>
 <div class="toast" id="toast"></div>
+
+<div class="modal-bg" id="importModal">
+  <div class="modal" style="max-width:480px">
+    <h3>📥 부서별 Import</h3>
+    <p style="font-size:13px;color:var(--text3);margin-bottom:20px">각 부서별로 데이터를 가져오세요. 기존 데이터는 자동으로 삭제 후 새로 가져옵니다.</p>
+    <div id="importDeptList" style="display:flex;flex-direction:column;gap:10px"></div>
+    <div class="modal-actions" style="margin-top:20px">
+      <button class="btn btn-secondary" onclick="closeImportModal()">닫기</button>
+      <button class="btn btn-primary" onclick="importAllDepts()">🚀 전체 Import</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
@@ -349,6 +361,19 @@ async function onSignedIn(result) {
   document.getElementById('userInfo').style.display = 'flex';
   document.getElementById('signOutBtn').style.display = 'block';
   document.getElementById('importBtn').style.display = 'block';
+  // Populate dept import list
+  const deptList = document.getElementById('importDeptList');
+  if (deptList) {
+    deptList.innerHTML = TAB_KEYS.filter(k => !data[k].welcome).map(key => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+        <div>
+          <div style="font-size:13px;font-weight:500;color:var(--text)">${TAB_DISPLAY[key]}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${INITIAL_DATA[key]?.rows?.length || 0}개 항목</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="importDeptBtn_${key}" onclick="importDept('${key}')">📥 Import</button>
+      </div>
+    `).join('');
+  }
   setSyncStatus('syncing', '● SharePoint 연결 중...');
   await initSharePoint();
   renderTabs();
@@ -807,7 +832,7 @@ async function importInitialData() {
 
 // ─── EVENT LISTENERS ─────────────────────────────────────────────────────────
 document.getElementById('loginBtn').addEventListener('click', signIn);
-document.getElementById('importBtn').addEventListener('click', importInitialData);
+document.getElementById('importBtn').addEventListener('click', openImportModal);
 document.getElementById('signOutBtn').addEventListener('click', signOut);
 document.getElementById('exportBtn').addEventListener('click', exportCSV);
 document.getElementById('addEntryBtn').addEventListener('click', openAddModal);
