@@ -288,19 +288,6 @@ async function onSignedIn(result) {
   document.getElementById('userInfo').style.display = 'flex';
   document.getElementById('signOutBtn').style.display = 'block';
   document.getElementById('importBtn').style.display = 'block';
-  // Populate dept import list
-  const deptList = document.getElementById('importDeptList');
-  if (deptList) {
-    deptList.innerHTML = TAB_KEYS.filter(k => !data[k].welcome).map(key => `
-      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-        <div>
-          <div style="font-size:13px;font-weight:500;color:var(--text)">${TAB_DISPLAY[key]}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px">${INITIAL_DATA[key]?.rows?.length || 0}개 항목</div>
-        </div>
-        <button class="btn btn-secondary btn-sm" id="importDeptBtn_${key}" onclick="importDept('${key}')">📥 Import</button>
-      </div>
-    `).join('');
-  }
   setSyncStatus('syncing', '● SharePoint 연결 중...');
   await initSharePoint();
   renderTabs();
@@ -756,6 +743,106 @@ async function importInitialData() {
   renderTabs();
   renderContent();
 }
+
+
+// ─── IMPORT FUNCTIONS ────────────────────────────────────────────────────────
+window.openImportModal = function() {
+  if (!useSharePoint) { toast('SharePoint 연결 필요', 'error'); return; }
+  // Build dept list
+  const deptList = document.getElementById('importDeptList');
+  if (deptList) {
+    deptList.innerHTML = TAB_KEYS.filter(k => !INITIAL_DATA[k].welcome).map(key => `
+      <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px">
+        <div>
+          <div style="font-size:13px;font-weight:500;color:#e2e8f0">${TAB_DISPLAY[key]}</div>
+          <div style="font-size:11px;color:#64748b;margin-top:2px">${INITIAL_DATA[key]?.rows?.length || 0}개 항목</div>
+        </div>
+        <button style="padding:5px 10px;border-radius:8px;font-size:12px;cursor:pointer;background:#22263a;color:#94a3b8;border:1px solid #2e3350;font-family:Inter,sans-serif" id="btn_${key}" onclick="window.importDept('${key}')">📥 Import</button>
+      </div>
+    `).join('');
+  }
+  document.getElementById('importModal').classList.add('open');
+};
+
+window.closeImportModal = function() {
+  document.getElementById('importModal').classList.remove('open');
+};
+
+window.importDept = async function(key) {
+  if (!useSharePoint) return;
+  const d = INITIAL_DATA[key];
+  if (!d || d.welcome) return;
+  const btn = document.getElementById('btn_' + key);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 삭제 중...'; }
+  const headers = d.headers;
+  const deptName = TAB_DISPLAY[key];
+  let success = 0, fail = 0;
+
+  // Delete existing
+  setSyncStatus('syncing', `● ${deptName} 기존 데이터 삭제 중...`);
+  try {
+    const normalize = s => s.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const existing = await graphFetch(`/sites/${siteId}/lists/${listId}/items?expand=fields($select=Department,id)&$top=999`);
+    const toDelete = existing.value.filter(item => normalize(item.fields.Department||'') === normalize(deptName));
+    for (const item of toDelete) {
+      await graphFetch(`/sites/${siteId}/lists/${listId}/items/${item.id}`, { method: 'DELETE' });
+      await new Promise(r => setTimeout(r, 50));
+    }
+  } catch(e) { console.warn('Delete error:', e); }
+
+  // Import new data
+  if (btn) btn.textContent = '⏳ 추가 중...';
+  setSyncStatus('syncing', `● ${deptName} 가져오는 중...`);
+  for (const row of d.rows) {
+    const docIdx = headers.findIndex(h => h === 'DOCUMENT');
+    const teamIdx = headers.findIndex(h => h === 'TEAM');
+    const catIdx = headers.findIndex(h => h === 'CATEGORY');
+    if (!row[docIdx] && !row[teamIdx] && !row[catIdx]) continue;
+    try {
+      const fields = { Title: row[docIdx] || row[teamIdx] || deptName, Department: deptName };
+      headers.forEach((h, i) => {
+        const val = String(row[i]||'');
+        if (!val || val === '[LINK]') return;
+        const fieldName = getFieldName(h||'');
+        fields[fieldName] = val;
+      });
+      let ok = false;
+      for (let t = 0; t < 3; t++) {
+        try {
+          await graphFetch(`/sites/${siteId}/lists/${listId}/items`, { method: 'POST', body: JSON.stringify({ fields }) });
+          ok = true; break;
+        } catch(e) { await new Promise(r => setTimeout(r, 1000 * (t+1))); }
+      }
+      if (ok) {
+        success++;
+        if (btn) btn.textContent = `⏳ ${success}개...`;
+        setSyncStatus('syncing', `● ${deptName} ${success}개 완료`);
+      } else { fail++; }
+    } catch(e) { fail++; }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = `✅ ${success}개 완료`;
+    btn.style.background = 'rgba(34,197,94,.15)';
+    btn.style.color = '#4ade80';
+    btn.style.borderColor = 'rgba(34,197,94,.3)';
+  }
+  setSyncStatus('synced', '● SharePoint 연결됨');
+  toast(`✅ ${deptName} — ${success}개 완료!`, 'success');
+  await loadFromSharePoint();
+  renderTabs();
+  renderContent();
+};
+
+window.importAllDepts = async function() {
+  for (const key of TAB_KEYS) {
+    if (INITIAL_DATA[key].welcome) continue;
+    await window.importDept(key);
+  }
+  window.closeImportModal();
+  toast('✅ 전체 Import 완료!', 'success');
+};
 
 // ─── EVENT LISTENERS ─────────────────────────────────────────────────────────
 document.getElementById('loginBtn').addEventListener('click', signIn);
