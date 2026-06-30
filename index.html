@@ -178,7 +178,7 @@ tbody tr:hover .row-actions,.row-actions.show{opacity:1}
 
 <div class="toast" id="toast"></div>
 
-<script src="https://alcdn.msauth.net/browser/2.32.2/js/msal-browser.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.32.2/js/msal-browser.min.js" onload="initMsal()"></script>
 <script>
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const TENANT_ID = '00efd395-d024-40e7-be0f-842f884fd0dd';
@@ -202,7 +202,7 @@ let searchQ = '', filterStatus = '', filterCat = '', filterTeam = '';
 let sortCol = -1, sortAsc = true, editingRow = null;
 
 // ── MSAL ──────────────────────────────────────────────────────────────────────
-window.addEventListener('load', async () => {
+async function initMsal() {
   try {
     msalApp = new msal.PublicClientApplication({
       auth: {
@@ -225,16 +225,19 @@ window.addEventListener('load', async () => {
         return;
       } catch(e) {}
     }
-    // Ready to login
     document.getElementById('loginBtn').disabled = false;
     document.getElementById('authStatus').textContent = '';
   } catch(e) {
     document.getElementById('authStatus').textContent = '오류: ' + e.message;
+    document.getElementById('loginBtn').disabled = false;
   }
-});
+}
 
 document.getElementById('loginBtn').addEventListener('click', async () => {
-  if (!msalApp) return;
+  if (!msalApp) {
+    await initMsal();
+    return;
+  }
   document.getElementById('authStatus').textContent = '로그인 중...';
   document.getElementById('loginBtn').disabled = true;
   try {
