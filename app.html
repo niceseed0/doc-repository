@@ -178,7 +178,7 @@ tbody tr:hover .row-actions,.row-actions.show{opacity:1}
 
 <div class="toast" id="toast"></div>
 
-<script src="https://alcdn.msauth.net/browser/2.32.2/js/msal-browser.min.js" onload="initMsal()"></script>
+<script src="https://alcdn.msauth.net/browser/2.32.2/js/msal-browser.min.js" onload="setTimeout(initMsal, 100)"></script>
 <script>
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const TENANT_ID = '00efd395-d024-40e7-be0f-842f884fd0dd';
@@ -548,7 +548,7 @@ function attachTableEvents(){
   document.querySelectorAll('th[data-col]').forEach(th=>th.addEventListener('click',()=>{
     const ci=parseInt(th.dataset.col);if(sortCol===ci)sortAsc=!sortAsc;else{sortCol=ci;sortAsc=true;}renderMain();
   }));
-  document.querySelectorAll('.edit-r').forEach(b=>b.addEventListener('click',()=>{editingRow={tab:activeTab,idx:parseInt(b.dataset.idx)};renderMain();setTimeout(()=>{const f=document.querySelector('.cell-edit');if(f)f.focus();},50);});
+  document.querySelectorAll('.edit-r').forEach(b=>b.addEventListener('click',()=>{editingRow={tab:activeTab,idx:parseInt(b.dataset.idx)};renderMain();setTimeout(()=>{const f=document.querySelector('.cell-edit');if(f)f.focus();},50);}));
   document.querySelectorAll('.del-r').forEach(b=>b.addEventListener('click',async()=>{
     if(!confirm('삭제할까요?'))return;
     const idx=parseInt(b.dataset.idx);
@@ -562,7 +562,7 @@ function attachTableEvents(){
     editingRow=null;renderTabs();renderMain();
     await saveSP(activeTab,idx);toast('저장됨 ✓','success');
   }));
-  document.querySelectorAll('.cancel-r').forEach(b=>b.addEventListener('click',()=>{editingRow=null;renderMain();});
+  document.querySelectorAll('.cancel-r').forEach(b=>b.addEventListener('click',()=>{editingRow=null;renderMain();}));
   const arb=document.getElementById('addRowBtn');if(arb)arb.addEventListener('click',openAddModal);
   document.querySelectorAll('.cell-edit').forEach(ta=>{ta.style.height='auto';ta.style.height=ta.scrollHeight+'px';ta.addEventListener('input',()=>{ta.style.height='auto';ta.style.height=ta.scrollHeight+'px';});});
 }
