@@ -878,21 +878,23 @@ function openAddModal() {
 function formField(col) {
   const label = col.displayName || col.name;
   const isDesc = col.displayName === "Description";
+  const isRequired = col.name === "Title" || col.required;
+  const requiredMark = isRequired ? ' <span style="color:var(--red)">*</span>' : '';
   if (col.choice && col.choice.choices) {
-    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+    return `<div class="form-group"><label>${escapeHtml(label)}${requiredMark}</label>
       <select class="form-input" data-fi="${col.name}">
         ${col.choice.choices.map(c => `<option>${escapeHtml(c)}</option>`).join("")}
       </select></div>`;
   }
   if (col.dateTime) {
-    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+    return `<div class="form-group"><label>${escapeHtml(label)}${requiredMark}</label>
       <input class="form-input" data-fi="${col.name}" type="date"></div>`;
   }
   if (isHyperlinkCol(col)) {
-    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+    return `<div class="form-group"><label>${escapeHtml(label)}${requiredMark}</label>
       <input class="form-input" data-fi="${col.name}" type="text" placeholder="https://..."></div>`;
   }
-  return `<div class="form-group"><label>${escapeHtml(label)}</label>
+  return `<div class="form-group"><label>${escapeHtml(label)}${requiredMark}</label>
     ${isDesc
       ? `<textarea class="form-input" data-fi="${col.name}" rows="2" placeholder="Enter ${escapeHtml(label)}…"></textarea>`
       : `<input class="form-input" data-fi="${col.name}" type="text" placeholder="Enter ${escapeHtml(label)}…">`
@@ -904,6 +906,13 @@ async function saveModal() {
   const values = {};
   fieldsEls.forEach(el => { values[el.dataset.fi] = el.value.trim() || null; });
   if (groupField) values[groupField] = activeTab; // auto-assign team from active tab
+
+  if (!values["Title"]) {
+    toast("Document Name is required.", "error");
+    const titleInput = document.querySelector('#modalForm [data-fi="Title"]');
+    if (titleInput) titleInput.focus();
+    return;
+  }
 
   setSyncing(true);
   try {
