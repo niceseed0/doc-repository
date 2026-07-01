@@ -4,7 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Document Management Index (SharePoint Live)</title>
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.2/js/msal-browser.min.js"></script>
+<script>
+  // 1차 CDN(미국 서부)이 실패하면 2차 CDN(유럽 북부)으로 자동 재시도
+  if (typeof msal === 'undefined') {
+    document.write('<script src="https://alcdn.msftauth.net/browser/2.38.2/js/msal-browser.min.js"><\/script>');
+  }
+</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -331,18 +337,29 @@ const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 // ═══════════════════════════════════════════════════════════════════════════
 // MSAL AUTH
 // ═══════════════════════════════════════════════════════════════════════════
-const msalInstance = new msal.PublicClientApplication({
-  auth: {
-    clientId: CONFIG.clientId,
-    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
-    redirectUri: CONFIG.redirectUri
-  },
-  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
-});
+let msalInstance = null;
+function ensureMsal() {
+  if (typeof msal === "undefined") {
+    showAuthError("로그인 라이브러리(MSAL)를 불러오지 못했습니다.\n회사 네트워크/방화벽에서 alcdn.msauth.net, alcdn.msftauth.net 접속이 차단되어 있을 수 있습니다. IT 담당자에게 이 두 도메인 허용을 요청해주세요.\n(또는 페이지를 새로고침해 다시 시도해보세요)");
+    return false;
+  }
+  if (!msalInstance) {
+    msalInstance = new msal.PublicClientApplication({
+      auth: {
+        clientId: CONFIG.clientId,
+        authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+        redirectUri: CONFIG.redirectUri
+      },
+      cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
+    });
+  }
+  return true;
+}
 
 let currentAccount = null;
 
 async function initAuth() {
+  if (!ensureMsal()) return;
   await msalInstance.initialize();
   const redirectResult = await msalInstance.handleRedirectPromise().catch(err => {
     showAuthError("로그인 처리 중 오류: " + err.message);
@@ -362,6 +379,7 @@ async function initAuth() {
 }
 
 function login() {
+  if (!ensureMsal()) return;
   msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
 }
 
