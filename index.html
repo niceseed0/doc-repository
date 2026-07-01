@@ -259,7 +259,10 @@ const CONFIG = {
   guideListDisplayName: "Document Repository Guide",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "John's Cluster", "Gary's Cluster", "Archives", "General"],
-  preferredColumnOrder: ["Category", "Sub-Category", "Title", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"]
+  preferredColumnOrder: ["Category", "Sub-Category", "Title", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
+  // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
+  // Any column whose display name matches one of these is always treated as a hyperlink field.
+  hyperlinkColumnNames: ["Link"]
 };
 const GRAPH_SCOPES = ["Sites.ReadWrite.All", "Files.ReadWrite.All", "User.Read"];
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
@@ -438,6 +441,10 @@ function displayColumns() {
   return columns.filter(c => c.name !== groupField);
 }
 
+function isHyperlinkCol(col) {
+  return !!col.hyperlinkOrPicture || CONFIG.hyperlinkColumnNames.includes(col.displayName) || CONFIG.hyperlinkColumnNames.includes(col.name);
+}
+
 async function loadItems() {
   setSyncing(true);
   let items = [];
@@ -502,7 +509,7 @@ function renderUserPill() {
 function getFieldValue(fields, col) {
   const raw = fields ? fields[col.name] : undefined;
   if (raw === undefined || raw === null || raw === "") return null;
-  if (col.hyperlinkOrPicture) {
+  if (isHyperlinkCol(col)) {
     if (typeof raw === "object") return raw.Url || raw.Description || null;
     return raw;
   }
@@ -523,7 +530,7 @@ function buildWriteFields(values) {
     if (!(col.name in values)) return;
     const v = values[col.name];
     if (v === null || v === undefined || v === "") { fields[col.name] = null; return; }
-    if (col.hyperlinkOrPicture) {
+    if (isHyperlinkCol(col)) {
       const url = /^https?:\/\//i.test(v) ? v : `https://${v}`;
       const looksValid = /^https?:\/\/[a-zA-Z0-9\-._~%]+\.[a-zA-Z]{2,}([/:?#].*)?$/.test(url);
       fields[col.name] = looksValid ? { Url: url, Description: v } : null;
@@ -748,7 +755,7 @@ function renderTable() {
           html += `<td><span class="badge ${sc}"><span class="badge-dot"></span>${escapeHtml(v || "—")}</span></td>`;
         } else if (cCol && col.name === cCol.name) {
           html += `<td>${v ? `<span class="chip ${hashChipClass(v)}">${escapeHtml(v)}</span>` : "—"}</td>`;
-        } else if (col.hyperlinkOrPicture) {
+        } else if (isHyperlinkCol(col)) {
           const isReal = v && String(v).startsWith("http");
           html += `<td class="link-cell">${isReal ? `<a href="${escapeAttr(v)}" target="_blank">&#128279; Open</a>` : `<span class="link-placeholder">${escapeHtml(v || "No link")}</span>`}</td>`;
         } else if (col.name === "Title") {
@@ -881,7 +888,7 @@ function formField(col) {
     return `<div class="form-group"><label>${escapeHtml(label)}</label>
       <input class="form-input" data-fi="${col.name}" type="date"></div>`;
   }
-  if (col.hyperlinkOrPicture) {
+  if (isHyperlinkCol(col)) {
     return `<div class="form-group"><label>${escapeHtml(label)}</label>
       <input class="form-input" data-fi="${col.name}" type="text" placeholder="https://..."></div>`;
   }
