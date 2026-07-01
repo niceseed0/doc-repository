@@ -525,7 +525,8 @@ function buildWriteFields(values) {
     if (v === null || v === undefined || v === "") { fields[col.name] = null; return; }
     if (col.hyperlinkOrPicture) {
       const url = /^https?:\/\//i.test(v) ? v : `https://${v}`;
-      fields[col.name] = { Url: url, Description: v };
+      const looksValid = /^https?:\/\/[a-zA-Z0-9\-._~%]+\.[a-zA-Z]{2,}([/:?#].*)?$/.test(url);
+      fields[col.name] = looksValid ? { Url: url, Description: v } : null;
     } else if (col.dateTime) {
       try { fields[col.name] = new Date(v).toISOString(); } catch (e) { fields[col.name] = v; }
     } else {
@@ -552,7 +553,7 @@ function renderTabs() {
   const tabs = getTabList();
   tabsEl.innerHTML = tabs.map(t => {
     const count = t === "Welcome" ? "" : `<span class="tab-count">${itemsForTab(t).length}</span>`;
-    return `<div class="tab ${t === activeTab ? "active" : ""}" onclick="switchTab('${escapeAttr(t)}')">${escapeHtml(t)}${count}</div>`;
+    return `<div class="tab ${t === activeTab ? "active" : ""}" onclick="switchTab('${jsAttrEscape(t)}')">${escapeHtml(t)}${count}</div>`;
   }).join("");
   const isWelcome = activeTab === "Welcome";
   document.getElementById("addEntryBtn").style.display = isWelcome ? "none" : "";
@@ -620,7 +621,7 @@ function renderWelcome() {
     </div>
     <div class="welcome-body">${escapeHtml(guideContent)}</div>
     <div class="quick-links">
-      ${CONFIG.teamOrder.map(t => `<button class="btn btn-secondary btn-sm" onclick="switchTab('${escapeAttr(t)}')">${escapeHtml(t)}</button>`).join("")}
+      ${CONFIG.teamOrder.map(t => `<button class="btn btn-secondary btn-sm" onclick="switchTab('${jsAttrEscape(t)}')">${escapeHtml(t)}</button>`).join("")}
     </div>
   </div>`;
 }
@@ -950,6 +951,16 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+// Safely embed a string as a single-quoted JS string literal inside a double-quoted HTML attribute
+// (handles names containing apostrophes, e.g. "John's Cluster")
+function jsAttrEscape(s) {
+  return String(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
 
 initAuth();
 </script>
