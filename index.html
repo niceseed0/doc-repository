@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Document Management Index (SharePoint Live)</title>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3350;
+    --accent: #4f7cff;
+    --accent2: #7b5cfa;
+    --green: #22c55e;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #64748b;
+    --hr: #1e2240;
+    --tab-active: #4f7cff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #0f1117 0%, #1a1d27 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 24px 32px;
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+  .header-inner {
+    max-width: 1400px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .logo-text h1 {
+    font-size: 16px; font-weight: 700; letter-spacing: -.3px; color: var(--text);
+  }
+  .logo-text p { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+  .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  .btn {
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+    cursor: pointer; border: none; transition: all .15s;
+    font-family: 'Inter', sans-serif;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #6b92ff; }
+  .btn-secondary { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+  .btn-secondary:hover { color: var(--text); border-color: var(--accent); }
+  .btn-danger { background: rgba(239,68,68,.15); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+  .btn-danger:hover { background: rgba(239,68,68,.25); }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .user-pill {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 5px 12px 5px 6px; font-size: 12px; color: var(--text2);
+  }
+  .user-avatar {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #fff;
+  }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .sync-dot.syncing { background: var(--yellow); animation: pulse 1s infinite; }
+  .sync-dot.error { background: var(--red); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* Tabs */
+  .tabs-wrapper { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 32px; overflow-x: auto; }
+  .tabs { max-width: 1400px; margin: 0 auto; display: flex; gap: 0; }
+  .tab {
+    padding: 14px 20px; font-size: 13px; font-weight: 500; color: var(--text3);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    transition: all .15s; white-space: nowrap; user-select: none;
+  }
+  .tab:hover { color: var(--text2); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 4px;
+    background: var(--surface2); font-size: 10px; font-weight: 600;
+    margin-left: 6px; color: var(--text3);
+  }
+  .tab.active .tab-count { background: rgba(79,124,255,.2); color: var(--accent); }
+
+  .main { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .search-box {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; flex: 1; min-width: 200px;
+  }
+  .search-box input { background: none; border: none; outline: none; color: var(--text); font-size: 13px; width: 100%; font-family: 'Inter', sans-serif; }
+  .search-box input::placeholder { color: var(--text3); }
+  .search-icon { color: var(--text3); font-size: 14px; }
+
+  .filter-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filter-select {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text2); border-radius: 8px; padding: 8px 10px;
+    font-size: 12px; font-family: 'Inter', sans-serif; cursor: pointer; outline: none;
+  }
+  .filter-select:hover { border-color: var(--accent); }
+
+  .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; display: flex; align-items: center; gap: 10px; }
+  .stat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .stat-dot.green { background: var(--green); }
+  .stat-dot.yellow { background: var(--yellow); }
+  .stat-dot.red { background: var(--red); }
+  .stat-dot.blue { background: var(--accent); }
+  .stat-num { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .stat-label { font-size: 11px; color: var(--text3); margin-top: 1px; }
+
+  .table-container { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: var(--surface2); }
+  th {
+    padding: 12px 14px; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    color: var(--text3); text-transform: uppercase; white-space: nowrap; border-bottom: 1px solid var(--border);
+  }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text2); }
+  th .sort-icon { margin-left: 4px; opacity: .4; }
+  th.sorted .sort-icon { opacity: 1; color: var(--accent); }
+
+  tbody tr { border-bottom: 1px solid var(--hr); transition: background .1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: rgba(79,124,255,.04); }
+  tbody tr.editing { background: rgba(79,124,255,.08) !important; }
+
+  td { padding: 11px 14px; font-size: 13px; color: var(--text2); vertical-align: middle; }
+  td.doc-name { color: var(--text); font-weight: 500; font-size: 13px; }
+  td.desc { color: var(--text3); font-size: 12px; max-width: 280px; }
+
+  .cell-edit {
+    background: var(--surface2); border: 1px solid var(--accent);
+    border-radius: 5px; padding: 5px 8px; font-size: 13px;
+    color: var(--text); width: 100%; font-family: 'Inter', sans-serif;
+    outline: none; resize: none;
+  }
+  .cell-edit:focus { border-color: var(--accent2); box-shadow: 0 0 0 2px rgba(79,124,255,.2); }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+  .badge-dot { width: 5px; height: 5px; border-radius: 50%; }
+  .badge.active { background: rgba(34,197,94,.15); color: #4ade80; }
+  .badge.active .badge-dot { background: var(--green); }
+  .badge.pending { background: rgba(245,158,11,.15); color: #fbbf24; }
+  .badge.pending .badge-dot { background: var(--yellow); }
+  .badge.archived { background: rgba(100,116,139,.15); color: #94a3b8; }
+  .badge.archived .badge-dot { background: var(--text3); }
+
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid; }
+  .chip-blue { background: rgba(79,124,255,.12); color: #93b4ff; border-color: rgba(79,124,255,.3); }
+  .chip-purple { background: rgba(123,92,250,.12); color: #b197fc; border-color: rgba(123,92,250,.3); }
+  .chip-teal { background: rgba(20,184,166,.12); color: #5eead4; border-color: rgba(20,184,166,.3); }
+  .chip-orange { background: rgba(251,146,60,.12); color: #fb923c; border-color: rgba(251,146,60,.3); }
+
+  .link-cell a { color: var(--accent); font-size: 12px; text-decoration: none; }
+  .link-cell a:hover { text-decoration: underline; }
+  .link-placeholder { color: var(--text3); font-size: 12px; font-style: italic; }
+
+  .row-actions { display: flex; gap: 6px; opacity: 0; transition: opacity .15s; white-space: nowrap; }
+  tbody tr:hover .row-actions { opacity: 1; }
+  .row-actions.always-show { opacity: 1; }
+
+  .add-row-btn {
+    display: flex; align-items: center; gap: 8px; padding: 14px 18px; color: var(--text3); font-size: 13px;
+    cursor: pointer; transition: all .15s; border-top: 1px solid var(--border); background: none; width: 100%; text-align: left;
+  }
+  .add-row-btn:hover { color: var(--accent); background: rgba(79,124,255,.05); }
+  .add-row-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .add-icon { font-size: 16px; }
+
+  .empty { text-align: center; padding: 48px; color: var(--text3); }
+  .empty-icon { font-size: 32px; margin-bottom: 12px; }
+  .empty p { font-size: 14px; }
+
+  .modal-bg { display: none; position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.6); backdrop-filter: blur(4px); align-items: center; justify-content: center; }
+  .modal-bg.open { display: flex; }
+  .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 28px; width: min(520px, 90vw); max-height: 90vh; overflow-y: auto; }
+  .modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 20px; color: var(--text); }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 12px; color: var(--text3); margin-bottom: 6px; }
+  .form-input { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 13px; font-family: 'Inter', sans-serif; outline: none; }
+  .form-input:focus { border-color: var(--accent); }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; z-index: 300; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; font-size: 13px; color: var(--text2); transform: translateY(60px); opacity: 0; transition: all .3s; pointer-events: none; max-width: 360px; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.success { border-color: rgba(34,197,94,.4); color: #4ade80; }
+  .toast.error { border-color: rgba(239,68,68,.4); color: #f87171; }
+
+  /* Login / loading screen */
+  .center-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 40px; width: min(420px, 92vw); text-align: center; }
+  .login-card .logo-icon { width: 52px; height: 52px; font-size: 24px; margin: 0 auto 18px; }
+  .login-card h2 { font-size: 18px; margin-bottom: 8px; }
+  .login-card p { font-size: 13px; color: var(--text3); line-height: 1.6; margin-bottom: 24px; }
+  .login-card .btn { width: 100%; padding: 12px; font-size: 14px; }
+  .spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error-box { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.35); border-radius: 8px; padding: 12px 14px; font-size: 12px; color: #f87171; text-align: left; margin-top: 16px; white-space: pre-wrap; word-break: break-word; }
+
+  .welcome-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 36px; max-width: 800px; }
+  .welcome-card h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+  .welcome-card .subtitle { color: var(--text3); font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 20px; }
+  .info-item { background: var(--surface2); border-radius: 8px; padding: 14px 16px; }
+  .info-item .label { font-size: 11px; color: var(--text3); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
+  .info-item .value { font-size: 13px; color: var(--text); font-weight: 500; }
+
+  @media (max-width: 768px) {
+    .header { padding: 16px 16px; }
+    .main { padding: 16px 16px; }
+    .tabs-wrapper { padding: 0 16px; }
+    .form-row { grid-template-columns: 1fr; }
+    .info-grid { grid-template-columns: 1fr; }
+    .header-actions .btn span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ LOGIN / LOADING SCREEN ═══ -->
+<div class="center-screen" id="authScreen">
+  <div class="login-card" id="authCard">
+    <div class="logo-icon">📋</div>
+    <h2>Document Management Index</h2>
+    <p>회사 Microsoft 계정으로 로그인하면 SharePoint 문서 저장소와 실시간으로 연결됩니다.</p>
+    <button class="btn btn-primary" onclick="login()">Microsoft 계정으로 로그인</button>
+    <div id="authError"></div>
+  </div>
+</div>
+
+<!-- ═══ APP (hidden until authenticated & data loaded) ═══ -->
+<div id="app" style="display:none">
+  <div class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-icon">📋</div>
+        <div class="logo-text">
+          <h1>Document Management Index</h1>
+          <p>Elite Global Sourcing Phil., Inc. · SharePoint 실시간 연동</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="user-pill">
+          <span class="sync-dot" id="syncDot"></span>
+          <span class="user-avatar" id="userAvatar">?</span>
+          <span id="userName">-</span>
+        </div>
+        <button class="btn btn-secondary" onclick="reloadData()">⟳ <span>새로고침</span></button>
+        <button class="btn btn-secondary" onclick="exportCSV()">⬇ <span>Export CSV</span></button>
+        <button class="btn btn-primary" onclick="openAddModal()" id="addEntryBtn">＋ <span>Add Entry</span></button>
+        <button class="btn btn-secondary" onclick="logout()">로그아웃</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs-wrapper">
+    <div class="tabs" id="tabs"></div>
+  </div>
+
+  <div class="main" id="mainContent"></div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-bg" id="addModal">
+  <div class="modal">
+    <h3 id="modalTitle">Add New Entry</h3>
+    <div id="modalForm"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveModal()">Save Entry</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIG — 앱/테넌트/사이트 정보
+// ═══════════════════════════════════════════════════════════════════════════
+const CONFIG = {
+  clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
+  tenantId: "00efd395-d024-40e7-be0f-842f884fd0dd",
+  redirectUri: window.location.origin + window.location.pathname,
+  hostname: "elitegslph.sharepoint.com",
+  sitePath: "/sites/ELITEGLOBALMANCOMM",
+  listDisplayName: "Document Repository System",
+  // 탭(부서)으로 묶을 컬럼 후보 — 리스트에 있는 첫 번째 매칭 컬럼을 사용합니다.
+  groupFieldCandidates: ["DEPARTMENT", "Department", "TEAM", "Team", "부서"],
+  // 화면에 표시할 컬럼 우선순위 (없는 컬럼은 자동 무시, 목록에 없는 컬럼은 뒤에 붙음)
+  preferredColumnOrder: ["CATEGORY","SUB-CATEGORY","SUBCATEGORY","DOCUMENT","Title","DESCRIPTION","OWNER","LINK","UPDATE CYCLE","UPDATECYCLE","UPDATE STATUS","UPDATESTATUS","LAST UPDATED DATE","LASTUPDATEDDATE"]
+};
+const GRAPH_SCOPES = ["Sites.ReadWrite.All", "Files.ReadWrite.All", "User.Read"];
+const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MSAL AUTH
+// ═══════════════════════════════════════════════════════════════════════════
+const msalInstance = new msal.PublicClientApplication({
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: CONFIG.redirectUri
+  },
+  cache: { cacheLocation: "localStorage", storeAuthStateInCookie: false }
+});
+
+let currentAccount = null;
+
+async function initAuth() {
+  await msalInstance.initialize();
+  const redirectResult = await msalInstance.handleRedirectPromise().catch(err => {
+    showAuthError("로그인 처리 중 오류: " + err.message);
+    return null;
+  });
+  const accounts = msalInstance.getAllAccounts();
+  if (redirectResult && redirectResult.account) {
+    currentAccount = redirectResult.account;
+  } else if (accounts.length > 0) {
+    currentAccount = accounts[0];
+  }
+  if (currentAccount) {
+    msalInstance.setActiveAccount(currentAccount);
+    startApp();
+  }
+  // else: stay on login screen
+}
+
+function login() {
+  msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
+}
+
+function logout() {
+  msalInstance.logoutRedirect({ account: currentAccount });
+}
+
+async function getToken() {
+  const account = msalInstance.getActiveAccount();
+  if (!account) throw new Error("로그인이 필요합니다.");
+  try {
+    const res = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
+    return res.accessToken;
+  } catch (e) {
+    // Silent 실패 시 리다이렉트로 재로그인
+    await msalInstance.acquireTokenRedirect({ scopes: GRAPH_SCOPES, account });
+    throw e; // 리다이렉트가 페이지를 이동시킴
+  }
+}
+
+async function graphFetch(pathOrUrl, options = {}) {
+  const token = await getToken();
+  const url = pathOrUrl.startsWith("http") ? pathOrUrl : GRAPH_ROOT + pathOrUrl;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = JSON.stringify(await res.json()); } catch (e) {}
+    throw new Error(`Graph API ${res.status}: ${detail}`);
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function showAuthError(msg) {
+  document.getElementById("authError").innerHTML = `<div class="error-box">${escapeHtml(msg)}</div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+let siteId = null;
+let listId = null;
+let columns = [];        // filtered, orderable, editable SharePoint columns
+let groupField = null;   // internal name of the column used as "tabs" (department), or null
+let allItems = [];        // [{ itemId, values: {internalName: value} }]
+let activeTab = "__ALL__";
+let searchQ = "";
+let filterStatus = "";
+let filterCategory = "";
+let sortCol = -1, sortAsc = true;
+let editingItemId = null;
+let modalMode = "add"; // "add" | "edit"
+let modalEditItemId = null;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APP BOOTSTRAP
+// ═══════════════════════════════════════════════════════════════════════════
+async function startApp() {
+  document.getElementById("authCard").innerHTML = `
+    <div class="spinner"></div>
+    <h2>SharePoint에 연결하는 중…</h2>
+    <p>사이트와 목록 정보를 불러오고 있습니다.</p>
+  `;
+  try {
+    await resolveSiteAndList();
+    await loadColumns();
+    await loadItems();
+    document.getElementById("authScreen").style.display = "none";
+    document.getElementById("app").style.display = "block";
+    renderUserPill();
+    renderTabs();
+    renderContent();
+  } catch (err) {
+    console.error(err);
+    document.getElementById("authCard").innerHTML = `
+      <div class="logo-icon">⚠️</div>
+      <h2>연결에 실패했습니다</h2>
+      <p>Azure AD 앱 권한, 사이트 이름, 리스트 이름을 확인해주세요.</p>
+      <div class="error-box">${escapeHtml(err.message)}</div>
+      <button class="btn btn-primary" style="margin-top:16px" onclick="startApp()">다시 시도</button>
+    `;
+  }
+}
+
+async function resolveSiteAndList() {
+  const site = await graphFetch(`/sites/${CONFIG.hostname}:${CONFIG.sitePath}`);
+  siteId = site.id;
+  const lists = await graphFetch(`/sites/${siteId}/lists?$top=300`);
+  const match = (lists.value || []).find(l => l.displayName === CONFIG.listDisplayName);
+  if (!match) {
+    const names = (lists.value || []).map(l => l.displayName).join(", ");
+    throw new Error(`"${CONFIG.listDisplayName}" 리스트를 찾을 수 없습니다. 사이트에 있는 리스트: ${names}`);
+  }
+  listId = match.id;
+}
+
+async function loadColumns() {
+  const data = await graphFetch(`/sites/${siteId}/lists/${listId}/columns?$top=300`);
+  const raw = (data.value || []).filter(c =>
+    !c.hidden && !c.readOnly &&
+    !["ContentType", "Attachments", "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime", "_ComplianceTagUserId"].includes(c.name)
+  );
+  // 정렬: preferredColumnOrder 우선, 나머지는 원래 순서 유지
+  const orderIndex = name => {
+    const i = CONFIG.preferredColumnOrder.findIndex(p => p.toLowerCase() === name.toLowerCase());
+    return i === -1 ? 999 : i;
+  };
+  raw.sort((a, b) => orderIndex(a.displayName) - orderIndex(b.displayName));
+  columns = raw;
+
+  // 탭(그룹) 컬럼 자동 감지
+  groupField = null;
+  for (const cand of CONFIG.groupFieldCandidates) {
+    const found = columns.find(c => c.name === cand || c.displayName === cand);
+    if (found) { groupField = found.name; break; }
+  }
+}
+
+async function loadItems() {
+  setSyncing(true);
+  let items = [];
+  let url = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=200`;
+  while (url) {
+    const data = await graphFetch(url);
+    items = items.concat(data.value || []);
+    url = data["@odata.nextLink"] || null;
+  }
+  allItems = items.map(it => ({
+    itemId: it.id,
+    values: columns.reduce((acc, col) => {
+      acc[col.name] = getFieldValue(it.fields, col);
+      return acc;
+    }, {})
+  }));
+  setSyncing(false, true);
+}
+
+async function reloadData() {
+  try {
+    await loadItems();
+    renderTabs();
+    renderContent();
+    toast("최신 데이터로 새로고침했어요 ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("새로고침 실패: " + err.message, "error");
+  }
+}
+
+function setSyncing(isSyncing, ok) {
+  const dot = document.getElementById("syncDot");
+  if (!dot) return;
+  dot.className = "sync-dot" + (isSyncing ? " syncing" : (ok === false ? " error" : ""));
+}
+
+function renderUserPill() {
+  const name = currentAccount?.name || currentAccount?.username || "User";
+  document.getElementById("userName").textContent = name;
+  document.getElementById("userAvatar").textContent = name.slice(0,1).toUpperCase();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FIELD TYPE HANDLING (read)
+// ═══════════════════════════════════════════════════════════════════════════
+function getFieldValue(fields, col) {
+  const raw = fields ? fields[col.name] : undefined;
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (col.hyperlinkOrPicture) {
+    if (typeof raw === "object") return raw.Url || raw.Description || null;
+    return raw;
+  }
+  if (col.dateTime) {
+    try { return new Date(raw).toISOString().slice(0, 10); } catch (e) { return String(raw); }
+  }
+  if (col.personOrGroup || col.lookup) {
+    if (typeof raw === "object") return raw.LookupValue || raw.Title || raw.DisplayName || JSON.stringify(raw);
+    return String(raw);
+  }
+  if (typeof raw === "object") return JSON.stringify(raw);
+  return raw;
+}
+
+// 저장할 fields 객체를 컬럼 타입에 맞게 구성
+function buildWriteFields(values) {
+  const fields = {};
+  columns.forEach(col => {
+    if (!(col.name in values)) return;
+    const v = values[col.name];
+    if (v === null || v === undefined || v === "") { fields[col.name] = null; return; }
+    if (col.hyperlinkOrPicture) {
+      fields[col.name] = { Url: v, Description: v };
+    } else if (col.dateTime) {
+      try { fields[col.name] = new Date(v).toISOString(); } catch (e) { fields[col.name] = v; }
+    } else if (col.personOrGroup || col.lookup) {
+      // Person/Lookup 컬럼은 Graph에서 직접 값 저장이 제한적입니다.
+      // 텍스트 컬럼으로 변경하시는 것을 권장합니다. 일단 원문 그대로 시도합니다.
+      fields[col.name] = v;
+    } else {
+      fields[col.name] = v;
+    }
+  });
+  return fields;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TABS / GROUPING
+// ═══════════════════════════════════════════════════════════════════════════
+function getTabList() {
+  if (!groupField) return [{ key: "__ALL__", label: "전체 문서" }];
+  const values = [...new Set(allItems.map(it => it.values[groupField] || "(미지정)"))].sort();
+  return values.map(v => ({ key: v, label: v }));
+}
+
+function itemsForTab(tabKey) {
+  if (!groupField || tabKey === "__ALL__") return allItems;
+  return allItems.filter(it => (it.values[groupField] || "(미지정)") === tabKey);
+}
+
+function renderTabs() {
+  const tabsEl = document.getElementById("tabs");
+  const tabs = getTabList();
+  if (activeTab === "__ALL__" && groupField && tabs.length) activeTab = tabs[0].key;
+  tabsEl.innerHTML = tabs.map(t => {
+    const count = itemsForTab(t.key).length;
+    return `<div class="tab ${t.key === activeTab ? "active" : ""}" onclick="switchTab('${escapeAttr(t.key)}')">${escapeHtml(t.label)}<span class="tab-count">${count}</span></div>`;
+  }).join("");
+}
+
+function switchTab(key) {
+  activeTab = key;
+  searchQ = ""; filterStatus = ""; filterCategory = "";
+  sortCol = -1; sortAsc = true;
+  renderTabs();
+  renderContent();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER TABLE
+// ═══════════════════════════════════════════════════════════════════════════
+function findCol(pred) { return columns.find(pred); }
+function statusCol() { return findCol(c => /status/i.test(c.name) || /status/i.test(c.displayName)); }
+function categoryCol() { return findCol(c => c.name.toUpperCase() === "CATEGORY" || c.displayName.toUpperCase() === "CATEGORY"); }
+function documentCol() { return findCol(c => c.name.toUpperCase() === "DOCUMENT" || c.name === "Title" || c.displayName.toUpperCase() === "DOCUMENT"); }
+function descCol() { return findCol(c => /description/i.test(c.name) || /description/i.test(c.displayName)); }
+function linkCol() { return findCol(c => /link/i.test(c.name) || /link/i.test(c.displayName)); }
+
+function getStatusClass(s) {
+  if (!s) return "";
+  const l = String(s).toLowerCase();
+  if (l.includes("active")) return "active";
+  if (l.includes("pending")) return "pending";
+  if (l.includes("archive")) return "archived";
+  return "";
+}
+function chipColor(cat) {
+  if (!cat) return "";
+  const map = { "TRACKERS": "chip-blue", "REPORTS": "chip-purple", "DOCUMENTATIONS": "chip-teal", "ADMINISTRATIVE": "chip-orange" };
+  return map[String(cat).toUpperCase()] || "chip-blue";
+}
+
+function renderContent() {
+  const main = document.getElementById("mainContent");
+  main.innerHTML = renderTable();
+  attachEvents();
+}
+
+function renderTable() {
+  let items = itemsForTab(activeTab);
+  const sCol = statusCol(), cCol = categoryCol();
+
+  if (searchQ) {
+    const q = searchQ.toLowerCase();
+    items = items.filter(it => columns.some(c => it.values[c.name] && String(it.values[c.name]).toLowerCase().includes(q)));
+  }
+  if (filterStatus && sCol) {
+    items = items.filter(it => it.values[sCol.name] && String(it.values[sCol.name]).toLowerCase().includes(filterStatus.toLowerCase()));
+  }
+  if (filterCategory && cCol) {
+    items = items.filter(it => it.values[cCol.name] === filterCategory);
+  }
+  if (sortCol >= 0 && columns[sortCol]) {
+    const key = columns[sortCol].name;
+    items = [...items].sort((a, b) => {
+      const av = a.values[key] || "", bv = b.values[key] || "";
+      return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+    });
+  }
+
+  const allInTab = itemsForTab(activeTab);
+  const counts = { active: 0, pending: 0, archived: 0 };
+  if (sCol) {
+    allInTab.forEach(it => {
+      const s = (it.values[sCol.name] || "").toLowerCase();
+      if (s.includes("active") && !s.includes("pending")) counts.active++;
+      else if (s.includes("pending")) counts.pending++;
+      else if (s.includes("archive")) counts.archived++;
+    });
+  }
+  const cats = cCol ? [...new Set(allInTab.map(it => it.values[cCol.name]).filter(Boolean))] : [];
+
+  let html = `
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" placeholder="문서, 담당자, 설명 검색…" value="${escapeAttr(searchQ)}" oninput="onSearch(this.value)">
+    </div>
+    <div class="filter-group">
+      ${sCol ? `<select class="filter-select" onchange="onFilterStatus(this.value)">
+        <option value="">All Status</option>
+        <option value="Active" ${filterStatus === "Active" ? "selected" : ""}>Active</option>
+        <option value="Pending" ${filterStatus === "Pending" ? "selected" : ""}>Pending</option>
+        <option value="Archived" ${filterStatus === "Archived" ? "selected" : ""}>Archived</option>
+      </select>` : ""}
+      ${cats.length > 1 ? `<select class="filter-select" onchange="onFilterCat(this.value)">
+        <option value="">All Categories</option>
+        ${cats.map(c => `<option value="${escapeAttr(c)}" ${filterCategory === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+      </select>` : ""}
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat-card"><div class="stat-dot blue"></div><div><div class="stat-num">${allInTab.length}</div><div class="stat-label">Total</div></div></div>
+    ${sCol ? `
+    <div class="stat-card"><div class="stat-dot green"></div><div><div class="stat-num">${counts.active}</div><div class="stat-label">Active</div></div></div>
+    <div class="stat-card"><div class="stat-dot yellow"></div><div><div class="stat-num">${counts.pending}</div><div class="stat-label">Pending</div></div></div>
+    <div class="stat-card"><div class="stat-dot red"></div><div><div class="stat-num">${counts.archived}</div><div class="stat-label">Archived</div></div></div>
+    ` : ""}
+  </div>
+
+  <div class="table-container">
+    <table>
+      <thead><tr>
+        ${columns.map((c, i) => `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(c.displayName || c.name)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`).join("")}
+        <th style="width:100px">Actions</th>
+      </tr></thead>
+      <tbody>`;
+
+  if (items.length === 0) {
+    html += `<tr><td colspan="${columns.length + 1}"><div class="empty"><div class="empty-icon">🔍</div><p>조건에 맞는 항목이 없습니다.</p></div></td></tr>`;
+  } else {
+    items.forEach(it => {
+      const isEditing = editingItemId === it.itemId;
+      html += `<tr class="${isEditing ? "editing" : ""}" data-item-id="${it.itemId}">`;
+      columns.forEach(col => {
+        const v = it.values[col.name];
+        if (isEditing) {
+          html += `<td><textarea class="cell-edit" data-col="${col.name}" rows="1">${escapeHtml(v || "")}</textarea></td>`;
+        } else if (sCol && col.name === sCol.name) {
+          const sc = getStatusClass(v);
+          html += `<td><span class="badge ${sc}"><span class="badge-dot"></span>${escapeHtml(v || "—")}</span></td>`;
+        } else if (cCol && col.name === cCol.name) {
+          html += `<td>${v ? `<span class="chip ${chipColor(v)}">${escapeHtml(v)}</span>` : "—"}</td>`;
+        } else if (col.hyperlinkOrPicture) {
+          const isReal = v && String(v).startsWith("http");
+          html += `<td class="link-cell">${isReal ? `<a href="${escapeAttr(v)}" target="_blank">🔗 Open</a>` : `<span class="link-placeholder">${escapeHtml(v || "No link")}</span>`}</td>`;
+        } else if (col.name === "Title" || (documentCol() && col.name === documentCol().name)) {
+          html += `<td class="doc-name">${escapeHtml(v || "—")}</td>`;
+        } else if (descCol() && col.name === descCol().name) {
+          const s = v ? String(v) : "";
+          html += `<td class="desc" title="${escapeAttr(s)}">${escapeHtml(s.length > 80 ? s.slice(0, 80) + "…" : (s || "—"))}</td>`;
+        } else {
+          html += `<td>${escapeHtml(v || "—")}</td>`;
+        }
+      });
+      if (isEditing) {
+        html += `<td><div class="row-actions always-show">
+          <button class="btn btn-primary btn-sm" onclick="saveRow('${it.itemId}')">✓</button>
+          <button class="btn btn-secondary btn-sm" onclick="cancelEdit()">✕</button>
+        </div></td>`;
+      } else {
+        html += `<td><div class="row-actions">
+          <button class="btn btn-secondary btn-sm" onclick="editRow('${it.itemId}')" title="Edit">✏️</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteRow('${it.itemId}')" title="Delete">🗑</button>
+        </div></td>`;
+      }
+      html += `</tr>`;
+    });
+  }
+
+  html += `</tbody></table>
+    <button class="add-row-btn" onclick="openAddModal()">
+      <span class="add-icon">＋</span> Add new entry
+    </button>
+  </div>`;
+
+  return html;
+}
+
+function attachEvents() {
+  document.querySelectorAll(".cell-edit").forEach(ta => {
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + "px";
+    ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACTIONS (read filters/sort)
+// ═══════════════════════════════════════════════════════════════════════════
+function onSearch(v) { searchQ = v; renderContent(); }
+function onFilterStatus(v) { filterStatus = v; renderContent(); }
+function onFilterCat(v) { filterCategory = v; renderContent(); }
+function onSort(ci) {
+  if (sortCol === ci) sortAsc = !sortAsc; else { sortCol = ci; sortAsc = true; }
+  renderContent();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CRUD → SharePoint (Microsoft Graph)
+// ═══════════════════════════════════════════════════════════════════════════
+function editRow(itemId) {
+  editingItemId = itemId;
+  renderContent();
+  setTimeout(() => { const first = document.querySelector(".cell-edit"); if (first) first.focus(); }, 50);
+}
+
+async function saveRow(itemId) {
+  const cells = document.querySelectorAll(`[data-item-id="${itemId}"] .cell-edit`);
+  const values = {};
+  cells.forEach(el => { values[el.dataset.col] = el.value.trim() || null; });
+
+  setSyncing(true);
+  try {
+    const fields = buildWriteFields(values);
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify(fields)
+    });
+    const item = allItems.find(it => it.itemId === itemId);
+    if (item) Object.assign(item.values, values);
+    editingItemId = null;
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("SharePoint에 저장되었습니다 ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("저장 실패: " + err.message, "error");
+  }
+}
+
+function cancelEdit() { editingItemId = null; renderContent(); }
+
+async function deleteRow(itemId) {
+  if (!confirm("이 항목을 삭제할까요? SharePoint 원본에서도 삭제됩니다.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}`, { method: "DELETE" });
+    allItems = allItems.filter(it => it.itemId !== itemId);
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("삭제되었습니다", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("삭제 실패: " + err.message, "error");
+  }
+}
+
+function openAddModal() {
+  modalMode = "add";
+  modalEditItemId = null;
+  document.getElementById("modalTitle").textContent = `Add Entry${activeTab !== "__ALL__" ? " — " + activeTab : ""}`;
+  let form = "";
+  for (let i = 0; i < columns.length; i += 2) {
+    const isLast = i + 1 >= columns.length;
+    form += `<div class="${isLast ? "" : "form-row"}">`;
+    form += formField(columns[i]);
+    if (!isLast) form += formField(columns[i + 1]);
+    form += `</div>`;
+  }
+  document.getElementById("modalForm").innerHTML = form;
+  // 부서 탭에서 추가하면 그룹 컬럼은 자동으로 현재 탭 값으로 채움
+  if (groupField && activeTab !== "__ALL__") {
+    const el = document.querySelector(`[data-fi="${groupField}"]`);
+    if (el) el.value = activeTab;
+  }
+  document.getElementById("addModal").classList.add("open");
+}
+
+function formField(col) {
+  const label = col.displayName || col.name;
+  const isDesc = /description/i.test(col.name);
+  const isStatus = /status/i.test(col.name);
+  const isCycle = /cycle/i.test(col.name);
+  if (col.choice && col.choice.choices) {
+    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+      <select class="form-input" data-fi="${col.name}">
+        ${col.choice.choices.map(c => `<option>${escapeHtml(c)}</option>`).join("")}
+      </select></div>`;
+  }
+  if (isStatus) {
+    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+      <select class="form-input" data-fi="${col.name}">
+        <option>Active</option><option>Pending Update</option><option>Archived</option>
+      </select></div>`;
+  }
+  if (isCycle) {
+    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+      <select class="form-input" data-fi="${col.name}">
+        <option>Annually</option><option>Monthly</option><option>Quarterly</option>
+      </select></div>`;
+  }
+  if (col.dateTime) {
+    return `<div class="form-group"><label>${escapeHtml(label)}</label>
+      <input class="form-input" data-fi="${col.name}" type="date"></div>`;
+  }
+  return `<div class="form-group"><label>${escapeHtml(label)}</label>
+    ${isDesc
+      ? `<textarea class="form-input" data-fi="${col.name}" rows="2" placeholder="Enter ${escapeHtml(label)}…"></textarea>`
+      : `<input class="form-input" data-fi="${col.name}" type="text" placeholder="Enter ${escapeHtml(label)}…">`
+    }</div>`;
+}
+
+async function saveModal() {
+  const fieldsEls = document.querySelectorAll("#modalForm [data-fi]");
+  const values = {};
+  fieldsEls.forEach(el => { values[el.dataset.fi] = el.value.trim() || null; });
+
+  setSyncing(true);
+  try {
+    const fields = buildWriteFields(values);
+    const created = await graphFetch(`/sites/${siteId}/lists/${listId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields })
+    });
+    allItems.push({
+      itemId: created.id,
+      values: columns.reduce((acc, col) => { acc[col.name] = values[col.name] ?? null; return acc; }, {})
+    });
+    closeModal();
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("SharePoint에 추가되었습니다 ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("추가 실패: " + err.message, "error");
+  }
+}
+
+function closeModal() { document.getElementById("addModal").classList.remove("open"); }
+document.getElementById("addModal").addEventListener("click", function (e) { if (e.target === this) closeModal(); });
+
+function exportCSV() {
+  const items = itemsForTab(activeTab);
+  const lines = [columns.map(c => c.displayName || c.name).join(",")];
+  items.forEach(it => {
+    lines.push(columns.map(c => `"${String(it.values[c.name] || "").replace(/"/g, '""')}"`).join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(activeTab === "__ALL__" ? "All" : activeTab).replace(/[^a-z0-9]/gi, "_")}_export.csv`;
+  a.click();
+  toast("CSV exported ✓", "success");
+}
+
+function toast(msg, type = "") {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = `toast ${type} show`;
+  setTimeout(() => el.classList.remove("show"), 3000);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UTIL
+// ═══════════════════════════════════════════════════════════════════════════
+function escapeHtml(s) {
+  if (s === null || s === undefined) return "";
+  return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════════════════
+initAuth();
+</script>
+</body>
+</html>
