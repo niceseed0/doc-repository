@@ -269,7 +269,7 @@ const CONFIG = {
   listDisplayName: "Document Repository System",
   guideListDisplayName: "Document Repository Guide",
   groupFieldCandidates: ["Team"],
-  teamOrder: ["HR & Admin", "Finance", "IT", "QA", "John's Cluster", "Gary's Cluster", "Archives", "General"],
+  teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   preferredColumnOrder: ["Category", "Sub-Category", "Title", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -277,6 +277,10 @@ const CONFIG = {
 };
 const GRAPH_SCOPES = ["Sites.ReadWrite.All", "Files.ReadWrite.All", "User.Read"];
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+// Separate resource/scope for the SharePoint REST API, used only to check the signed-in user's
+// actual edit permission on the list so we can hide edit controls for read-only users.
+// Requires the "SharePoint > AllSites.Read" delegated permission to be added + admin-consented in Azure AD.
+const SP_REST_SCOPE = [`https://${CONFIG.hostname}/AllSites.Read`];
 const DEFAULT_GUIDE = "Welcome to the Document Repository System.<br><br>This is where our team keeps track of key documents, reports, and references across departments. Use the tabs above to browse each team's documents, and click \"Edit Guide\" to update this guideline.";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -351,6 +355,9 @@ async function graphFetch(pathOrUrl, options = {}) {
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", ...(options.headers || {}) }
   });
   if (!res.ok) {
+    if (res.status === 403) {
+      throw new Error("You don't have permission to make this change. Contact your admin if you need edit access.");
+    }
     let detail = "";
     try { detail = JSON.stringify(await res.json()); } catch (e) {}
     throw new Error(`Graph API ${res.status}: ${detail}`);
@@ -383,6 +390,7 @@ let filterStatus = "";
 let filterCategory = "";
 let sortCol = -1, sortAsc = true;
 let editingItemId = null;
+let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
@@ -396,7 +404,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide()]);
+    await Promise.all([loadItems(), loadGuide(), checkEditPermission()]);
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
     renderUserPill();
@@ -428,6 +436,36 @@ async function resolveSiteAndLists() {
   guideListId = guideMatch ? guideMatch.id : null; // optional — falls back to default text if missing
 }
 
+// Checks whether the signed-in user has Edit permission on the list, so we can hide
+// add/edit/delete controls for read-only users. This is a UX convenience only —
+// SharePoint's own list permissions are what actually enforce access either way.
+// If the check itself fails (e.g. the SharePoint API permission hasn't been consented
+// yet), we fail OPEN (assume editable) so real editors are never wrongly locked out of the UI.
+function hasEditListItemsPermission(high, low) {
+  // SP.PermissionKind.EditListItems = 3 -> bit position 3 within the "Low" 32-bit value
+  const bit = 1 << (3 - 1);
+  return (low & bit) !== 0;
+}
+
+async function checkEditPermission() {
+  try {
+    const account = msalInstance.getActiveAccount();
+    const tokenRes = await msalInstance.acquireTokenSilent({ scopes: SP_REST_SCOPE, account });
+    const rawListId = String(listId).replace(/[{}]/g, "");
+    const url = `https://${CONFIG.hostname}${CONFIG.sitePath}/_api/web/lists(guid'${rawListId}')?$select=EffectiveBasePermissions`;
+    const res = await fetch(url, {
+      headers: { "Authorization": `Bearer ${tokenRes.accessToken}`, "Accept": "application/json;odata=nometadata" }
+    });
+    if (!res.ok) { canEdit = true; return; } // fail open
+    const data = await res.json();
+    const perms = data.EffectiveBasePermissions;
+    canEdit = perms ? hasEditListItemsPermission(perms.High, perms.Low) : true;
+  } catch (e) {
+    console.warn("Edit-permission check skipped (this only affects whether edit buttons are shown):", e);
+    canEdit = true; // fail open — never block real editors due to a UI-layer check failing
+  }
+}
+
 async function loadColumns() {
   const data = await graphFetch(`/sites/${siteId}/lists/${listId}/columns?$top=300`);
   const raw = (data.value || []).filter(c =>
@@ -447,11 +485,15 @@ async function loadColumns() {
     if (found) { groupField = found.name; break; }
   }
 
-  // Use the real Choice values from SharePoint (avoids mismatches with hardcoded strings)
+  // Use the real Choice values from SharePoint (avoids mismatches with hardcoded strings),
+  // but display them in the order defined by CONFIG.teamOrder rather than SharePoint's raw order.
   const groupCol = columns.find(c => c.name === groupField);
-  teamChoices = (groupCol && groupCol.choice && groupCol.choice.choices && groupCol.choice.choices.length)
+  const rawChoices = (groupCol && groupCol.choice && groupCol.choice.choices && groupCol.choice.choices.length)
     ? groupCol.choice.choices
     : CONFIG.teamOrder;
+  const ordered = CONFIG.teamOrder.filter(t => rawChoices.includes(t));
+  const extras = rawChoices.filter(t => !CONFIG.teamOrder.includes(t)); // any choices not in our preferred order, appended at the end
+  teamChoices = [...ordered, ...extras];
 }
 
 function displayColumns() {
@@ -586,7 +628,7 @@ function renderTabs() {
     return `<div class="tab ${t === activeTab ? "active" : ""}" onclick="switchTab('${jsAttrEscape(t)}')">${escapeHtml(tabLabel(t))}${count}</div>`;
   }).join("");
   const isWelcome = activeTab === "Welcome";
-  document.getElementById("addEntryBtn").style.display = isWelcome ? "none" : "";
+  document.getElementById("addEntryBtn").style.display = (isWelcome || !canEdit) ? "none" : "";
   document.getElementById("exportBtn").style.display = isWelcome ? "none" : "";
 }
 
@@ -692,7 +734,7 @@ function renderWelcome() {
   <div class="welcome-card">
     <div class="welcome-card-header">
       <h2>Guideline</h2>
-      <button class="btn btn-secondary btn-sm" onclick="startGuideEdit()">&#9998; Edit Guide</button>
+      ${canEdit ? `<button class="btn btn-secondary btn-sm" onclick="startGuideEdit()">&#9998; Edit Guide</button>` : ""}
     </div>
     <div class="welcome-body">${sanitizeGuideHtml(guideContent)}</div>
     <div class="quick-links">
@@ -714,7 +756,7 @@ function renderWelcome() {
   </div>`;
 }
 
-function startGuideEdit() { guideEditing = true; renderContent(); }
+function startGuideEdit() { if (!canEdit) return; guideEditing = true; renderContent(); }
 function cancelGuideEdit() { guideEditing = false; renderContent(); }
 
 function rteExec(command, value) {
@@ -855,7 +897,9 @@ function renderTable() {
           html += `<td>${escapeHtml(v || "—")}</td>`;
         }
       });
-      if (isEditing) {
+      if (!canEdit) {
+        html += `<td></td>`;
+      } else if (isEditing) {
         html += `<td><div class="row-actions always-show">
           <button class="btn btn-primary btn-sm" onclick="saveRow('${it.itemId}')">✓</button>
           <button class="btn btn-secondary btn-sm" onclick="cancelEdit()">✕</button>
@@ -871,9 +915,9 @@ function renderTable() {
   }
 
   html += `</tbody></table>
-    <button class="add-row-btn" onclick="openAddModal()">
+    ${canEdit ? `<button class="add-row-btn" onclick="openAddModal()">
       <span class="add-icon">&#65291;</span> Add new entry
-    </button>
+    </button>` : ""}
   </div>`;
 
   return html;
@@ -902,6 +946,7 @@ function onSort(ci) {
 // CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 function editRow(itemId) {
+  if (!canEdit) return;
   editingItemId = itemId;
   renderContent();
   setTimeout(() => { const first = document.querySelector(".cell-edit"); if (first) first.focus(); }, 50);
@@ -941,6 +986,7 @@ async function saveRow(itemId) {
 function cancelEdit() { editingItemId = null; renderContent(); }
 
 async function deleteRow(itemId) {
+  if (!canEdit) return;
   if (!confirm("Delete this item? It will also be removed from SharePoint.")) return;
   setSyncing(true);
   try {
@@ -957,7 +1003,7 @@ async function deleteRow(itemId) {
 }
 
 function openAddModal() {
-  if (activeTab === "Welcome") return;
+  if (activeTab === "Welcome" || !canEdit) return;
   const cols = displayColumns();
   document.getElementById("modalTitle").textContent = `Add Entry — ${activeTab}`;
   let form = "";
