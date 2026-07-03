@@ -832,19 +832,28 @@ async function saveRow(itemId) {
   cells.forEach(el => { values[el.dataset.col] = el.value.trim() || null; });
 
   setSyncing(true);
-  try {
-    const fields = buildWriteFields(values);
-    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
-    const item = allItems.find(it => it.itemId === itemId);
-    if (item) Object.assign(item.values, values);
-    editingItemId = null;
-    renderTabs();
-    renderContent();
+  const item = allItems.find(it => it.itemId === itemId);
+  const failedFields = [];
+  for (const col of columns) {
+    if (!(col.name in values)) continue;
+    try {
+      const oneFieldPayload = buildWriteFields({ [col.name]: values[col.name] });
+      await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify(oneFieldPayload) });
+      if (item) item.values[col.name] = values[col.name];
+    } catch (fieldErr) {
+      console.error(`Failed to save field "${col.displayName || col.name}":`, fieldErr);
+      failedFields.push(col.displayName || col.name);
+    }
+  }
+  editingItemId = null;
+  renderTabs();
+  renderContent();
+  if (failedFields.length === 0) {
     setSyncing(false, true);
     toast("Saved to SharePoint ✓", "success");
-  } catch (err) {
+  } else {
     setSyncing(false, false);
-    toast("Save failed: " + err.message, "error");
+    toast(`Saved, but these fields couldn't be updated: ${failedFields.join(", ")}. Please check their column settings in SharePoint.`, "error");
   }
 }
 
@@ -923,17 +932,45 @@ async function saveModal() {
 
   setSyncing(true);
   try {
-    const fields = buildWriteFields(values);
-    const created = await graphFetch(`/sites/${siteId}/lists/${listId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    // Step 1: create the item with only the required fields (Title + Team).
+    // This isolates failures — if this succeeds, we know the base item is fine
+    // and can pinpoint exactly which optional field is misconfigured in SharePoint.
+    const baseValues = { Title: values["Title"] };
+    if (groupField) baseValues[groupField] = values[groupField];
+    const baseFields = buildWriteFields(baseValues);
+    const created = await graphFetch(`/sites/${siteId}/lists/${listId}/items`, { method: "POST", body: JSON.stringify({ fields: baseFields }) });
+    const itemId = created.id;
+
+    // Step 2: patch every other field individually so one bad column doesn't block the rest.
+    const savedValues = { ...baseValues };
+    const failedFields = [];
+    for (const col of columns) {
+      if (col.name === "Title" || col.name === groupField) continue;
+      if (!(col.name in values) || values[col.name] === null) continue;
+      try {
+        const oneFieldValues = { [col.name]: values[col.name] };
+        const oneFieldPayload = buildWriteFields(oneFieldValues);
+        await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify(oneFieldPayload) });
+        savedValues[col.name] = values[col.name];
+      } catch (fieldErr) {
+        console.error(`Failed to save field "${col.displayName || col.name}":`, fieldErr);
+        failedFields.push(col.displayName || col.name);
+      }
+    }
+
     allItems.push({
-      itemId: created.id,
-      values: columns.reduce((acc, col) => { acc[col.name] = values[col.name] ?? null; return acc; }, {})
+      itemId,
+      values: columns.reduce((acc, col) => { acc[col.name] = savedValues[col.name] ?? null; return acc; }, {})
     });
     closeModal();
     renderTabs();
     renderContent();
     setSyncing(false, true);
-    toast("Added to SharePoint ✓", "success");
+    if (failedFields.length === 0) {
+      toast("Added to SharePoint ✓", "success");
+    } else {
+      toast(`Entry added, but these fields couldn't be saved: ${failedFields.join(", ")}. Please check their column settings in SharePoint.`, "error");
+    }
   } catch (err) {
     setSyncing(false, false);
     toast("Add failed: " + err.message, "error");
