@@ -551,7 +551,10 @@ function buildWriteFields(values) {
     if (isHyperlinkCol(col)) {
       const url = /^https?:\/\//i.test(v) ? v : `https://${v}`;
       const looksValid = /^https?:\/\/[a-zA-Z0-9\-._~%]+\.[a-zA-Z]{2,}([/:?#].*)?$/.test(url);
-      fields[col.name] = looksValid ? { Url: url, Description: v } : null;
+      // Written as a plain string: Graph API's write path for true SharePoint Hyperlink-type
+      // columns is unreliable, so this column is configured as Single line of text in SharePoint.
+      // The app still renders it as a clickable link based on isHyperlinkCol().
+      fields[col.name] = looksValid ? url : null;
     } else if (col.dateTime) {
       try { fields[col.name] = new Date(v).toISOString(); } catch (e) { fields[col.name] = v; }
     } else {
