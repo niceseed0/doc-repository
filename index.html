@@ -177,6 +177,7 @@
   .welcome-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .welcome-card h2 { font-size: 22px; font-weight: 700; }
   .welcome-body { color: var(--text2); font-size: 14px; line-height: 1.8; margin-top: 16px; }
+  .welcome-body img, .welcome-edit-area img { max-width: 100%; height: auto; border-radius: 6px; margin: 8px 0; display: block; }
   .welcome-edit-area { width: 100%; min-height: 220px; background: var(--surface2); border: 1px solid var(--accent); border-radius: 0 0 8px 8px; padding: 14px; color: var(--text); font-size: 14px; font-family: 'Inter', sans-serif; line-height: 1.7; outline: none; overflow-y: auto; }
   .quick-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
 
@@ -721,7 +722,19 @@ function renderWelcome() {
           <option value="7">Huge</option>
         </select>
         <span class="rte-sep"></span>
+        <select class="rte-select" onchange="rteExec('foreColor', this.value); this.selectedIndex=0;">
+          <option value="">Color</option>
+          <option value="#e2e8f0">Default</option>
+          <option value="#4f7cff">Blue</option>
+          <option value="#22c55e">Green</option>
+          <option value="#f59e0b">Yellow</option>
+          <option value="#ef4444">Red</option>
+          <option value="#b197fc">Purple</option>
+        </select>
+        <span class="rte-sep"></span>
         <button type="button" class="rte-btn" onclick="rteExec('insertUnorderedList')" title="Bullet list">&#8226; List</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertImage()" title="Insert image">&#128247; Image</button>
       </div>
       <div class="welcome-edit-area" id="guideEditArea" contenteditable="true">${sanitizeGuideHtml(guideContent)}</div>
       <div class="modal-actions">
@@ -763,6 +776,14 @@ function rteExec(command, value) {
   const area = document.getElementById("guideEditArea");
   if (area) area.focus();
   document.execCommand(command, false, value || null);
+}
+
+function rteInsertImage() {
+  const url = prompt("Paste an image URL (e.g. https://example.com/image.png):");
+  if (!url) return;
+  const area = document.getElementById("guideEditArea");
+  if (area) area.focus();
+  document.execCommand("insertImage", false, url);
 }
 
 async function saveGuide() {
