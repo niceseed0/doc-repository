@@ -391,6 +391,7 @@ let teamChoices = []; // actual Team choice values as defined in SharePoint (avo
 let allItems = [];
 let activeTab = "Welcome";
 let searchQ = "";
+let searchComposing = false; // true while an IME (e.g. Korean) is composing a character, to avoid re-rendering mid-composition
 let filterStatus = "";
 let filterCategory = "";
 let sortCol = -1, sortAsc = true;
@@ -862,7 +863,10 @@ function renderTable() {
   <div class="toolbar">
     <div class="search-box">
       <span class="search-icon">&#128269;</span>
-      <input type="text" id="searchInput" placeholder="Search documents, owner, description…" value="${escapeAttr(searchQ)}" oninput="onSearch(this.value)">
+      <input type="text" id="searchInput" placeholder="Search documents, owner, description…" value="${escapeAttr(searchQ)}"
+        oninput="if (!searchComposing) onSearch(this.value)"
+        oncompositionstart="searchComposing = true"
+        oncompositionend="searchComposing = false; onSearch(this.value)">
     </div>
     <div class="filter-group">
       ${sCol ? `<select class="filter-select" onchange="onFilterStatus(this.value)">
