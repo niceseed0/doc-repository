@@ -177,7 +177,12 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .error-box { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.35); border-radius: 8px; padding: 12px 14px; font-size: 12px; color: #f87171; text-align: left; margin-top: 16px; white-space: pre-wrap; word-break: break-word; }
 
+  .welcome-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; align-items: start; max-width: none; }
   .welcome-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 36px; max-width: 900px; }
+  .welcome-grid .welcome-card { max-width: none; }
+  @media (max-width: 900px) {
+    .welcome-grid { grid-template-columns: 1fr; }
+  }
   .welcome-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .welcome-card h2 { font-size: 22px; font-weight: 700; }
   .welcome-body { color: var(--text2); font-size: 14px; line-height: 1.8; margin-top: 16px; }
@@ -758,6 +763,7 @@ function renderWelcome() {
     </div>`;
   }
   return `
+  <div class="welcome-grid">
   <div class="welcome-card">
     <div class="welcome-card-header">
       <h2>Guideline</h2>
@@ -769,7 +775,7 @@ function renderWelcome() {
     </div>
   </div>
 
-  <div class="welcome-card" style="margin-top:20px">
+  <div class="welcome-card">
     <div class="welcome-card-header"><h2>Overall Document Status</h2></div>
     <div class="stats" style="margin-top:16px">
       <div class="stat-card"><div class="stat-dot blue"></div><div><div class="stat-num">${totalAll}</div><div class="stat-label">Total</div></div></div>
@@ -780,6 +786,7 @@ function renderWelcome() {
       ` : ""}
     </div>
     <div class="overview-list">${perTeamRows}</div>
+  </div>
   </div>`;
 }
 
