@@ -35,9 +35,9 @@
   .header {
     background: linear-gradient(135deg, #0f1117 0%, #1a1d27 100%);
     border-bottom: 1px solid var(--border);
-    padding: 24px 32px; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
+    padding: 24px 20px; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
   }
-  .header-inner { max-width: 1400px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .header-inner { max-width: 1680px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .logo { display: flex; align-items: center; gap: 12px; }
   .logo-icon {
     width: 40px; height: 40px; border-radius: 8px; background: rgba(255,255,255,.92);
@@ -69,15 +69,15 @@
   .sync-dot.error { background: var(--red); }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-  .tabs-wrapper { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 32px; overflow-x: auto; }
-  .tabs { max-width: 1400px; margin: 0 auto; display: flex; gap: 0; }
+  .tabs-wrapper { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; overflow-x: auto; }
+  .tabs { max-width: 1680px; margin: 0 auto; display: flex; gap: 0; }
   .tab { padding: 14px 20px; font-size: 13px; font-weight: 500; color: var(--text3); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; user-select: none; }
   .tab:hover { color: var(--text2); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; border-radius: 4px; background: var(--surface2); font-size: 10px; font-weight: 600; margin-left: 6px; color: var(--text3); padding: 0 4px; }
   .tab.active .tab-count { background: rgba(79,124,255,.2); color: var(--accent); }
 
-  .main { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+  .main { max-width: 1680px; margin: 0 auto; padding: 24px 20px; }
 
   .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
   .search-box { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; flex: 1; min-width: 200px; }
