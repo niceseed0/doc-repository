@@ -391,7 +391,6 @@ let teamChoices = []; // actual Team choice values as defined in SharePoint (avo
 let allItems = [];
 let activeTab = "Welcome";
 let searchQ = "";
-let searchComposing = false; // true while an IME (e.g. Korean) is composing a character, to avoid re-rendering mid-composition
 let filterStatus = "";
 let filterCategory = "";
 let sortCol = -1, sortAsc = true;
@@ -824,7 +823,7 @@ async function saveGuide() {
 }
 
 // ── Document table ───────────────────────────────────────────────────────
-function renderTable() {
+function computeFilteredItems() {
   const cols = displayColumns();
   let items = itemsForTab(activeTab);
   const sCol = statusCol(), cCol = categoryCol();
@@ -846,27 +845,22 @@ function renderTable() {
       return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
     });
   }
+  return items;
+}
 
+// Toolbar (search box + filters) is rendered once per tab switch and never touched by
+// search/filter/sort updates, so the search <input> DOM node is never recreated —
+// this keeps focus and IME (Korean/Japanese/Chinese) composition working correctly.
+function renderToolbar() {
+  const cCol = categoryCol(), sCol = statusCol();
   const allInTab = itemsForTab(activeTab);
-  const counts = { active: 0, pending: 0, archived: 0 };
-  if (sCol) {
-    allInTab.forEach(it => {
-      const s = (it.values[sCol.name] || "").toLowerCase();
-      if (s.includes("active") && !s.includes("pending")) counts.active++;
-      else if (s.includes("pending")) counts.pending++;
-      else if (s.includes("archive")) counts.archived++;
-    });
-  }
   const cats = cCol ? [...new Set(allInTab.map(it => it.values[cCol.name]).filter(Boolean))] : [];
-
-  let html = `
+  return `
   <div class="toolbar">
     <div class="search-box">
       <span class="search-icon">&#128269;</span>
       <input type="text" id="searchInput" placeholder="Search documents, owner, description…" value="${escapeAttr(searchQ)}"
-        oninput="if (!searchComposing) onSearch(this.value)"
-        oncompositionstart="searchComposing = true"
-        oncompositionend="searchComposing = false; onSearch(this.value)">
+        oninput="onSearch(this.value)">
     </div>
     <div class="filter-group">
       ${sCol ? `<select class="filter-select" onchange="onFilterStatus(this.value)">
@@ -880,8 +874,27 @@ function renderTable() {
         ${cats.map(c => `<option value="${escapeAttr(c)}" ${filterCategory === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
       </select>` : ""}
     </div>
-  </div>
+  </div>`;
+}
 
+// Stats + table. This is the only part rebuilt on every search/filter/sort/edit change.
+function renderResults() {
+  const cols = displayColumns();
+  const items = computeFilteredItems();
+  const sCol = statusCol();
+
+  const allInTab = itemsForTab(activeTab);
+  const counts = { active: 0, pending: 0, archived: 0 };
+  if (sCol) {
+    allInTab.forEach(it => {
+      const s = (it.values[sCol.name] || "").toLowerCase();
+      if (s.includes("active") && !s.includes("pending")) counts.active++;
+      else if (s.includes("pending")) counts.pending++;
+      else if (s.includes("archive")) counts.archived++;
+    });
+  }
+
+  let html = `
   <div class="stats">
     <div class="stat-card"><div class="stat-dot blue"></div><div><div class="stat-num">${allInTab.length}</div><div class="stat-label">Total</div></div></div>
     ${sCol ? `
@@ -912,7 +925,7 @@ function renderTable() {
         } else if (sCol && col.name === sCol.name) {
           const sc = getStatusClass(v);
           html += `<td><span class="badge ${sc}"><span class="badge-dot"></span>${escapeHtml(v || "—")}</span></td>`;
-        } else if (cCol && col.name === cCol.name) {
+        } else if (categoryCol() && col.name === categoryCol().name) {
           html += `<td>${v ? `<span class="chip ${hashChipClass(v)}">${escapeHtml(v)}</span>` : "—"}</td>`;
         } else if (isHyperlinkCol(col)) {
           const isReal = v && String(v).startsWith("http");
@@ -952,6 +965,18 @@ function renderTable() {
   return html;
 }
 
+function renderTable() {
+  return renderToolbar() + `<div id="resultsContainer">${renderResults()}</div>`;
+}
+
+// Re-renders only the results (stats+table) area, leaving the toolbar/search input untouched.
+function updateResults() {
+  const container = document.getElementById("resultsContainer");
+  if (container) {
+    container.innerHTML = renderResults();
+    attachEvents();
+  }
+}
 function attachEvents() {
   document.querySelectorAll(".cell-edit").forEach(ta => {
     ta.style.height = "auto";
@@ -965,21 +990,13 @@ function attachEvents() {
 // ═══════════════════════════════════════════════════════════════════════════
 function onSearch(v) {
   searchQ = v;
-  renderContent();
-  // Re-rendering replaces the search input with a new DOM node, which steals focus.
-  // Restore focus and cursor position so the user can keep typing without interruption.
-  const input = document.getElementById("searchInput");
-  if (input) {
-    input.focus();
-    const pos = v.length;
-    input.setSelectionRange(pos, pos);
-  }
+  updateResults(); // does not touch the search input itself, so focus/IME composition is never interrupted
 }
-function onFilterStatus(v) { filterStatus = v; renderContent(); }
-function onFilterCat(v) { filterCategory = v; renderContent(); }
+function onFilterStatus(v) { filterStatus = v; updateResults(); }
+function onFilterCat(v) { filterCategory = v; updateResults(); }
 function onSort(ci) {
   if (sortCol === ci) sortAsc = !sortAsc; else { sortCol = ci; sortAsc = true; }
-  renderContent();
+  updateResults();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
