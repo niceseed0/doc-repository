@@ -743,6 +743,10 @@ function renderWelcome() {
         <button type="button" class="rte-btn" onclick="rteInsertImage()" title="Insert image">&#128247; Image</button>
         <span class="rte-sep"></span>
         <button type="button" class="rte-btn" onclick="rteInsertLink()" title="Insert link">&#128279; Link</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyLeft')" title="Align left">&#8676;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyCenter')" title="Align center">&#8596;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyRight')" title="Align right">&#8677;</button>
       </div>
       <div class="welcome-edit-area" id="guideEditArea" contenteditable="true">${sanitizeGuideHtml(guideContent)}</div>
       <div class="modal-actions">
