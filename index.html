@@ -277,7 +277,7 @@ const CONFIG = {
   guideListDisplayName: "Document Repository Guide",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
-  preferredColumnOrder: ["Category", "Sub-Category", "Title", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
+  preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
   hyperlinkColumnNames: ["Link"]
@@ -479,11 +479,13 @@ async function loadColumns() {
     !c.hidden && !c.readOnly &&
     !["ContentType", "Attachments", "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime", "_ComplianceTagUserId"].includes(c.name)
   );
-  const orderIndex = name => {
-    const i = CONFIG.preferredColumnOrder.findIndex(p => p.toLowerCase() === name.toLowerCase());
+  const orderIndex = col => {
+    const i = CONFIG.preferredColumnOrder.findIndex(p =>
+      p.toLowerCase() === col.displayName.toLowerCase() || p.toLowerCase() === col.name.toLowerCase()
+    );
     return i === -1 ? 999 : i;
   };
-  raw.sort((a, b) => orderIndex(a.displayName) - orderIndex(b.displayName));
+  raw.sort((a, b) => orderIndex(a) - orderIndex(b));
   columns = raw;
 
   groupField = null;
