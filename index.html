@@ -134,6 +134,13 @@
   .chip-2 { background: rgba(20,184,166,.12); color: #5eead4; border-color: rgba(20,184,166,.3); }
   .chip-3 { background: rgba(251,146,60,.12); color: #fb923c; border-color: rgba(251,146,60,.3); }
   .chip-4 { background: rgba(236,72,153,.12); color: #f472b6; border-color: rgba(236,72,153,.3); }
+  .chip-5 { background: rgba(34,197,94,.12); color: #4ade80; border-color: rgba(34,197,94,.3); }
+  .chip-6 { background: rgba(239,68,68,.12); color: #f87171; border-color: rgba(239,68,68,.3); }
+  .chip-7 { background: rgba(245,158,11,.12); color: #fbbf24; border-color: rgba(245,158,11,.3); }
+  .chip-8 { background: rgba(6,182,212,.12); color: #67e8f9; border-color: rgba(6,182,212,.3); }
+  .chip-9 { background: rgba(132,204,22,.12); color: #a3e635; border-color: rgba(132,204,22,.3); }
+  .chip-10 { background: rgba(99,102,241,.12); color: #a5b4fc; border-color: rgba(99,102,241,.3); }
+  .chip-11 { background: rgba(244,63,94,.12); color: #fb7185; border-color: rgba(244,63,94,.3); }
 
   .link-cell a { color: var(--accent); font-size: 12px; text-decoration: none; }
   .link-cell a:hover { text-decoration: underline; }
@@ -693,11 +700,14 @@ function getStatusClass(s) {
   if (l.includes("archive")) return "archived";
   return "";
 }
-function hashChipClass(str) {
+const CATEGORY_CHIP_COUNT = 12;
+let categoryColorMap = new Map(); // category value -> chip class index, assigned in order of first appearance so distinct categories don't collide
+function getCategoryChipClass(str) {
   if (!str) return "chip-0";
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
-  return "chip-" + (h % 5);
+  if (!categoryColorMap.has(str)) {
+    categoryColorMap.set(str, categoryColorMap.size % CATEGORY_CHIP_COUNT);
+  }
+  return "chip-" + categoryColorMap.get(str);
 }
 
 function renderContent() {
@@ -981,7 +991,7 @@ function renderResults() {
           const sc = getStatusClass(v);
           html += `<td><span class="badge ${sc}"><span class="badge-dot"></span>${escapeHtml(v || "—")}</span></td>`;
         } else if (categoryCol() && col.name === categoryCol().name) {
-          html += `<td>${v ? `<span class="chip ${hashChipClass(v)}">${escapeHtml(v)}</span>` : "—"}</td>`;
+          html += `<td>${v ? `<span class="chip ${getCategoryChipClass(v)}">${escapeHtml(v)}</span>` : "—"}</td>`;
         } else if (isHyperlinkCol(col)) {
           const isReal = v && String(v).startsWith("http");
           html += `<td class="link-cell">${isReal ? `<a href="${escapeAttr(v)}" target="_blank">&#128279; Open</a>` : `<span class="link-placeholder">${escapeHtml(v || "No link")}</span>`}</td>`;
