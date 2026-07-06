@@ -862,7 +862,7 @@ function renderTable() {
   <div class="toolbar">
     <div class="search-box">
       <span class="search-icon">&#128269;</span>
-      <input type="text" placeholder="Search documents, owner, description…" value="${escapeAttr(searchQ)}" oninput="onSearch(this.value)">
+      <input type="text" id="searchInput" placeholder="Search documents, owner, description…" value="${escapeAttr(searchQ)}" oninput="onSearch(this.value)">
     </div>
     <div class="filter-group">
       ${sCol ? `<select class="filter-select" onchange="onFilterStatus(this.value)">
@@ -959,7 +959,18 @@ function attachEvents() {
 // ═══════════════════════════════════════════════════════════════════════════
 // FILTERS / SORT
 // ═══════════════════════════════════════════════════════════════════════════
-function onSearch(v) { searchQ = v; renderContent(); }
+function onSearch(v) {
+  searchQ = v;
+  renderContent();
+  // Re-rendering replaces the search input with a new DOM node, which steals focus.
+  // Restore focus and cursor position so the user can keep typing without interruption.
+  const input = document.getElementById("searchInput");
+  if (input) {
+    input.focus();
+    const pos = v.length;
+    input.setSelectionRange(pos, pos);
+  }
+}
 function onFilterStatus(v) { filterStatus = v; renderContent(); }
 function onFilterCat(v) { filterCategory = v; renderContent(); }
 function onSort(ci) {
