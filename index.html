@@ -222,20 +222,17 @@
   .welcome-body a:hover, .welcome-edit-area a:hover { color: #6b92ff; }
   .guide-section { border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin: 14px 0; background: rgba(255,255,255,.02); }
 
-  .org-tree { padding: 8px 4px 4px; }
-  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; display: inline-block; }
+  .org-tree-wrap { overflow-x: auto; padding-bottom: 4px; }
+  .org-grid { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); grid-template-rows: auto 26px auto 34px auto 26px auto 26px auto 26px auto; column-gap: 0; row-gap: 0; min-width: 800px; padding: 18px 6px 4px; }
+  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; text-align: center; margin: 0 8px; }
   .org-node-box .org-name { font-size: 13px; font-weight: 700; color: var(--text); }
   .org-node-box .org-title2 { font-size: 11px; color: var(--text3); margin-top: 2px; }
-  .org-indent { margin-left: 10px; border-left: 1px solid var(--border); padding-left: 20px; margin-top: 12px; }
-  .org-branch-label { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
-  .org-row { display: flex; gap: 28px; flex-wrap: wrap; }
-  .org-pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-  .org-team-pill { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--accent); background: rgba(79,124,255,.08); border-radius: 8px; padding: 8px 14px; transition: all .15s; display: inline-block; }
-  .org-team-pill:hover { background: rgba(79,124,255,.18); transform: translateY(-1px); }
-  .org-bus-children { display: flex; gap: 20px; position: relative; padding-top: 20px; }
-  .org-bus-children::before { content: ""; position: absolute; top: 0; left: 10%; right: 10%; height: 1px; background: var(--border); }
-  .org-bus-stem { position: relative; }
-  .org-bus-stem::before { content: ""; position: absolute; top: -20px; left: 50%; width: 1px; height: 20px; background: var(--border); transform: translateX(-50%); }
+  .org-leaf-box { cursor: pointer; transition: all .15s; }
+  .org-leaf-box:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .org-cell-box { justify-self: center; align-self: center; }
+  .org-connector { grid-column: 1 / 7; position: relative; }
+  .org-vline { position: absolute; top: 0; width: 1px; height: 100%; background: var(--border); }
+  .org-hline { position: absolute; top: 50%; height: 1px; background: var(--border); }
   .welcome-edit-area { width: 100%; min-height: 220px; background: var(--surface2); border: 1px solid var(--accent); border-radius: 0 0 8px 8px; padding: 14px; color: var(--text); font-size: 14px; font-family: 'Inter', sans-serif; line-height: 1.7; outline: none; overflow-y: auto; }
   .quick-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
 
@@ -1003,10 +1000,12 @@ function renderWelcome() {
 
   <div class="welcome-card" style="margin-top:20px; max-width:none">
     <div class="welcome-card-header">
-      <h2><span class="guideline-chevron" style="transform:rotate(${showGuidelineBody ? "90deg" : "0deg"})">&#9656;</span> Repository Guideline</h2>
+      <h2 style="display:flex; align-items:center; gap:10px;">
+        <span><span class="guideline-chevron" style="transform:rotate(${showGuidelineBody ? "90deg" : "0deg"})">&#9656;</span> Repository Guideline</span>
+        <button class="btn btn-secondary btn-sm" onclick="toggleGuidelineSection()">${showGuidelineBody ? "Collapse" : "Expand"}</button>
+      </h2>
       <div style="display:flex; gap:8px;">
         ${(canEdit && !guideEditing) ? `<button class="btn btn-secondary btn-sm" onclick="startGuideEdit()">&#9998; Edit Guide</button>` : ""}
-        <button class="btn btn-secondary btn-sm" onclick="toggleGuidelineSection()">${showGuidelineBody ? "Collapse" : "Expand"}</button>
       </div>
     </div>
     ${showGuidelineBody ? guidelineInner : ""}
@@ -1018,63 +1017,133 @@ function toggleGuidelineSection() {
   renderContent();
 }
 
-function orgTeamPill(item) {
-  return `<div class="org-team-pill" onclick="switchTab('${jsAttrEscape(item.team)}')">${escapeHtml(item.label)}</div>`;
+function orgLeafBox(label, team, col) {
+  return `<div class="org-node-box org-cell-box org-leaf-box" style="grid-column:${col}; grid-row:11;" onclick="switchTab('${jsAttrEscape(team)}')">
+    <div class="org-name">${escapeHtml(label)}</div>
+  </div>`;
 }
+function orgVLine(left, top, height) {
+  return `<div class="org-vline" style="left:${left}%;${top !== undefined ? ` top:${top}%; height:${height}%;` : ""}"></div>`;
+}
+function orgHLine(left, right) {
+  return `<div class="org-hline" style="left:${left}%; right:${right}%;"></div>`;
+}
+
+// Fixed horizontal centers (%) for the 6-column grid used by the org chart.
+const OC = { c1: 8.333, c2: 25, c3: 41.667, c4: 58.333, c5: 75, c6: 91.667, biz: 16.667, gso: 83.333, mid: 50 };
 
 function renderOrgChart() {
   const bo = ORG_CHART.businessOps;
   const gso = ORG_CHART.gameServiceOps;
-
-  const businessOpsHtml = `
-    <div class="org-branch-label">${escapeHtml(bo.label)}</div>
-    <div class="org-node-box">
-      <div class="org-name">${escapeHtml(bo.lead.name)}</div>
-      <div class="org-title2">${escapeHtml(bo.lead.title)}</div>
-    </div>
-    <div class="org-indent">
-      <div class="org-node-box">
-        <div class="org-name">${escapeHtml(bo.manager.name)}</div>
-        <div class="org-title2">${escapeHtml(bo.manager.title)}</div>
-      </div>
-      <div class="org-pill-row">${bo.manager.teams.map(orgTeamPill).join("")}</div>
-    </div>`;
-
-  const gameServiceOpsHtml = `
-    <div class="org-branch-label">${escapeHtml(gso.label)}</div>
-    <div class="org-row">
-      ${gso.leads.map(l => `
-      <div>
-        <div class="org-node-box">
-          <div class="org-name">${escapeHtml(l.name)}</div>
-          <div class="org-title2">${escapeHtml(l.title)}</div>
-        </div>
-        <div class="org-indent">
-          ${orgTeamPill({ label: l.clusterLabel, team: l.team })}
-        </div>
-      </div>`).join("")}
-    </div>`;
+  const it = ORG_CHART.mdDirectTeams[0];
+  const cxqa = ORG_CHART.mdDirectTeams[1];
 
   return `
   <div class="welcome-card">
     <div class="welcome-card-header"><h2>Company Organization</h2></div>
     <p style="color:var(--text3); font-size:12px; margin-top:6px;">Click a team box to jump straight to its documents.</p>
-    <div class="org-tree">
-      <div class="org-node-box">
+    <div class="org-tree-wrap">
+    <div class="org-grid">
+
+      <div class="org-node-box org-cell-box" style="grid-column:1/7; grid-row:1;">
         <div class="org-name">${escapeHtml(ORG_CHART.ceo.name)}</div>
         <div class="org-title2">${escapeHtml(ORG_CHART.ceo.title)}</div>
       </div>
-      <div class="org-indent">
-        <div class="org-node-box">
-          <div class="org-name">${escapeHtml(ORG_CHART.md.name)}</div>
-          <div class="org-title2">${escapeHtml(ORG_CHART.md.title)}</div>
-        </div>
-        <div class="org-indent">${businessOpsHtml}</div>
-        <div class="org-indent org-bus-children">
-          ${ORG_CHART.mdDirectTeams.map(item => `<div class="org-bus-stem">${orgTeamPill(item)}</div>`).join("")}
-        </div>
-        <div class="org-indent">${gameServiceOpsHtml}</div>
+
+      <div class="org-connector" style="grid-row:2;">
+        ${orgVLine(OC.mid)}
       </div>
+
+      <div class="org-node-box org-cell-box" style="grid-column:1/7; grid-row:3;">
+        <div class="org-name">${escapeHtml(ORG_CHART.md.name)}</div>
+        <div class="org-title2">${escapeHtml(ORG_CHART.md.title)}</div>
+      </div>
+
+      <div class="org-connector" style="grid-row:4;">
+        ${orgVLine(OC.mid, 0, 50)}
+        ${orgHLine(OC.biz, 100 - OC.gso)}
+        ${orgVLine(OC.biz, 50, 50)}
+        ${orgVLine(OC.c3, 50, 50)}
+        ${orgVLine(OC.c4, 50, 50)}
+        ${orgVLine(OC.gso, 50, 50)}
+      </div>
+
+      <div class="org-connector" style="grid-row:5;">
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:1/3; grid-row:5;">
+        <div class="org-name">${escapeHtml(bo.label)}</div>
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:5/7; grid-row:5;">
+        <div class="org-name">${escapeHtml(gso.label)}</div>
+      </div>
+
+      <div class="org-connector" style="grid-row:6;">
+        ${orgVLine(OC.biz)}
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+        ${orgVLine(OC.gso, 0, 50)}
+        ${orgHLine(OC.c5, 100 - OC.c6)}
+        ${orgVLine(OC.c5, 50, 50)}
+        ${orgVLine(OC.c6, 50, 50)}
+      </div>
+
+      <div class="org-connector" style="grid-row:7;">
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:1/3; grid-row:7;">
+        <div class="org-name">${escapeHtml(bo.lead.name)}</div>
+        <div class="org-title2">${escapeHtml(bo.lead.title)}</div>
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:5; grid-row:7;">
+        <div class="org-name">${escapeHtml(gso.leads[0].name)}</div>
+        <div class="org-title2">${escapeHtml(gso.leads[0].title)}</div>
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:6; grid-row:7;">
+        <div class="org-name">${escapeHtml(gso.leads[1].name)}</div>
+        <div class="org-title2">${escapeHtml(gso.leads[1].title)}</div>
+      </div>
+
+      <div class="org-connector" style="grid-row:8;">
+        ${orgVLine(OC.biz)}
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+        ${orgVLine(OC.c5)}
+        ${orgVLine(OC.c6)}
+      </div>
+
+      <div class="org-connector" style="grid-row:9;">
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+        ${orgVLine(OC.c5)}
+        ${orgVLine(OC.c6)}
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:1/3; grid-row:9;">
+        <div class="org-name">${escapeHtml(bo.manager.name)}</div>
+        <div class="org-title2">${escapeHtml(bo.manager.title)}</div>
+      </div>
+
+      <div class="org-connector" style="grid-row:10;">
+        ${orgVLine(OC.biz, 0, 50)}
+        ${orgHLine(OC.c1, 100 - OC.c2)}
+        ${orgVLine(OC.c1, 50, 50)}
+        ${orgVLine(OC.c2, 50, 50)}
+        ${orgVLine(OC.c3)}
+        ${orgVLine(OC.c4)}
+        ${orgVLine(OC.c5)}
+        ${orgVLine(OC.c6)}
+      </div>
+
+      ${orgLeafBox(bo.manager.teams[0].label, bo.manager.teams[0].team, 1)}
+      ${orgLeafBox(bo.manager.teams[1].label, bo.manager.teams[1].team, 2)}
+      ${orgLeafBox(it.label, it.team, 3)}
+      ${orgLeafBox(cxqa.label, cxqa.team, 4)}
+      ${orgLeafBox(gso.leads[0].clusterLabel, gso.leads[0].team, 5)}
+      ${orgLeafBox(gso.leads[1].clusterLabel, gso.leads[1].team, 6)}
+
+    </div>
     </div>
   </div>`;
 }
