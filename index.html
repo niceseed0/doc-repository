@@ -172,6 +172,10 @@
   .chip-9 { background: rgba(132,204,22,.12); color: #a3e635; border-color: rgba(132,204,22,.3); }
   .chip-10 { background: rgba(99,102,241,.12); color: #a5b4fc; border-color: rgba(99,102,241,.3); }
   .chip-11 { background: rgba(244,63,94,.12); color: #fb7185; border-color: rgba(244,63,94,.3); }
+  .approval-chip { white-space: nowrap; }
+  .approval-pending { background: rgba(245,158,11,.12); color: #fbbf24; border-color: rgba(245,158,11,.3); }
+  .approval-approved { background: rgba(34,197,94,.12); color: #4ade80; border-color: rgba(34,197,94,.3); }
+  .approval-rejected { background: rgba(239,68,68,.12); color: #f87171; border-color: rgba(239,68,68,.3); }
 
   .link-cell a { color: var(--accent); font-size: 12px; text-decoration: none; }
   .link-cell a:hover { text-decoration: underline; }
@@ -318,6 +322,7 @@
         </div>
         <button class="btn btn-secondary" onclick="reloadData()">&#10227; <span>Refresh</span></button>
         <button class="btn btn-secondary" onclick="showHistory()" id="historyBtn" style="display:none">&#128337; <span>History</span></button>
+        <button class="btn btn-secondary" onclick="showApprovals()" id="approvalsBtn" style="display:none">&#9989; <span>Approvals</span> <span class="tab-count" id="approvalsCount" style="display:none"></span></button>
         <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn">&#8681; <span>Export CSV</span></button>
         <button class="btn btn-primary" onclick="openAddModal()" id="addEntryBtn">&#65291; <span>Add Entry</span></button>
         <button class="btn btn-secondary" onclick="logout()">Log out</button>
@@ -378,6 +383,23 @@ const CONFIG = {
   // Any column whose display name matches one of these is always treated as a hyperlink field.
   hyperlinkColumnNames: ["Link"]
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APPROVAL WORKFLOW CONFIG
+// Add the email address(es) (UPN, same as their Microsoft sign-in) of whoever is
+// allowed to approve/reject documents. Anyone signed in with a matching email sees
+// the "Approvals" tab and can act on pending items. Start with one, add more later —
+// just add another string to this array.
+// ═══════════════════════════════════════════════════════════════════════════
+const APPROVER_EMAILS = [
+  "jkim@elitegsl.com"
+];
+
+// These 6 SharePoint columns must be added to the "Document Repository System" list
+// (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
+// the normal dynamic `columns` list (loadColumns) so they never show up as manually-
+// editable fields in the Add/Edit form — the app manages them automatically.
+const APPROVAL_FIELD_NAMES = ["ApprovalStatus", "SubmittedBy", "SubmittedDate", "ApprovedBy", "ApprovedDate", "RejectionReason"];
 
 // Company org chart shown on the Guideline page. "team" / "teams" values must exactly match
 // the values used in CONFIG.teamOrder / the SharePoint Team choice field so clicking a box jumps to that tab.
@@ -517,12 +539,15 @@ let filterStatus = "";
 let filterCategory = "";
 let sortCol = -1, sortAsc = true;
 let editingItemId = null;
+let isApprover = false;
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════════════════
 async function startApp() {
+  isApprover = !!(currentAccount && currentAccount.username &&
+    APPROVER_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
   document.getElementById("authCard").innerHTML = `
     <div class="spinner"></div>
     <h2>Connecting to SharePoint&hellip;</h2>
@@ -597,7 +622,8 @@ async function loadColumns() {
   const data = await graphFetch(`/sites/${siteId}/lists/${listId}/columns?$top=300`);
   const raw = (data.value || []).filter(c =>
     !c.hidden && !c.readOnly &&
-    !["ContentType", "Attachments", "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime", "_ComplianceTagUserId"].includes(c.name)
+    !["ContentType", "Attachments", "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime", "_ComplianceTagUserId"].includes(c.name) &&
+    !APPROVAL_FIELD_NAMES.includes(c.name)
   );
   const orderIndex = col => {
     const i = CONFIG.preferredColumnOrder.findIndex(p =>
@@ -646,6 +672,14 @@ async function loadItems() {
   allItems = items.map(it => ({
     itemId: it.id,
     values: columns.reduce((acc, col) => { acc[col.name] = getFieldValue(it.fields, col); return acc; }, {}),
+    approval: {
+      status: (it.fields && it.fields["ApprovalStatus"]) || "Approved", // items created before this feature existed default to Approved
+      submittedBy: (it.fields && it.fields["SubmittedBy"]) || null,
+      submittedDate: (it.fields && it.fields["SubmittedDate"]) || null,
+      approvedBy: (it.fields && it.fields["ApprovedBy"]) || null,
+      approvedDate: (it.fields && it.fields["ApprovedDate"]) || null,
+      rejectionReason: (it.fields && it.fields["RejectionReason"]) || null
+    },
     modified: it.lastModifiedDateTime || null,
     modifiedBy: it.lastModifiedBy?.user?.displayName || it.lastModifiedBy?.user?.email || "Unknown",
     created: it.createdDateTime || null,
@@ -774,11 +808,19 @@ function renderTabs() {
   }).join("");
   const isWelcome = activeTab === "Welcome";
   const isHistory = activeTab === "__HISTORY__";
-  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || !canEdit) ? "none" : "";
-  document.getElementById("exportBtn").style.display = (isWelcome || isHistory) ? "none" : "";
+  const isApprovals = activeTab === "__APPROVALS__";
+  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || !canEdit) ? "none" : "";
+  document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals) ? "none" : "";
   const historyBtn = document.getElementById("historyBtn");
   historyBtn.style.display = canEdit ? "" : "none";
   historyBtn.className = "btn " + (isHistory ? "btn-primary" : "btn-secondary");
+  const approvalsBtn = document.getElementById("approvalsBtn");
+  approvalsBtn.style.display = isApprover ? "" : "none";
+  approvalsBtn.className = "btn " + (isApprovals ? "btn-primary" : "btn-secondary");
+  const approvalsCount = document.getElementById("approvalsCount");
+  const pendingCount = pendingApprovalItems().length;
+  approvalsCount.style.display = pendingCount > 0 ? "" : "none";
+  approvalsCount.textContent = pendingCount;
 }
 
 function defaultSortColIndex() {
@@ -813,6 +855,27 @@ function getStatusClass(s) {
   if (l.includes("archive")) return "archived";
   return "";
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APPROVAL WORKFLOW HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+function pendingApprovalItems() {
+  return allItems.filter(it => it.approval && it.approval.status === "Pending Approval");
+}
+function approvalBadgeClass(status) {
+  if (status === "Pending Approval") return "approval-pending";
+  if (status === "Rejected") return "approval-rejected";
+  return "approval-approved";
+}
+function approvalBadgeHtml(item) {
+  const status = (item.approval && item.approval.status) || "Approved";
+  const cls = approvalBadgeClass(status);
+  const title = status === "Rejected" && item.approval.rejectionReason
+    ? `Rejected: ${escapeAttr(item.approval.rejectionReason)}`
+    : status;
+  return `<span class="chip approval-chip ${cls}" title="${title}">${escapeHtml(status)}</span>`;
+}
+
 const CATEGORY_CHIP_COUNT = 12;
 let categoryColorMap = new Map(); // category value -> chip class index, assigned in order of first appearance so distinct categories don't collide
 function getCategoryChipClass(str) {
@@ -832,12 +895,126 @@ function showHistory() {
   renderContent();
 }
 
+function showApprovals() {
+  if (!isApprover) return; // safety net — button is already hidden for non-approvers
+  activeTab = "__APPROVALS__";
+  searchQ = ""; filterStatus = ""; filterCategory = "";
+  editingItemId = null; guideEditing = false; announcementEditing = false;
+  renderTabs();
+  renderContent();
+}
+
 function renderContent() {
   const main = document.getElementById("mainContent");
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
   else if (activeTab === "__HISTORY__") main.innerHTML = renderHistory();
+  else if (activeTab === "__APPROVALS__") main.innerHTML = renderApprovals();
   else main.innerHTML = renderTable();
   attachEvents();
+}
+
+function renderApprovals() {
+  const fmt = iso => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return iso; }
+  };
+  const pending = pendingApprovalItems().sort((a, b) => {
+    const at = a.approval?.submittedDate ? new Date(a.approval.submittedDate).getTime() : 0;
+    const bt = b.approval?.submittedDate ? new Date(b.approval.submittedDate).getTime() : 0;
+    return at - bt; // oldest submitted first, so nothing sits waiting indefinitely
+  });
+
+  let html = `
+  <div class="welcome-card" style="max-width:none">
+    <div class="welcome-card-header"><h2>Pending Approvals</h2></div>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">New and edited documents wait here until approved. Visible to approvers only.</p>
+    <div class="table-container" style="margin-top:16px">
+      <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Document Name</th>
+          <th>Team</th>
+          <th>Submitted By</th>
+          <th>Submitted</th>
+          <th style="width:180px">Action</th>
+        </tr></thead>
+        <tbody>`;
+
+  if (pending.length === 0) {
+    html += `<tr><td colspan="5"><div class="empty"><div class="empty-icon">&#9989;</div><p>Nothing waiting for approval right now.</p></div></td></tr>`;
+  } else {
+    pending.forEach(it => {
+      const docName = it.values["Title"] || "—";
+      const team = groupField ? (it.values[groupField] || "—") : "—";
+      html += `<tr>
+        <td class="doc-name">${escapeHtml(docName)}</td>
+        <td>${escapeHtml(team)}</td>
+        <td>${escapeHtml(it.approval?.submittedBy || "—")}</td>
+        <td>${escapeHtml(fmt(it.approval?.submittedDate))}</td>
+        <td><div class="row-actions always-show">
+          <button class="btn btn-primary btn-sm" onclick="approveItem('${it.itemId}')">&#10003; Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="rejectItem('${it.itemId}')">&#10005; Reject</button>
+        </div></td>
+      </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div></div></div>`;
+  return html;
+}
+
+async function approveItem(itemId) {
+  if (!isApprover) return;
+  const item = allItems.find(it => it.itemId === itemId);
+  if (!item) return;
+  setSyncing(true);
+  const userName = currentAccount?.name || currentAccount?.username || "Unknown";
+  const nowIso = new Date().toISOString();
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ ApprovalStatus: "Approved", ApprovedBy: userName, ApprovedDate: nowIso })
+    });
+    item.approval.status = "Approved";
+    item.approval.approvedBy = userName;
+    item.approval.approvedDate = nowIso;
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("Approved ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Approve failed: " + err.message, "error");
+  }
+}
+
+async function rejectItem(itemId) {
+  if (!isApprover) return;
+  const item = allItems.find(it => it.itemId === itemId);
+  if (!item) return;
+  const reason = prompt("Reason for rejecting this document (the submitter will see this):");
+  if (!reason || !reason.trim()) return;
+  setSyncing(true);
+  const nowIso = new Date().toISOString();
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ ApprovalStatus: "Rejected", RejectionReason: reason.trim(), ApprovedBy: "", ApprovedDate: null })
+    });
+    item.approval.status = "Rejected";
+    item.approval.rejectionReason = reason.trim();
+    item.approval.approvedBy = null;
+    item.approval.approvedDate = null;
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("Rejected", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Reject failed: " + err.message, "error");
+  }
 }
 
 function renderHistory() {
@@ -1459,12 +1636,13 @@ function renderResults() {
     <table>
       <thead><tr>
         ${cols.map((c, i) => `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(c.displayName || c.name)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`).join("")}
+        <th style="width:120px">Approval</th>
         <th style="width:100px">Actions</th>
       </tr></thead>
       <tbody>`;
 
   if (items.length === 0) {
-    html += `<tr><td colspan="${cols.length + 1}"><div class="empty"><div class="empty-icon">&#128269;</div><p>No items match your filters.</p></div></td></tr>`;
+    html += `<tr><td colspan="${cols.length + 2}"><div class="empty"><div class="empty-icon">&#128269;</div><p>No items match your filters.</p></div></td></tr>`;
   } else {
     items.forEach(it => {
       const isEditing = editingItemId === it.itemId;
@@ -1490,6 +1668,7 @@ function renderResults() {
           html += `<td>${escapeHtml(v || "—")}</td>`;
         }
       });
+      html += `<td>${approvalBadgeHtml(it)}</td>`;
       if (!canEdit) {
         html += `<td></td>`;
       } else if (isEditing) {
@@ -1561,6 +1740,23 @@ function editRow(itemId) {
   setTimeout(() => { const first = document.querySelector(".cell-edit"); if (first) first.focus(); }, 50);
 }
 
+// Marks an item Pending Approval (used right after it's created or edited) and
+// keeps the local cache in sync. Silently no-ops if the ApprovalStatus column
+// hasn't been added to SharePoint yet, so this never blocks a normal save.
+async function submitForApproval(itemId, item) {
+  const userName = currentAccount?.name || currentAccount?.username || "Unknown";
+  const nowIso = new Date().toISOString();
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ ApprovalStatus: "Pending Approval", SubmittedBy: userName, SubmittedDate: nowIso, RejectionReason: "" })
+    });
+    if (item) item.approval = { status: "Pending Approval", submittedBy: userName, submittedDate: nowIso, approvedBy: null, approvedDate: null, rejectionReason: null };
+  } catch (e) {
+    console.warn("Could not set ApprovalStatus (has the column been added to SharePoint yet?):", e);
+  }
+}
+
 async function saveRow(itemId) {
   const cells = document.querySelectorAll(`[data-item-id="${itemId}"] .cell-edit`);
   const values = {};
@@ -1584,12 +1780,13 @@ async function saveRow(itemId) {
   if (item && failedFields.length < columns.length) {
     item.modified = new Date().toISOString();
     item.modifiedBy = currentAccount?.name || currentAccount?.username || item.modifiedBy;
+    await submitForApproval(itemId, item);
   }
   renderTabs();
   renderContent();
   if (failedFields.length === 0) {
     setSyncing(false, true);
-    toast("Saved to SharePoint ✓", "success");
+    toast("Saved to SharePoint — sent for approval ✓", "success");
   } else {
     setSyncing(false, false);
     toast(`Saved, but these fields couldn't be updated: ${failedFields.join(", ")}. Please check their column settings in SharePoint.`, "error");
@@ -1700,17 +1897,20 @@ async function saveModal() {
 
     const nowIso = new Date().toISOString();
     const userName = currentAccount?.name || currentAccount?.username || "Unknown";
-    allItems.push({
+    const newItem = {
       itemId,
       values: columns.reduce((acc, col) => { acc[col.name] = savedValues[col.name] ?? null; return acc; }, {}),
+      approval: { status: "Approved", submittedBy: null, submittedDate: null, approvedBy: null, approvedDate: null, rejectionReason: null },
       modified: nowIso, modifiedBy: userName, created: nowIso, createdBy: userName
-    });
+    };
+    allItems.push(newItem);
+    await submitForApproval(itemId, newItem);
     closeModal();
     renderTabs();
     renderContent();
     setSyncing(false, true);
     if (failedFields.length === 0) {
-      toast("Added to SharePoint ✓", "success");
+      toast("Added to SharePoint — sent for approval ✓", "success");
     } else {
       toast(`Entry added, but these fields couldn't be saved: ${failedFields.join(", ")}. Please check their column settings in SharePoint.`, "error");
     }
