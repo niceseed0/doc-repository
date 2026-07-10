@@ -244,6 +244,8 @@
 
   .overview-list { margin-top: 18px; border-top: 1px solid var(--border); }
   .overview-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px; border-bottom: 1px solid var(--hr); font-size: 13px; }
+  .overview-row-clickable { cursor: pointer; border-radius: 6px; transition: background .15s; margin: 0 -4px; padding: 10px 4px; }
+  .overview-row-clickable:hover { background: rgba(79,124,255,.06); }
   .overview-team { color: var(--text2); }
   .overview-count { color: var(--text); font-weight: 600; font-family: 'Inter', sans-serif; display: inline-flex; justify-content: center; min-width: 56px; }
   .overview-breakdown { display: flex; align-items: center; gap: 10px; }
@@ -494,6 +496,9 @@ let guideItemId = null;
 let guideContent = DEFAULT_GUIDE;
 let guideEditing = false;
 let guidelineExpanded = false; // Repository Guideline section starts collapsed
+let announcementItemId = null;
+let announcementContent = "";
+let announcementEditing = false;
 let columns = [];
 let groupField = null;
 let teamChoices = []; // actual Team choice values as defined in SharePoint (avoids typo/format mismatches)
@@ -642,20 +647,31 @@ async function loadItems() {
 }
 
 async function loadGuide() {
-  if (!guideListId) { guideContent = DEFAULT_GUIDE; guideItemId = null; return; }
+  if (!guideListId) { guideContent = DEFAULT_GUIDE; guideItemId = null; announcementContent = ""; announcementItemId = null; return; }
   try {
-    const data = await graphFetch(`/sites/${siteId}/lists/${guideListId}/items?$expand=fields&$top=5`);
+    const data = await graphFetch(`/sites/${siteId}/lists/${guideListId}/items?$expand=fields&$top=25`);
     const items = data.value || [];
-    if (items.length > 0) {
-      guideItemId = items[0].id;
-      guideContent = items[0].fields["GuideContent"] ?? items[0].fields["Guide_x0020_Content"] ?? DEFAULT_GUIDE;
+    const announcementItem = items.find(it => (it.fields["Title"] || "") === "Announcement");
+    const guideItem = items.find(it => it !== announcementItem) || items[0];
+    if (guideItem) {
+      guideItemId = guideItem.id;
+      guideContent = guideItem.fields["GuideContent"] ?? guideItem.fields["Guide_x0020_Content"] ?? DEFAULT_GUIDE;
     } else {
       guideItemId = null;
       guideContent = DEFAULT_GUIDE;
     }
+    if (announcementItem) {
+      announcementItemId = announcementItem.id;
+      announcementContent = announcementItem.fields["GuideContent"] ?? announcementItem.fields["Guide_x0020_Content"] ?? "";
+    } else {
+      announcementItemId = null;
+      announcementContent = "";
+    }
   } catch (e) {
     guideItemId = null;
     guideContent = DEFAULT_GUIDE;
+    announcementItemId = null;
+    announcementContent = "";
   }
 }
 
@@ -767,7 +783,7 @@ function switchTab(key) {
   activeTab = key;
   searchQ = ""; filterStatus = ""; filterCategory = "";
   sortCol = defaultSortColIndex(); sortAsc = true;
-  editingItemId = null; guideEditing = false;
+  editingItemId = null; guideEditing = false; announcementEditing = false;
   renderTabs();
   renderContent();
 }
@@ -802,7 +818,7 @@ function showHistory() {
   if (!canEdit) return; // safety net — button is already hidden for read-only users
   activeTab = "__HISTORY__";
   searchQ = ""; filterStatus = ""; filterCategory = "";
-  editingItemId = null; guideEditing = false;
+  editingItemId = null; guideEditing = false; announcementEditing = false;
   renderTabs();
   renderContent();
 }
@@ -919,7 +935,7 @@ function renderWelcome() {
       });
     }
     return `
-    <div class="overview-row">
+    <div class="overview-row overview-row-clickable" onclick="switchTab('${jsAttrEscape(t)}')" title="Go to ${escapeAttr(t)}">
       <span class="overview-team">${escapeHtml(t)}</span>
       <span class="overview-breakdown">
         ${sCol ? `
@@ -980,10 +996,53 @@ function renderWelcome() {
 
   const showGuidelineBody = guidelineExpanded || guideEditing;
 
+  const announcementInner = announcementEditing ? `
+      <div class="rte-toolbar">
+        <button type="button" class="rte-btn" onclick="rteExec('bold', null, 'announcementEditArea')" title="Bold"><b>B</b></button>
+        <button type="button" class="rte-btn" onclick="rteExec('underline', null, 'announcementEditArea')" title="Underline"><u>U</u></button>
+        <button type="button" class="rte-btn" onclick="rteExec('strikeThrough', null, 'announcementEditArea')" title="Strikethrough"><s>S</s></button>
+        <span class="rte-sep"></span>
+        <select class="rte-select" onchange="rteExec('fontSize', this.value, 'announcementEditArea'); this.selectedIndex=0;">
+          <option value="">Size</option>
+          <option value="2">Small</option>
+          <option value="3">Normal</option>
+          <option value="5">Large</option>
+          <option value="7">Huge</option>
+        </select>
+        <span class="rte-sep"></span>
+        <select class="rte-select" onchange="rteExec('foreColor', this.value, 'announcementEditArea'); this.selectedIndex=0;">
+          <option value="">Color</option>
+          <option value="#e2e8f0">Default</option>
+          <option value="#4f7cff">Blue</option>
+          <option value="#22c55e">Green</option>
+          <option value="#f59e0b">Yellow</option>
+          <option value="#ef4444">Red</option>
+          <option value="#b197fc">Purple</option>
+        </select>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteExec('insertUnorderedList', null, 'announcementEditArea')" title="Bullet list">&#8226; List</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertImage('announcementEditArea')" title="Insert image">&#128247; Image</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertLink('announcementEditArea')" title="Insert link">&#128279; Link</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyLeft', null, 'announcementEditArea')" title="Align left">&#8676;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyCenter', null, 'announcementEditArea')" title="Align center">&#8596;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyRight', null, 'announcementEditArea')" title="Align right">&#8677;</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertSectionBox('announcementEditArea')" title="Wrap the selected text in a bordered section box">&#128230; Box</button>
+      </div>
+      <div class="welcome-edit-area" id="announcementEditArea" contenteditable="true">${sanitizeGuideHtml(announcementContent)}</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="cancelAnnouncementEdit()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveAnnouncement()">Save Announcement</button>
+      </div>` : (announcementContent ? `<div class="welcome-body">${sanitizeGuideHtml(announcementContent)}</div>` : `<p style="color:var(--text3); font-size:13px; margin-top:8px;">${canEdit ? "No announcements right now. Click Edit to post one." : "No announcements right now."}</p>`);
+
   return `
   <div class="welcome-grid">
   ${renderOrgChart()}
 
+  <div style="display:flex; flex-direction:column; gap:20px;">
   <div class="welcome-card">
     <div class="welcome-card-header"><h2>Overall Document Status</h2></div>
     <div class="stats" style="margin-top:16px">
@@ -995,6 +1054,18 @@ function renderWelcome() {
       ` : ""}
     </div>
     <div class="overview-list">${overviewHeaderRow}${perTeamRows}</div>
+  </div>
+
+  <div class="welcome-card">
+    <div class="welcome-card-header">
+      <h2>&#128226; Announcements</h2>
+      <div style="display:flex; gap:8px;">
+        ${(canEdit && !announcementEditing) ? `<button class="btn btn-secondary btn-sm" onclick="startAnnouncementEdit()">&#9998; ${announcementContent ? "Edit" : "Post"}</button>` : ""}
+        ${(canEdit && !announcementEditing && announcementContent) ? `<button class="btn btn-secondary btn-sm" onclick="clearAnnouncement()">Clear</button>` : ""}
+      </div>
+    </div>
+    ${announcementInner}
+  </div>
   </div>
   </div>
 
@@ -1151,22 +1222,77 @@ function renderOrgChart() {
 function startGuideEdit() { if (!canEdit) return; guideEditing = true; guidelineExpanded = true; renderContent(); }
 function cancelGuideEdit() { guideEditing = false; renderContent(); }
 
-function rteExec(command, value) {
-  const area = document.getElementById("guideEditArea");
+function startAnnouncementEdit() { if (!canEdit) return; announcementEditing = true; renderContent(); }
+function cancelAnnouncementEdit() { announcementEditing = false; renderContent(); }
+
+async function saveAnnouncement() {
+  const area = document.getElementById("announcementEditArea");
+  const html = sanitizeGuideHtml(area.innerHTML);
+  if (!guideListId) {
+    toast("The \"Document Repository Guide\" list was not found in SharePoint, so this can't be saved. See SETUP_LISTS.md.", "error");
+    return;
+  }
+  setSyncing(true);
+  try {
+    if (announcementItemId) {
+      await graphFetch(`/sites/${siteId}/lists/${guideListId}/items/${announcementItemId}/fields`, {
+        method: "PATCH",
+        body: JSON.stringify({ GuideContent: html })
+      });
+    } else {
+      const created = await graphFetch(`/sites/${siteId}/lists/${guideListId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ fields: { Title: "Announcement", GuideContent: html } })
+      });
+      announcementItemId = created.id;
+    }
+    announcementContent = html;
+    announcementEditing = false;
+    renderContent();
+    setSyncing(false, true);
+    toast("Announcement saved to SharePoint ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Save failed: " + err.message, "error");
+  }
+}
+
+async function clearAnnouncement() {
+  if (!canEdit || !announcementItemId) { announcementContent = ""; announcementEditing = false; renderContent(); return; }
+  if (!confirm("Clear the current announcement?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${guideListId}/items/${announcementItemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ GuideContent: "" })
+    });
+    announcementContent = "";
+    announcementEditing = false;
+    renderContent();
+    setSyncing(false, true);
+    toast("Announcement cleared ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Failed to clear: " + err.message, "error");
+  }
+}
+
+function rteExec(command, value, targetId) {
+  const area = document.getElementById(targetId || "guideEditArea");
   if (area) area.focus();
   document.execCommand(command, false, value || null);
 }
 
-function rteInsertImage() {
+function rteInsertImage(targetId) {
   const url = prompt("Paste an image URL (e.g. https://example.com/image.png):");
   if (!url) return;
-  const area = document.getElementById("guideEditArea");
+  const area = document.getElementById(targetId || "guideEditArea");
   if (area) area.focus();
   document.execCommand("insertImage", false, url);
 }
 
-function rteInsertLink() {
-  const area = document.getElementById("guideEditArea");
+function rteInsertLink(targetId) {
+  const area = document.getElementById(targetId || "guideEditArea");
   if (!area) return;
   area.focus();
   const selection = window.getSelection();
@@ -1191,8 +1317,8 @@ function getSelectionHtml() {
   return container.innerHTML;
 }
 
-function rteInsertSectionBox() {
-  const area = document.getElementById("guideEditArea");
+function rteInsertSectionBox(targetId) {
+  const area = document.getElementById(targetId || "guideEditArea");
   if (!area) return;
   area.focus();
   const selectedHtml = getSelectionHtml();
