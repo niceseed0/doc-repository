@@ -56,10 +56,11 @@
   }
   .theme-toggle-btn:hover { border-color: var(--accent); color: var(--text); }
 
+  .sticky-top-group { position: sticky; top: 0; z-index: 100; }
   .header {
     background: linear-gradient(135deg, var(--bg) 0%, var(--surface) 100%);
     border-bottom: 1px solid var(--border);
-    padding: 24px 20px; position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
+    padding: 24px 20px; backdrop-filter: blur(12px);
   }
   .header-inner { max-width: 1680px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .logo { display: flex; align-items: center; gap: 12px; }
@@ -306,6 +307,7 @@
 </div>
 
 <div id="app" style="display:none">
+  <div class="sticky-top-group">
   <div class="header">
     <div class="header-inner">
       <div class="logo" onclick="switchTab('Welcome')" style="cursor:pointer" title="Go to Overview">
@@ -334,6 +336,7 @@
 
   <div class="tabs-wrapper">
     <div class="tabs" id="tabs"></div>
+  </div>
   </div>
 
   <div class="main" id="mainContent"></div>
