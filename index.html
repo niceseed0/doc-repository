@@ -442,8 +442,11 @@ const GRAPH_SCOPES = ["Sites.ReadWrite.All", "Files.ReadWrite.All", "User.Read"]
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 // Separate resource/scope for the SharePoint REST API, used only to check the signed-in user's
 // actual edit permission on the list so we can hide edit controls for read-only users.
-// Requires the "SharePoint > AllSites.Read" delegated permission to be added + admin-consented in Azure AD.
-const SP_REST_SCOPE = [`https://${CONFIG.hostname}/AllSites.Read`];
+// Requires the "SharePoint > AllSites.Write" delegated permission to be added + admin-consented in Azure AD.
+// NOTE: this was originally AllSites.Read, but a token scoped to Read-only causes SharePoint to report
+// EffectiveBasePermissions capped at read-only regardless of the user's real edit rights — so it could
+// never correctly detect real editors. AllSites.Write fixes that.
+const SP_REST_SCOPE = [`https://${CONFIG.hostname}/AllSites.Write`];
 const DEFAULT_GUIDE = "Welcome to the Document Repository System.<br><br>This is where our team keeps track of key documents, reports, and references across departments. Use the tabs above to browse each team's documents, and click \"Edit Guide\" to update this guideline.";
 
 // ═══════════════════════════════════════════════════════════════════════════
