@@ -124,6 +124,7 @@
   .stat-label { font-size: 11px; color: var(--text3); margin-top: 1px; }
 
   .table-container { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; outline: none; }
+  .perm-add-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
   .table-scroll { overflow-x: auto; }
   .table-scroll::-webkit-scrollbar { height: 8px; }
   .table-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -323,6 +324,7 @@
         <button class="btn btn-secondary" onclick="reloadData()">&#10227; <span>Refresh</span></button>
         <button class="btn btn-secondary" onclick="showHistory()" id="historyBtn" style="display:none">&#128337; <span>History</span></button>
         <button class="btn btn-secondary" onclick="showApprovals()" id="approvalsBtn" style="display:none">&#9989; <span>Approvals</span> <span class="tab-count" id="approvalsCount" style="display:none"></span></button>
+        <button class="btn btn-secondary" onclick="showPermissions()" id="permissionsBtn" style="display:none">&#128273; <span>Permissions</span></button>
         <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn">&#8681; <span>Export CSV</span></button>
         <button class="btn btn-primary" onclick="openAddModal()" id="addEntryBtn">&#65291; <span>Add Entry</span></button>
         <button class="btn btn-secondary" onclick="logout()">Log out</button>
@@ -376,6 +378,7 @@ const CONFIG = {
   sitePath: "/sites/ELITEGLOBALMANCOMM",
   listDisplayName: "Document Repository System",
   guideListDisplayName: "Document Repository Guide",
+  permissionsListDisplayName: "Document Repository Permissions",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
@@ -394,6 +397,18 @@ const CONFIG = {
 const APPROVER_EMAILS = [
   "jkim@elitegsl.com"
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PER-TEAM PERMISSIONS CONFIG
+// People listed here can manage who's allowed to add/edit/delete documents in each
+// team tab, from the "🔑 Permissions" menu inside the app (no need to touch SharePoint
+// directly). By default this is the same person as the approver above — add more
+// emails to the array if more than one person should manage permissions.
+// ═══════════════════════════════════════════════════════════════════════════
+const ADMIN_EMAILS = [
+  "jkim@elitegsl.com"
+];
+const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
 // (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
@@ -540,6 +555,9 @@ let filterCategory = "";
 let sortCol = -1, sortAsc = true;
 let editingItemId = null;
 let isApprover = false;
+let isPermissionAdmin = false;
+let permissionsListId = null;
+let permissionRows = []; // [{ itemId, userEmail, team }]
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -548,6 +566,8 @@ let canEdit = true; // whether the signed-in user has edit rights on the SharePo
 async function startApp() {
   isApprover = !!(currentAccount && currentAccount.username &&
     APPROVER_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
+  isPermissionAdmin = !!(currentAccount && currentAccount.username &&
+    ADMIN_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
   document.getElementById("authCard").innerHTML = `
     <div class="spinner"></div>
     <h2>Connecting to SharePoint&hellip;</h2>
@@ -556,7 +576,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), checkEditPermission()]);
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
     renderUserPill();
@@ -586,6 +606,8 @@ async function resolveSiteAndLists() {
   listId = match.id;
   const guideMatch = (lists.value || []).find(l => l.displayName === CONFIG.guideListDisplayName);
   guideListId = guideMatch ? guideMatch.id : null; // optional — falls back to default text if missing
+  const permMatch = (lists.value || []).find(l => l.displayName === CONFIG.permissionsListDisplayName);
+  permissionsListId = permMatch ? permMatch.id : null; // optional — falls back to "everyone with SharePoint edit rights can edit every team" if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -717,9 +739,48 @@ async function loadGuide() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PER-TEAM PERMISSIONS
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadPermissions() {
+  permissionRows = [];
+  if (!permissionsListId) return; // list not created yet — everyone with SharePoint edit rights can edit every team
+  try {
+    let url = `/sites/${siteId}/lists/${permissionsListId}/items?$expand=fields&$top=200`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const userEmail = it.fields["UserEmail"];
+        const team = it.fields["Team"];
+        if (userEmail && team) permissionRows.push({ itemId: it.id, userEmail: String(userEmail).trim(), team: String(team).trim() });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load per-team permissions (list may not exist yet):", e);
+    permissionRows = [];
+  }
+}
+
+// Whether the signed-in user can add/edit/delete documents in a specific team tab.
+// - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
+// - Permission admins -> always allowed everywhere.
+// - No rows for this person in the Permissions list yet -> allowed everywhere (safe default so
+//   nobody currently editing gets locked out just because the feature was turned on).
+// - Otherwise -> only allowed in teams they're explicitly listed for (or "All Teams").
+function canEditTeam(team) {
+  if (!canEdit) return false;
+  if (isPermissionAdmin) return true;
+  const email = (currentAccount?.username || "").toLowerCase();
+  if (!email) return canEdit;
+  const myRows = permissionRows.filter(r => r.userEmail.toLowerCase() === email);
+  if (myRows.length === 0) return true;
+  return myRows.some(r => r.team === team || r.team === ALL_TEAMS_LABEL);
+}
+
 async function reloadData() {
   try {
-    await Promise.all([loadItems(), loadGuide()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions()]);
     renderTabs();
     renderContent();
     toast("Refreshed with latest data ✓", "success");
@@ -809,14 +870,18 @@ function renderTabs() {
   const isWelcome = activeTab === "Welcome";
   const isHistory = activeTab === "__HISTORY__";
   const isApprovals = activeTab === "__APPROVALS__";
-  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || !canEdit) ? "none" : "";
-  document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals) ? "none" : "";
+  const isPermissions = activeTab === "__PERMISSIONS__";
+  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions || !canEditTeam(activeTab)) ? "none" : "";
+  document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions) ? "none" : "";
   const historyBtn = document.getElementById("historyBtn");
   historyBtn.style.display = canEdit ? "" : "none";
   historyBtn.className = "btn " + (isHistory ? "btn-primary" : "btn-secondary");
   const approvalsBtn = document.getElementById("approvalsBtn");
   approvalsBtn.style.display = isApprover ? "" : "none";
   approvalsBtn.className = "btn " + (isApprovals ? "btn-primary" : "btn-secondary");
+  const permissionsBtn = document.getElementById("permissionsBtn");
+  permissionsBtn.style.display = isPermissionAdmin ? "" : "none";
+  permissionsBtn.className = "btn " + (isPermissions ? "btn-primary" : "btn-secondary");
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
@@ -904,11 +969,21 @@ function showApprovals() {
   renderContent();
 }
 
+function showPermissions() {
+  if (!isPermissionAdmin) return; // safety net — button is already hidden for non-admins
+  activeTab = "__PERMISSIONS__";
+  searchQ = ""; filterStatus = ""; filterCategory = "";
+  editingItemId = null; guideEditing = false; announcementEditing = false;
+  renderTabs();
+  renderContent();
+}
+
 function renderContent() {
   const main = document.getElementById("mainContent");
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
   else if (activeTab === "__HISTORY__") main.innerHTML = renderHistory();
   else if (activeTab === "__APPROVALS__") main.innerHTML = renderApprovals();
+  else if (activeTab === "__PERMISSIONS__") main.innerHTML = renderPermissions();
   else main.innerHTML = renderTable();
   attachEvents();
 }
@@ -1014,6 +1089,98 @@ async function rejectItem(itemId) {
   } catch (err) {
     setSyncing(false, false);
     toast("Reject failed: " + err.message, "error");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PER-TEAM PERMISSIONS ADMIN PANEL
+// ═══════════════════════════════════════════════════════════════════════════
+function renderPermissions() {
+  const teamOptions = [...teamChoices, ALL_TEAMS_LABEL]
+    .map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
+
+  const sorted = [...permissionRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
+
+  let rowsHtml = "";
+  if (!permissionsListId) {
+    rowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128273;</div><p>The "Document Repository Permissions" list hasn't been created in SharePoint yet. See SETUP_PERMISSIONS.md.</p></div></td></tr>`;
+  } else if (sorted.length === 0) {
+    rowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128273;</div><p>No restrictions set yet — everyone with SharePoint edit rights can edit every team.</p></div></td></tr>`;
+  } else {
+    rowsHtml = sorted.map(r => `<tr>
+      <td>${escapeHtml(r.userEmail)}</td>
+      <td>${escapeHtml(r.team)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="removePermission('${r.itemId}')">&#128465; Remove</button></td>
+    </tr>`).join("");
+  }
+
+  return `
+  <div class="welcome-card" style="max-width:none">
+    <div class="welcome-card-header"><h2>&#128273; Permissions</h2></div>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">
+      Restrict who can add/edit/delete documents in each team tab. Anyone not listed below still gets full edit access
+      (as long as they already have SharePoint edit rights) — add someone here only once you want to limit them to specific teams.
+    </p>
+
+    <div class="perm-add-form">
+      <input type="email" id="permEmailInput" class="cell-edit" placeholder="person@elitegsl.com" style="flex:1; min-width:220px;">
+      <select id="permTeamInput" class="cell-edit" style="max-width:220px;">${teamOptions}</select>
+      <button class="btn btn-primary" onclick="addPermission()">&#65291; Grant Access</button>
+    </div>
+
+    <div class="table-container" style="margin-top:16px">
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Email</th><th>Team</th><th style="width:140px">Action</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function addPermission() {
+  if (!isPermissionAdmin) return;
+  if (!permissionsListId) { toast("The \"Document Repository Permissions\" list hasn't been created in SharePoint yet. See SETUP_PERMISSIONS.md.", "error"); return; }
+  const emailInput = document.getElementById("permEmailInput");
+  const teamInput = document.getElementById("permTeamInput");
+  const email = emailInput.value.trim();
+  const team = teamInput.value;
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast("Enter a valid email address.", "error"); return; }
+  if (permissionRows.some(r => r.userEmail.toLowerCase() === email.toLowerCase() && r.team === team)) {
+    toast("That person already has access to that team.", "error");
+    return;
+  }
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${permissionsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { UserEmail: email, Team: team } })
+    });
+    permissionRows.push({ itemId: created.id, userEmail: email, team });
+    emailInput.value = "";
+    renderContent();
+    setSyncing(false, true);
+    toast("Access granted ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Failed to grant access: " + err.message, "error");
+  }
+}
+
+async function removePermission(itemId) {
+  if (!isPermissionAdmin) return;
+  if (!confirm("Remove this access?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${permissionsListId}/items/${itemId}`, { method: "DELETE" });
+    permissionRows = permissionRows.filter(r => r.itemId !== itemId);
+    renderContent();
+    setSyncing(false, true);
+    toast("Access removed", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Failed to remove access: " + err.message, "error");
   }
 }
 
@@ -1669,7 +1836,7 @@ function renderResults() {
         }
       });
       html += `<td>${approvalBadgeHtml(it)}</td>`;
-      if (!canEdit) {
+      if (!canEditTeam(activeTab)) {
         html += `<td></td>`;
       } else if (isEditing) {
         html += `<td><div class="row-actions always-show">
@@ -1688,7 +1855,7 @@ function renderResults() {
 
   html += `</tbody></table>
     </div>
-    ${canEdit ? `<button class="add-row-btn" onclick="openAddModal()">
+    ${canEditTeam(activeTab) ? `<button class="add-row-btn" onclick="openAddModal()">
       <span class="add-icon">&#65291;</span> Add new entry
     </button>` : ""}
   </div>`;
@@ -1734,7 +1901,9 @@ function onSort(ci) {
 // CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 function editRow(itemId) {
-  if (!canEdit) return;
+  const item = allItems.find(it => it.itemId === itemId);
+  const team = item && groupField ? item.values[groupField] : activeTab;
+  if (!canEditTeam(team)) return;
   editingItemId = itemId;
   renderContent();
   setTimeout(() => { const first = document.querySelector(".cell-edit"); if (first) first.focus(); }, 50);
@@ -1796,7 +1965,9 @@ async function saveRow(itemId) {
 function cancelEdit() { editingItemId = null; renderContent(); }
 
 async function deleteRow(itemId) {
-  if (!canEdit) return;
+  const item = allItems.find(it => it.itemId === itemId);
+  const team = item && groupField ? item.values[groupField] : activeTab;
+  if (!canEditTeam(team)) return;
   if (!confirm("Delete this item? It will also be removed from SharePoint.")) return;
   setSyncing(true);
   try {
@@ -1813,7 +1984,7 @@ async function deleteRow(itemId) {
 }
 
 function openAddModal() {
-  if (activeTab === "Welcome" || !canEdit) return;
+  if (activeTab === "Welcome" || !canEditTeam(activeTab)) return;
   const cols = displayColumns();
   document.getElementById("modalTitle").textContent = `Add Entry — ${activeTab}`;
   let form = "";
