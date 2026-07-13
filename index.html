@@ -710,7 +710,43 @@ async function loadItems() {
     created: it.createdDateTime || null,
     createdBy: it.createdBy?.user?.displayName || it.createdBy?.user?.email || "Unknown"
   }));
+  await detectOutOfBandEdits();
   setSyncing(false, true);
+}
+
+// If someone edits a document directly in SharePoint (not through this app), SharePoint's
+// own "last modified" time moves forward but our ApprovalStatus/ApprovedDate fields don't —
+// since only the app's save flow updates those. So: whenever a document's real last-modified
+// time is newer than the last time the app recorded a submission/approval for it, that content
+// was changed outside the app and hasn't actually been reviewed. We flip it back to
+// "Pending Approval" automatically (and push that back to SharePoint) so it can never sit
+// silently as "Approved" while containing unreviewed changes — the approver will see it show
+// up in the Approvals tab again next time anyone opens the app.
+const OUT_OF_BAND_TOLERANCE_MS = 2 * 60 * 1000; // grace window for the app's own save-then-submit sequence
+async function detectOutOfBandEdits() {
+  const toSync = [];
+  allItems.forEach(item => {
+    if (!item.approval || item.approval.status === "Pending Approval") return;
+    const modifiedTime = item.modified ? new Date(item.modified).getTime() : 0;
+    const referenceTime = Math.max(
+      item.approval.approvedDate ? new Date(item.approval.approvedDate).getTime() : 0,
+      item.approval.submittedDate ? new Date(item.approval.submittedDate).getTime() : 0
+    );
+    if (referenceTime > 0 && modifiedTime - referenceTime > OUT_OF_BAND_TOLERANCE_MS) {
+      item.approval.status = "Pending Approval";
+      item.approval.submittedBy = (item.modifiedBy || "Unknown") + " (edited directly in SharePoint)";
+      item.approval.submittedDate = item.modified;
+      item.approval.rejectionReason = null;
+      toSync.push(item);
+    }
+  });
+  if (toSync.length === 0 || !listId) return;
+  await Promise.all(toSync.map(item =>
+    graphFetch(`/sites/${siteId}/lists/${listId}/items/${item.itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ ApprovalStatus: "Pending Approval", SubmittedBy: item.approval.submittedBy, SubmittedDate: item.approval.submittedDate, RejectionReason: "" })
+    }).catch(e => console.warn(`Could not sync auto-detected pending status for item ${item.itemId}:`, e))
+  ));
 }
 
 async function loadGuide() {
