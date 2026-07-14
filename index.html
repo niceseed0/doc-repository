@@ -392,10 +392,11 @@ const CONFIG = {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // APPROVAL WORKFLOW CONFIG
-// Add the email address(es) (UPN, same as their Microsoft sign-in) of whoever is
-// allowed to approve/reject documents. Anyone signed in with a matching email sees
-// the "Approvals" tab and can act on pending items. Start with one, add more later —
-// just add another string to this array.
+// This is just a "bootstrap" list — it guarantees these people can always approve/reject
+// documents, even before the Permissions list exists or if something goes wrong with it.
+// In normal day-to-day use, approvers are granted/revoked from the app itself:
+// 🔑 Permissions tab → grant someone the special "✅ Approver" entry → they see the
+// Approvals tab immediately. You don't need to touch this array for that.
 // ═══════════════════════════════════════════════════════════════════════════
 const APPROVER_EMAILS = [
   "jkim@elitegsl.com"
@@ -412,6 +413,7 @@ const ADMIN_EMAILS = [
   "jkim@elitegsl.com"
 ];
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
+const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
 // (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
@@ -570,8 +572,6 @@ let canEdit = true; // whether the signed-in user has edit rights on the SharePo
 // BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════════════════
 async function startApp() {
-  isApprover = !!(currentAccount && currentAccount.username &&
-    APPROVER_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
   isPermissionAdmin = !!(currentAccount && currentAccount.username &&
     ADMIN_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
   document.getElementById("authCard").innerHTML = `
@@ -583,6 +583,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), checkEditPermission()]);
+    refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
     renderUserPill();
@@ -807,12 +808,6 @@ async function loadPermissions() {
 // Whether the signed-in user can add/edit/delete documents in a specific team tab.
 // - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
 // - Permission admins -> always allowed everywhere.
-// - No rows for this person in the Permissions list yet -> allowed everywhere (safe default so
-//   nobody currently editing gets locked out just because the feature was turned on).
-// - Otherwise -> only allowed in teams they're explicitly listed for (or "All Teams").
-// Whether the signed-in user can add/edit/delete documents in a specific team tab.
-// - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
-// - Permission admins -> always allowed everywhere.
 // - The Permissions list hasn't been created in SharePoint yet -> allowed everywhere (feature not set up,
 //   falls back to plain SharePoint edit rights so nothing breaks before an admin configures anything).
 // - Once the list exists -> access must be explicitly granted per person/team. No row = no access,
@@ -827,9 +822,31 @@ function canEditTeam(team) {
   return myRows.some(r => r.team === team || r.team === ALL_TEAMS_LABEL);
 }
 
+// Whether the signed-in user has edit access to at least one team (used for things that
+// aren't team-specific, like the History tab — "can this person edit *something*?").
+function hasAnyEditAccess() {
+  if (!canEdit) return false;
+  if (isPermissionAdmin) return true;
+  if (!permissionsListId) return true;
+  const email = (currentAccount?.username || "").toLowerCase();
+  if (!email) return false;
+  return permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team !== APPROVER_LABEL);
+}
+
+// Recomputes isApprover from both the static APPROVER_EMAILS list (a hardcoded bootstrap admin)
+// and the Permissions list (so approvers can be granted/revoked from the 🔑 Permissions tab, like
+// team access, without editing code). Call this after permissionRows or currentAccount changes.
+function refreshAccessFlags() {
+  const email = (currentAccount?.username || "").toLowerCase();
+  const fromConfig = !!email && APPROVER_EMAILS.map(e => e.toLowerCase()).includes(email);
+  const fromPermissionsList = !!email && permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team === APPROVER_LABEL);
+  isApprover = fromConfig || fromPermissionsList;
+}
+
 async function reloadData() {
   try {
     await Promise.all([loadItems(), loadGuide(), loadPermissions()]);
+    refreshAccessFlags();
     renderTabs();
     renderContent();
     toast("Refreshed with latest data ✓", "success");
@@ -923,7 +940,7 @@ function renderTabs() {
   document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions || !canEditTeam(activeTab)) ? "none" : "";
   document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions) ? "none" : "";
   const historyBtn = document.getElementById("historyBtn");
-  historyBtn.style.display = canEdit ? "" : "none";
+  historyBtn.style.display = hasAnyEditAccess() ? "" : "none";
   historyBtn.className = "btn " + (isHistory ? "btn-primary" : "btn-secondary");
   const approvalsBtn = document.getElementById("approvalsBtn");
   approvalsBtn.style.display = isApprover ? "" : "none";
@@ -1001,7 +1018,7 @@ function getCategoryChipClass(str) {
 }
 
 function showHistory() {
-  if (!canEdit) return; // safety net — button is already hidden for read-only users
+  if (!hasAnyEditAccess()) return; // safety net — button is already hidden otherwise
   activeTab = "__HISTORY__";
   searchQ = ""; filterStatus = ""; filterCategory = "";
   editingItemId = null; guideEditing = false; announcementEditing = false;
@@ -1145,7 +1162,7 @@ async function rejectItem(itemId) {
 // PER-TEAM PERMISSIONS ADMIN PANEL
 // ═══════════════════════════════════════════════════════════════════════════
 function renderPermissions() {
-  const teamOptions = [...teamChoices, ALL_TEAMS_LABEL]
+  const teamOptions = [...teamChoices, ALL_TEAMS_LABEL, APPROVER_LABEL]
     .map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
 
   const sorted = [...permissionRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
@@ -1209,6 +1226,7 @@ async function addPermission() {
     });
     permissionRows.push({ itemId: created.id, userEmail: email, team });
     emailInput.value = "";
+    refreshAccessFlags();
     renderContent();
     setSyncing(false, true);
     toast("Access granted ✓", "success");
@@ -1225,6 +1243,7 @@ async function removePermission(itemId) {
   try {
     await graphFetch(`/sites/${siteId}/lists/${permissionsListId}/items/${itemId}`, { method: "DELETE" });
     permissionRows = permissionRows.filter(r => r.itemId !== itemId);
+    refreshAccessFlags();
     renderContent();
     setSyncing(false, true);
     toast("Access removed", "success");
