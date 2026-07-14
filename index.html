@@ -211,18 +211,6 @@
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 
   .toast { position: fixed; bottom: 24px; right: 24px; z-index: 300; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; font-size: 13px; color: var(--text2); transform: translateY(60px); opacity: 0; transition: all .3s; pointer-events: none; max-width: 360px; }
-  .update-banner {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 400;
-    background: linear-gradient(135deg, #4f7cff, #7c5cff); color: #fff;
-    padding: 10px 16px; font-size: 13px; font-weight: 500;
-    display: flex; align-items: center; justify-content: center; gap: 12px;
-    box-shadow: 0 2px 12px rgba(0,0,0,.25);
-  }
-  .update-banner button {
-    background: rgba(255,255,255,.95); color: #3b5fe0; border: none; border-radius: 6px;
-    padding: 5px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
-  }
-  .update-banner button:hover { background: #fff; }
   .toast.show { transform: translateY(0); opacity: 1; }
   .toast.success { border-color: rgba(34,197,94,.4); color: #4ade80; }
   .toast.error { border-color: rgba(239,68,68,.4); color: #f87171; }
@@ -391,7 +379,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-14-2";
+const BUILD_ID = "2026-07-14-3";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -609,7 +597,6 @@ async function startApp() {
     renderUserPill();
     renderTabs();
     renderContent();
-    startVersionCheck();
   } catch (err) {
     console.error(err);
     document.getElementById("authCard").innerHTML = `
@@ -2234,33 +2221,11 @@ function toast(msg, type = "") {
 // ═══════════════════════════════════════════════════════════════════════════
 // VERSION CHECK
 // Deployed static files can get stuck in browser/CDN caches, so someone's tab can silently
-// keep running an old version after a new one is deployed. To catch that, every couple of
-// minutes we fetch the live page with caching explicitly disabled and compare its BUILD_ID
-// to the one this tab is currently running. If they differ, a newer version has been deployed
-// and we show a banner prompting a refresh — instead of the old version quietly behaving
-// differently with no clue why.
+// keep running an old version after a new one is deployed. isNewVersionAvailable() fetches the
+// live page with caching explicitly disabled and compares its BUILD_ID to the one this tab is
+// currently running — reloadData() (the Refresh button) uses this to hard-reload automatically
+// when needed, so there's no separate popup to manage.
 // ═══════════════════════════════════════════════════════════════════════════
-let versionCheckStarted = false;
-function startVersionCheck() {
-  if (versionCheckStarted) return;
-  versionCheckStarted = true;
-  checkForNewVersion();
-  setInterval(checkForNewVersion, 3 * 60 * 1000); // recheck every 3 minutes while the tab stays open
-}
-
-async function checkForNewVersion() {
-  if (await isNewVersionAvailable()) showUpdateBanner();
-}
-
-function showUpdateBanner() {
-  if (document.getElementById("updateBanner")) return; // already showing
-  const banner = document.createElement("div");
-  banner.id = "updateBanner";
-  banner.className = "update-banner";
-  banner.innerHTML = `&#128260; A newer version of this app has been deployed. You're viewing a cached older version.
-    <button onclick="window.location.reload()">Refresh now</button>`;
-  document.body.prepend(banner);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UTIL
