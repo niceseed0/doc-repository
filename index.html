@@ -810,13 +810,20 @@ async function loadPermissions() {
 // - No rows for this person in the Permissions list yet -> allowed everywhere (safe default so
 //   nobody currently editing gets locked out just because the feature was turned on).
 // - Otherwise -> only allowed in teams they're explicitly listed for (or "All Teams").
+// Whether the signed-in user can add/edit/delete documents in a specific team tab.
+// - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
+// - Permission admins -> always allowed everywhere.
+// - The Permissions list hasn't been created in SharePoint yet -> allowed everywhere (feature not set up,
+//   falls back to plain SharePoint edit rights so nothing breaks before an admin configures anything).
+// - Once the list exists -> access must be explicitly granted per person/team. No row = no access,
+//   even with SharePoint edit rights. Removing someone's row here immediately revokes their access.
 function canEditTeam(team) {
   if (!canEdit) return false;
   if (isPermissionAdmin) return true;
+  if (!permissionsListId) return true;
   const email = (currentAccount?.username || "").toLowerCase();
-  if (!email) return canEdit;
+  if (!email) return false;
   const myRows = permissionRows.filter(r => r.userEmail.toLowerCase() === email);
-  if (myRows.length === 0) return true;
   return myRows.some(r => r.team === team || r.team === ALL_TEAMS_LABEL);
 }
 
@@ -1147,7 +1154,7 @@ function renderPermissions() {
   if (!permissionsListId) {
     rowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128273;</div><p>The "Document Repository Permissions" list hasn't been created in SharePoint yet. See SETUP_PERMISSIONS.md.</p></div></td></tr>`;
   } else if (sorted.length === 0) {
-    rowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128273;</div><p>No restrictions set yet — everyone with SharePoint edit rights can edit every team.</p></div></td></tr>`;
+    rowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128273;</div><p>Nobody is listed yet — until you add someone below, only admins can edit any team.</p></div></td></tr>`;
   } else {
     rowsHtml = sorted.map(r => `<tr>
       <td>${escapeHtml(r.userEmail)}</td>
@@ -1160,8 +1167,9 @@ function renderPermissions() {
   <div class="welcome-card" style="max-width:none">
     <div class="welcome-card-header"><h2>&#128273; Permissions</h2></div>
     <p style="color:var(--text3); font-size:12px; margin-top:6px;">
-      Restrict who can add/edit/delete documents in each team tab. Anyone not listed below still gets full edit access
-      (as long as they already have SharePoint edit rights) — add someone here only once you want to limit them to specific teams.
+      Controls who can add/edit/delete documents in each team tab. Only people listed below get edit access —
+      anyone not listed sees the team tabs as read-only, even if they have SharePoint edit rights.
+      Removing someone's row here immediately revokes their access to that team.
     </p>
 
     <div class="perm-add-form">
