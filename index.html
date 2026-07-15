@@ -379,7 +379,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-14-3";
+const BUILD_ID = "2026-07-14-4";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -639,11 +639,16 @@ function hasEditListItemsPermission(high, low) {
 async function checkEditPermission() {
   try {
     const account = msalInstance.getActiveAccount();
-    const tokenRes = await msalInstance.acquireTokenSilent({ scopes: SP_REST_SCOPE, account });
+    // forceRefresh bypasses MSAL's cached access token and requests a brand-new one every time.
+    // Without this, someone whose SharePoint permissions just changed can keep seeing the old
+    // result for a long time in a browser tab/session that was already open, even though the
+    // change is real — a fresh token forces re-evaluation instead of relying on what's cached.
+    const tokenRes = await msalInstance.acquireTokenSilent({ scopes: SP_REST_SCOPE, account, forceRefresh: true });
     const rawListId = String(listId).replace(/[{}]/g, "");
     const url = `https://${CONFIG.hostname}${CONFIG.sitePath}/_api/web/lists(guid'${rawListId}')?$select=EffectiveBasePermissions`;
     const res = await fetch(url, {
-      headers: { "Authorization": `Bearer ${tokenRes.accessToken}`, "Accept": "application/json;odata=nometadata" }
+      headers: { "Authorization": `Bearer ${tokenRes.accessToken}`, "Accept": "application/json;odata=nometadata" },
+      cache: "no-store"
     });
     if (!res.ok) { canEdit = true; return; } // fail open
     const data = await res.json();
@@ -877,7 +882,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), checkEditPermission()]);
     refreshAccessFlags();
     renderTabs();
     renderContent();
