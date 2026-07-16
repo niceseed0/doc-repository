@@ -128,6 +128,12 @@
   .stat-label { font-size: 11px; color: var(--text3); margin-top: 1px; }
 
   .table-container { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; outline: none; }
+  .revision-panel-row td { background: rgba(0,0,0,.12); padding: 0 !important; }
+  .revision-panel { padding: 16px 20px; }
+  .revision-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: var(--text); }
+  .revision-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface2); border-radius: 8px; overflow: hidden; }
+  .revision-table th { background: #f5c344; color: #1a1a1a; font-weight: 700; text-align: left; padding: 8px 12px; white-space: nowrap; }
+  .revision-table td { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text2); vertical-align: top; }
   .perm-add-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
   .table-scroll { overflow-x: auto; }
   .table-scroll::-webkit-scrollbar { height: 8px; }
@@ -370,6 +376,17 @@
   </div>
 </div>
 
+<div class="modal-bg" id="revisionModal">
+  <div class="modal">
+    <h3 id="revisionModalTitle">Add Revision</h3>
+    <div id="revisionModalForm"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeRevisionModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveRevisionModal()">Save Revision</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -379,7 +396,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-14-5";
+const BUILD_ID = "2026-07-15-1";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -390,6 +407,7 @@ const CONFIG = {
   listDisplayName: "Document Repository System",
   guideListDisplayName: "Document Repository Guide",
   permissionsListDisplayName: "Document Repository Permissions",
+  revisionsListDisplayName: "Document Repository Revisions",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "ISO Docs", "John's Cluster", "Gary's Cluster", "Archives"],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
@@ -422,6 +440,7 @@ const ADMIN_EMAILS = [
 ];
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
+const ISO_DOCS_TEAM = "ISO Docs"; // must exactly match the SharePoint Team choice value — the Revision History feature only shows on this tab
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
 // (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
@@ -574,6 +593,10 @@ let isApprover = false;
 let isPermissionAdmin = false;
 let permissionsListId = null;
 let permissionRows = []; // [{ itemId, userEmail, team }]
+let revisionsListId = null;
+let revisionRows = []; // [{ itemId, documentId, revisionNumber, dateRequested, requestedBy, approvedBy, dateCompleted, changeNotes }]
+let expandedRevisionDocIds = new Set();
+let revisionModalContext = null; // { documentItemId, revisionItemId }
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -590,7 +613,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -623,6 +646,8 @@ async function resolveSiteAndLists() {
   guideListId = guideMatch ? guideMatch.id : null; // optional — falls back to default text if missing
   const permMatch = (lists.value || []).find(l => l.displayName === CONFIG.permissionsListDisplayName);
   permissionsListId = permMatch ? permMatch.id : null; // optional — falls back to "everyone with SharePoint edit rights can edit every team" if missing
+  const revMatch = (lists.value || []).find(l => l.displayName === CONFIG.revisionsListDisplayName);
+  revisionsListId = revMatch ? revMatch.id : null; // optional — Revision History feature just stays hidden/empty if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -818,6 +843,35 @@ async function loadPermissions() {
   }
 }
 
+async function loadRevisions() {
+  revisionRows = [];
+  if (!revisionsListId) return; // list not created yet — Revision History panel just stays hidden/empty
+  try {
+    let url = `/sites/${siteId}/lists/${revisionsListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const documentId = it.fields["DocumentId"];
+        if (!documentId) return;
+        revisionRows.push({
+          itemId: it.id,
+          documentId: String(documentId).trim(),
+          revisionNumber: it.fields["RevisionNumber"] != null && it.fields["RevisionNumber"] !== "" ? Number(it.fields["RevisionNumber"]) : null,
+          dateRequested: it.fields["DateRequested"] || null,
+          requestedBy: it.fields["RequestedBy"] || "",
+          approvedBy: it.fields["ApprovedBy"] || "",
+          dateCompleted: it.fields["DateCompleted"] || null,
+          changeNotes: it.fields["ChangeNotes"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load revision history (list may not exist yet):", e);
+    revisionRows = [];
+  }
+}
+
 // Whether the signed-in user can add/edit/delete documents in a specific team tab.
 // - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
 // - Permission admins -> always allowed everywhere.
@@ -882,7 +936,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), checkEditPermission()]);
     refreshAccessFlags();
     renderTabs();
     renderContent();
@@ -1882,6 +1936,8 @@ function renderResults() {
   const cols = displayColumns();
   const items = computeFilteredItems();
   const sCol = statusCol();
+  const isIsoTab = activeTab === ISO_DOCS_TEAM;
+  const totalCols = cols.length + 2 + (isIsoTab ? 1 : 0);
 
   const allInTab = itemsForTab(activeTab);
   const counts = { active: 0, pending: 0, archived: 0 };
@@ -1910,12 +1966,13 @@ function renderResults() {
       <thead><tr>
         ${cols.map((c, i) => `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(c.displayName || c.name)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`).join("")}
         <th style="width:120px">Approval</th>
+        ${isIsoTab ? `<th style="width:110px">Revisions</th>` : ""}
         <th style="width:100px">Actions</th>
       </tr></thead>
       <tbody>`;
 
   if (items.length === 0) {
-    html += `<tr><td colspan="${cols.length + 2}"><div class="empty"><div class="empty-icon">&#128269;</div><p>No items match your filters.</p></div></td></tr>`;
+    html += `<tr><td colspan="${totalCols}"><div class="empty"><div class="empty-icon">&#128269;</div><p>No items match your filters.</p></div></td></tr>`;
   } else {
     items.forEach(it => {
       const isEditing = editingItemId === it.itemId;
@@ -1942,6 +1999,13 @@ function renderResults() {
         }
       });
       html += `<td>${approvalBadgeHtml(it)}</td>`;
+      if (isIsoTab) {
+        const revCount = revisionRows.filter(r => r.documentId === it.itemId).length;
+        const isExpanded = expandedRevisionDocIds.has(it.itemId);
+        html += `<td><button class="btn btn-secondary btn-sm" onclick="toggleRevisionPanel('${it.itemId}')" title="Revision History">
+          ${isExpanded ? "&#9650;" : "&#9660;"} &#128203;${revCount > 0 ? ` ${revCount}` : ""}
+        </button></td>`;
+      }
       if (!canEditTeam(activeTab)) {
         html += `<td></td>`;
       } else if (isEditing) {
@@ -1956,6 +2020,9 @@ function renderResults() {
         </div></td>`;
       }
       html += `</tr>`;
+      if (isIsoTab && expandedRevisionDocIds.has(it.itemId)) {
+        html += `<tr class="revision-panel-row"><td colspan="${totalCols}">${renderRevisionPanel(it.itemId, it.values["Title"] || "Document")}</td></tr>`;
+      }
     });
   }
 
@@ -2083,6 +2150,148 @@ async function deleteRow(itemId) {
     renderContent();
     setSyncing(false, true);
     toast("Deleted", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Delete failed: " + err.message, "error");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REVISION HISTORY (ISO Docs tab only)
+// ═══════════════════════════════════════════════════════════════════════════
+function formatDateShort(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toISOString().slice(0, 10); } catch (e) { return String(iso); }
+}
+
+function toggleRevisionPanel(documentItemId) {
+  if (expandedRevisionDocIds.has(documentItemId)) expandedRevisionDocIds.delete(documentItemId);
+  else expandedRevisionDocIds.add(documentItemId);
+  renderContent();
+}
+
+function renderRevisionPanel(documentItemId, docName) {
+  const canEditRev = canEditTeam(ISO_DOCS_TEAM);
+  const rows = revisionRows.filter(r => r.documentId === documentItemId)
+    .sort((a, b) => (a.revisionNumber || 0) - (b.revisionNumber || 0));
+
+  let rowsHtml;
+  if (!revisionsListId) {
+    rowsHtml = `<tr><td colspan="7" style="text-align:center; color:var(--text3); padding:14px;">The "Document Repository Revisions" list hasn't been created in SharePoint yet. See SETUP_REVISIONS.md.</td></tr>`;
+  } else if (rows.length === 0) {
+    rowsHtml = `<tr><td colspan="${canEditRev ? 7 : 6}" style="text-align:center; color:var(--text3); padding:14px;">No revisions logged yet.</td></tr>`;
+  } else {
+    rowsHtml = rows.map(r => `<tr>
+      <td>${escapeHtml(r.revisionNumber ?? "—")}</td>
+      <td>${escapeHtml(formatDateShort(r.dateRequested))}</td>
+      <td>${escapeHtml(r.requestedBy || "—")}</td>
+      <td>${escapeHtml(r.approvedBy || "—")}</td>
+      <td>${escapeHtml(formatDateShort(r.dateCompleted))}</td>
+      <td>${escapeHtml(r.changeNotes || "—")}</td>
+      ${canEditRev ? `<td><div class="row-actions always-show">
+        <button class="btn btn-secondary btn-sm" onclick="openRevisionModal('${documentItemId}','${r.itemId}')" title="Edit">&#9999;&#65039;</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRevision('${r.itemId}')" title="Delete">&#128465;</button>
+      </div></td>` : ""}
+    </tr>`).join("");
+  }
+
+  return `
+  <div class="revision-panel">
+    <div class="revision-panel-header">
+      <b>&#128203; Revision History — ${escapeHtml(docName)}</b>
+      ${(canEditRev && revisionsListId) ? `<button class="btn btn-primary btn-sm" onclick="openRevisionModal('${documentItemId}')">&#65291; Add Revision</button>` : ""}
+    </div>
+    <div class="table-scroll">
+    <table class="revision-table">
+      <thead><tr>
+        <th>Revision #</th><th>Date Requested</th><th>Requested by</th><th>Approved by</th><th>Date Completed</th><th>Change Notes</th>
+        ${canEditRev ? `<th style="width:90px">Actions</th>` : ""}
+      </tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    </div>
+  </div>`;
+}
+
+function openRevisionModal(documentItemId, revisionItemId) {
+  if (!canEditTeam(ISO_DOCS_TEAM)) return;
+  if (!revisionsListId) { toast("The \"Document Repository Revisions\" list hasn't been created in SharePoint yet. See SETUP_REVISIONS.md.", "error"); return; }
+  const existing = revisionItemId ? revisionRows.find(r => r.itemId === revisionItemId) : null;
+  revisionModalContext = { documentItemId, revisionItemId: revisionItemId || null };
+  const existingNums = revisionRows.filter(r => r.documentId === documentItemId).map(r => r.revisionNumber || 0);
+  const nextRevNum = existing ? existing.revisionNumber : (existingNums.length ? Math.max(...existingNums) + 1 : 1);
+  const userName = currentAccount?.name || currentAccount?.username || "";
+
+  document.getElementById("revisionModalTitle").textContent = existing ? "Edit Revision" : "Add Revision";
+  document.getElementById("revisionModalForm").innerHTML = `
+    <div class="form-row">
+      <div class="form-group"><label>Revision #</label><input class="form-input" id="revNumberInput" type="number" value="${escapeAttr(nextRevNum)}"></div>
+      <div class="form-group"><label>Date Requested</label><input class="form-input" id="revDateRequestedInput" type="date" value="${escapeAttr(existing?.dateRequested ? formatDateShort(existing.dateRequested) : "")}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Requested by</label><input class="form-input" id="revRequestedByInput" type="text" value="${escapeAttr(existing ? (existing.requestedBy || "") : userName)}"></div>
+      <div class="form-group"><label>Approved by</label><input class="form-input" id="revApprovedByInput" type="text" value="${escapeAttr(existing?.approvedBy || "")}"></div>
+    </div>
+    <div class="form-group"><label>Date Completed</label><input class="form-input" id="revDateCompletedInput" type="date" value="${escapeAttr(existing?.dateCompleted ? formatDateShort(existing.dateCompleted) : "")}"></div>
+    <div class="form-group"><label>Change Notes</label><textarea class="form-input" id="revChangeNotesInput" rows="3">${escapeHtml(existing?.changeNotes || "")}</textarea></div>
+  `;
+  document.getElementById("revisionModal").classList.add("open");
+}
+
+function closeRevisionModal() {
+  document.getElementById("revisionModal").classList.remove("open");
+  revisionModalContext = null;
+}
+
+async function saveRevisionModal() {
+  if (!revisionModalContext) return;
+  const { documentItemId, revisionItemId } = revisionModalContext;
+  const fields = {
+    Title: "Revision " + (document.getElementById("revNumberInput").value || ""),
+    DocumentId: documentItemId,
+    RevisionNumber: Number(document.getElementById("revNumberInput").value) || 0,
+    DateRequested: document.getElementById("revDateRequestedInput").value || null,
+    RequestedBy: document.getElementById("revRequestedByInput").value || "",
+    ApprovedBy: document.getElementById("revApprovedByInput").value || "",
+    DateCompleted: document.getElementById("revDateCompletedInput").value || null,
+    ChangeNotes: document.getElementById("revChangeNotesInput").value || ""
+  };
+  setSyncing(true);
+  try {
+    if (revisionItemId) {
+      await graphFetch(`/sites/${siteId}/lists/${revisionsListId}/items/${revisionItemId}/fields`, {
+        method: "PATCH", body: JSON.stringify(fields)
+      });
+      const idx = revisionRows.findIndex(r => r.itemId === revisionItemId);
+      const updated = { itemId: revisionItemId, documentId: documentItemId, revisionNumber: fields.RevisionNumber, dateRequested: fields.DateRequested, requestedBy: fields.RequestedBy, approvedBy: fields.ApprovedBy, dateCompleted: fields.DateCompleted, changeNotes: fields.ChangeNotes };
+      if (idx >= 0) revisionRows[idx] = updated; else revisionRows.push(updated);
+    } else {
+      const created = await graphFetch(`/sites/${siteId}/lists/${revisionsListId}/items`, {
+        method: "POST", body: JSON.stringify({ fields })
+      });
+      revisionRows.push({ itemId: created.id, documentId: documentItemId, revisionNumber: fields.RevisionNumber, dateRequested: fields.DateRequested, requestedBy: fields.RequestedBy, approvedBy: fields.ApprovedBy, dateCompleted: fields.DateCompleted, changeNotes: fields.ChangeNotes });
+    }
+    expandedRevisionDocIds.add(documentItemId);
+    closeRevisionModal();
+    renderContent();
+    setSyncing(false, true);
+    toast("Revision saved ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Save failed: " + err.message, "error");
+  }
+}
+
+async function deleteRevision(revisionItemId) {
+  if (!canEditTeam(ISO_DOCS_TEAM)) return;
+  if (!confirm("Delete this revision entry?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${revisionsListId}/items/${revisionItemId}`, { method: "DELETE" });
+    revisionRows = revisionRows.filter(r => r.itemId !== revisionItemId);
+    renderContent();
+    setSyncing(false, true);
+    toast("Revision deleted", "success");
   } catch (err) {
     setSyncing(false, false);
     toast("Delete failed: " + err.message, "error");
