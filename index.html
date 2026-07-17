@@ -128,12 +128,14 @@
   .stat-label { font-size: 11px; color: var(--text3); margin-top: 1px; }
 
   .table-container { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; outline: none; }
-  .revision-panel-row td { background: rgba(0,0,0,.12); padding: 0 !important; }
+  .revision-panel-row td { background: var(--bg); padding: 0 !important; border-top: 1px solid var(--border); }
   .revision-panel { padding: 16px 20px; }
   .revision-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: var(--text); }
-  .revision-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface2); border-radius: 8px; overflow: hidden; }
+  .revision-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .revision-table th { background: #f5c344; color: #1a1a1a; font-weight: 700; text-align: left; padding: 8px 12px; white-space: nowrap; }
   .revision-table td { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text2); vertical-align: top; }
+  .revision-table tbody tr:nth-child(even) td { background: var(--surface2); }
+  .revision-table tbody tr:hover td { background: var(--hr); }
   .perm-add-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
   .table-scroll { overflow-x: auto; }
   .table-scroll::-webkit-scrollbar { height: 8px; }
@@ -396,7 +398,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-15-1";
+const BUILD_ID = "2026-07-15-2";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
