@@ -132,8 +132,9 @@
   .revision-panel { padding: 16px 20px; }
   .revision-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: var(--text); }
   .revision-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .revision-table th { background: #f5c344; color: #1a1a1a; font-weight: 700; text-align: left; padding: 8px 12px; white-space: nowrap; }
-  .revision-table td { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text2); vertical-align: top; }
+  .revision-table th { background: #f5c344; color: #1a1a1a; font-weight: 700; text-align: center; padding: 8px 12px; white-space: nowrap; }
+  .revision-table td { padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text2); vertical-align: top; text-align: center; }
+  .revision-table th:nth-child(6), .revision-table td:nth-child(6) { text-align: left; }
   .revision-table tbody tr:nth-child(even) td { background: var(--surface2); }
   .revision-table tbody tr:hover td { background: var(--hr); }
   .perm-add-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
@@ -398,7 +399,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-15-2";
+const BUILD_ID = "2026-07-15-3";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -411,7 +412,7 @@ const CONFIG = {
   permissionsListDisplayName: "Document Repository Permissions",
   revisionsListDisplayName: "Document Repository Revisions",
   groupFieldCandidates: ["Team"],
-  teamOrder: ["HR & Admin", "Finance", "IT", "QA", "ISO Docs", "John's Cluster", "Gary's Cluster", "Archives"],
+  teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -442,7 +443,7 @@ const ADMIN_EMAILS = [
 ];
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
-const ISO_DOCS_TEAM = "ISO Docs"; // must exactly match the SharePoint Team choice value — the Revision History feature only shows on this tab
+const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster"]; // must exactly match SharePoint Team choice values — Revision History only shows on these tabs
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
 // (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
@@ -1938,7 +1939,7 @@ function renderResults() {
   const cols = displayColumns();
   const items = computeFilteredItems();
   const sCol = statusCol();
-  const isIsoTab = activeTab === ISO_DOCS_TEAM;
+  const isIsoTab = REVISION_ENABLED_TEAMS.includes(activeTab);
   const totalCols = cols.length + 2 + (isIsoTab ? 1 : 0);
 
   const allInTab = itemsForTab(activeTab);
@@ -2173,7 +2174,7 @@ function toggleRevisionPanel(documentItemId) {
 }
 
 function renderRevisionPanel(documentItemId, docName) {
-  const canEditRev = canEditTeam(ISO_DOCS_TEAM);
+  const canEditRev = canEditTeam(activeTab);
   const rows = revisionRows.filter(r => r.documentId === documentItemId)
     .sort((a, b) => (a.revisionNumber || 0) - (b.revisionNumber || 0));
 
@@ -2216,7 +2217,7 @@ function renderRevisionPanel(documentItemId, docName) {
 }
 
 function openRevisionModal(documentItemId, revisionItemId) {
-  if (!canEditTeam(ISO_DOCS_TEAM)) return;
+  if (!canEditTeam(activeTab)) return;
   if (!revisionsListId) { toast("The \"Document Repository Revisions\" list hasn't been created in SharePoint yet. See SETUP_REVISIONS.md.", "error"); return; }
   const existing = revisionItemId ? revisionRows.find(r => r.itemId === revisionItemId) : null;
   revisionModalContext = { documentItemId, revisionItemId: revisionItemId || null };
@@ -2285,7 +2286,7 @@ async function saveRevisionModal() {
 }
 
 async function deleteRevision(revisionItemId) {
-  if (!canEditTeam(ISO_DOCS_TEAM)) return;
+  if (!canEditTeam(activeTab)) return;
   if (!confirm("Delete this revision entry?")) return;
   setSyncing(true);
   try {
