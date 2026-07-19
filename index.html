@@ -400,7 +400,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-15-7";
+const BUILD_ID = "2026-07-15-8";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -412,6 +412,7 @@ const CONFIG = {
   guideListDisplayName: "Document Repository Guide",
   permissionsListDisplayName: "Document Repository Permissions",
   revisionsListDisplayName: "Document Repository Revisions",
+  deletionsListDisplayName: "Document Repository Deletions",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
@@ -601,6 +602,8 @@ let revisionsListId = null;
 let revisionRows = []; // [{ itemId, documentId, revisionNumber, dateRequested, requestedBy, approvedBy, dateCompleted, changeNotes }]
 let expandedRevisionDocIds = new Set();
 let revisionModalContext = null; // { documentItemId, revisionItemId }
+let deletionsListId = null;
+let deletionLog = []; // [{ itemId, documentName, team, deletedBy, deletedDate }]
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -617,7 +620,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -652,6 +655,8 @@ async function resolveSiteAndLists() {
   permissionsListId = permMatch ? permMatch.id : null; // optional — falls back to "everyone with SharePoint edit rights can edit every team" if missing
   const revMatch = (lists.value || []).find(l => l.displayName === CONFIG.revisionsListDisplayName);
   revisionsListId = revMatch ? revMatch.id : null; // optional — Revision History feature just stays hidden/empty if missing
+  const delMatch = (lists.value || []).find(l => l.displayName === CONFIG.deletionsListDisplayName);
+  deletionsListId = delMatch ? delMatch.id : null; // optional — deleted documents just won't show in History if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -876,6 +881,48 @@ async function loadRevisions() {
   }
 }
 
+async function loadDeletionLog() {
+  deletionLog = [];
+  if (!deletionsListId) return; // list not created yet — deletions just won't show in History
+  try {
+    let url = `/sites/${siteId}/lists/${deletionsListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        deletionLog.push({
+          itemId: it.id,
+          documentName: it.fields["DocumentName"] || "Untitled",
+          team: it.fields["Team"] || "—",
+          deletedBy: it.fields["DeletedBy"] || "Unknown",
+          deletedDate: it.fields["DeletedDate"] || it.createdDateTime || null
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load deletion log (list may not exist yet):", e);
+    deletionLog = [];
+  }
+}
+
+// Records a deletion so it still shows up in History even though the document itself is gone.
+// Best-effort: if this fails, the delete itself has already succeeded, so we just log a warning
+// rather than blocking or alarming the person who deleted the document.
+async function logDeletion(documentName, team) {
+  if (!deletionsListId) return;
+  const userName = currentAccount?.name || currentAccount?.username || "Unknown";
+  const nowIso = new Date().toISOString();
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${deletionsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { Title: documentName, DocumentName: documentName, Team: team || "—", DeletedBy: userName, DeletedDate: nowIso } })
+    });
+    deletionLog.push({ itemId: created.id, documentName, team: team || "—", deletedBy: userName, deletedDate: nowIso });
+  } catch (e) {
+    console.warn("Could not log this deletion to History (the delete itself still succeeded):", e);
+  }
+}
+
 // Whether the signed-in user can add/edit/delete documents in a specific team tab.
 // - No SharePoint edit rights at all (canEdit) -> never allowed, this is the real security backstop.
 // - Permission admins -> always allowed everywhere.
@@ -940,7 +987,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), checkEditPermission()]);
     refreshAccessFlags();
     renderTabs();
     renderContent();
@@ -1355,42 +1402,63 @@ function renderHistory() {
       return new Date(iso).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     } catch (e) { return iso; }
   };
-  const sorted = [...allItems].sort((a, b) => {
-    const at = a.modified ? new Date(a.modified).getTime() : 0;
-    const bt = b.modified ? new Date(b.modified).getTime() : 0;
+
+  const liveRows = allItems.map(it => ({
+    kind: "live",
+    docName: it.values["Title"] || "—",
+    team: groupField ? (it.values[groupField] || "—") : "—",
+    eventDate: it.modified,
+    eventBy: it.modifiedBy || "—",
+    created: it.created,
+    createdBy: it.createdBy || "—"
+  }));
+  const deletedRows = deletionLog.map(d => ({
+    kind: "deleted",
+    docName: d.documentName,
+    team: d.team,
+    eventDate: d.deletedDate,
+    eventBy: d.deletedBy,
+    created: null,
+    createdBy: null
+  }));
+
+  const sorted = [...liveRows, ...deletedRows].sort((a, b) => {
+    const at = a.eventDate ? new Date(a.eventDate).getTime() : 0;
+    const bt = b.eventDate ? new Date(b.eventDate).getTime() : 0;
     return bt - at;
   });
 
   let html = `
   <div class="welcome-card" style="max-width:none">
     <div class="welcome-card-header"><h2>Change History</h2></div>
-    <p style="color:var(--text3); font-size:12px; margin-top:6px;">Showing all documents across every team, most recently changed first. Visible to editors only.</p>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">Showing all documents across every team, most recently changed first — including deleted documents. Visible to editors only.</p>
     <div class="table-container" style="margin-top:16px">
       <div class="table-scroll">
       <table>
         <thead><tr>
           <th>Document Name</th>
           <th>Team</th>
-          <th>Last Modified</th>
-          <th>Modified By</th>
+          <th>Event</th>
+          <th>Date</th>
+          <th>By</th>
           <th>Created</th>
           <th>Created By</th>
         </tr></thead>
         <tbody>`;
 
   if (sorted.length === 0) {
-    html += `<tr><td colspan="6"><div class="empty"><div class="empty-icon">&#128337;</div><p>No history yet.</p></div></td></tr>`;
+    html += `<tr><td colspan="7"><div class="empty"><div class="empty-icon">&#128337;</div><p>No history yet.</p></div></td></tr>`;
   } else {
-    sorted.forEach(it => {
-      const docName = it.values["Title"] || "—";
-      const team = groupField ? (it.values[groupField] || "—") : "—";
-      html += `<tr>
-        <td class="doc-name">${escapeHtml(docName)}</td>
-        <td>${escapeHtml(team)}</td>
-        <td>${escapeHtml(fmt(it.modified))}</td>
-        <td>${escapeHtml(it.modifiedBy || "—")}</td>
-        <td>${escapeHtml(fmt(it.created))}</td>
-        <td>${escapeHtml(it.createdBy || "—")}</td>
+    sorted.forEach(row => {
+      const isDeleted = row.kind === "deleted";
+      html += `<tr${isDeleted ? ` style="opacity:.75"` : ""}>
+        <td class="doc-name">${escapeHtml(row.docName)}</td>
+        <td>${escapeHtml(row.team)}</td>
+        <td>${isDeleted ? `<span class="chip approval-rejected">&#128465; Deleted</span>` : `<span class="chip approval-approved">Active</span>`}</td>
+        <td>${escapeHtml(fmt(row.eventDate))}</td>
+        <td>${escapeHtml(row.eventBy)}</td>
+        <td>${row.created ? escapeHtml(fmt(row.created)) : "—"}</td>
+        <td>${row.createdBy ? escapeHtml(row.createdBy) : "—"}</td>
       </tr>`;
     });
   }
@@ -2146,10 +2214,12 @@ async function deleteRow(itemId) {
   const team = item && groupField ? item.values[groupField] : activeTab;
   if (!canEditTeam(team)) return;
   if (!confirm("Delete this item? It will also be removed from SharePoint.")) return;
+  const docName = item ? (item.values["Title"] || "Untitled") : "Untitled";
   setSyncing(true);
   try {
     await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}`, { method: "DELETE" });
     allItems = allItems.filter(it => it.itemId !== itemId);
+    await logDeletion(docName, team);
     renderTabs();
     renderContent();
     setSyncing(false, true);
