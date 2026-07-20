@@ -340,6 +340,7 @@
         <button class="btn btn-secondary" onclick="showHistory()" id="historyBtn" style="display:none">&#128337; <span>History</span></button>
         <button class="btn btn-secondary" onclick="showApprovals()" id="approvalsBtn" style="display:none">&#9989; <span>Approvals</span> <span class="tab-count" id="approvalsCount" style="display:none"></span></button>
         <button class="btn btn-secondary" onclick="showPermissions()" id="permissionsBtn" style="display:none">&#128273; <span>Permissions</span></button>
+        <button class="btn btn-secondary" onclick="showTrash()" id="trashBtn" style="display:none">&#128465; <span>Trash</span> <span class="tab-count" id="trashCount" style="display:none"></span></button>
         <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn">&#8681; <span>Export CSV</span></button>
         <button class="btn btn-primary" onclick="openAddModal()" id="addEntryBtn">&#65291; <span>Add Entry</span></button>
         <button class="btn btn-secondary" onclick="logout()">Log out</button>
@@ -400,7 +401,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-15-8";
+const BUILD_ID = "2026-07-16-1";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -446,6 +447,7 @@ const ADMIN_EMAILS = [
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster"]; // must exactly match SharePoint Team choice values — Revision History only shows on these tabs
+const TRASH_RETENTION_DAYS = 30; // trashed documents are permanently, automatically deleted after this many days
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
 // (see SETUP_APPROVALS.md for exact names/types). They are intentionally kept OUT of
@@ -627,6 +629,7 @@ async function startApp() {
     renderUserPill();
     renderTabs();
     renderContent();
+    autoPurgeTrash().then(() => { renderTabs(); if (activeTab === "__TRASH__") renderContent(); }); // best-effort, runs quietly in the background
   } catch (err) {
     console.error(err);
     document.getElementById("authCard").innerHTML = `
@@ -756,6 +759,10 @@ async function loadItems() {
       approvedDate: (it.fields && it.fields["ApprovedDate"]) || null,
       rejectionReason: (it.fields && it.fields["RejectionReason"]) || null
     },
+    trash: {
+      trashedDate: (it.fields && it.fields["TrashedDate"]) || null,
+      trashedBy: (it.fields && it.fields["TrashedBy"]) || null
+    },
     modified: it.lastModifiedDateTime || null,
     modifiedBy: it.lastModifiedBy?.user?.displayName || it.lastModifiedBy?.user?.email || "Unknown",
     created: it.createdDateTime || null,
@@ -883,43 +890,56 @@ async function loadRevisions() {
 
 async function loadDeletionLog() {
   deletionLog = [];
-  if (!deletionsListId) return; // list not created yet — deletions just won't show in History
+  if (!deletionsListId) return; // list not created yet — history events just won't show
   try {
-    let url = `/sites/${siteId}/lists/${deletionsListId}/items?$expand=fields&$top=500`;
+    let url = `/sites/${siteId}/lists/${deletionsListId}/items?$expand=fields&$top=2000`;
     while (url) {
       const data = await graphFetch(url);
       (data.value || []).forEach(it => {
+        // New entries have EventType/EventBy/EventDate. Entries logged before this feature existed
+        // only have DeletedBy/DeletedDate — treat those as legacy "Deleted" events.
+        const eventType = it.fields["EventType"] || (it.fields["DeletedDate"] ? "Deleted" : "Modified");
+        const eventBy = it.fields["EventBy"] || it.fields["DeletedBy"] || "Unknown";
+        const eventDate = it.fields["EventDate"] || it.fields["DeletedDate"] || it.createdDateTime || null;
         deletionLog.push({
           itemId: it.id,
           documentName: it.fields["DocumentName"] || "Untitled",
           team: it.fields["Team"] || "—",
-          deletedBy: it.fields["DeletedBy"] || "Unknown",
-          deletedDate: it.fields["DeletedDate"] || it.createdDateTime || null
+          eventType,
+          eventBy,
+          eventDate
         });
       });
       url = data["@odata.nextLink"] || null;
     }
   } catch (e) {
-    console.warn("Could not load deletion log (list may not exist yet):", e);
+    console.warn("Could not load history log (list may not exist yet):", e);
     deletionLog = [];
   }
 }
 
-// Records a deletion so it still shows up in History even though the document itself is gone.
-// Best-effort: if this fails, the delete itself has already succeeded, so we just log a warning
-// rather than blocking or alarming the person who deleted the document.
-async function logDeletion(documentName, team) {
+// Records a Created/Modified/Deleted/Restored/Permanently Deleted event so History shows a full,
+// permanent timeline — including events for documents that no longer exist. Best-effort: if this
+// fails, whatever action triggered it (save/delete/restore) has already succeeded, so we just warn.
+async function logHistoryEvent(eventType, documentName, team) {
   if (!deletionsListId) return;
   const userName = currentAccount?.name || currentAccount?.username || "Unknown";
   const nowIso = new Date().toISOString();
   try {
     const created = await graphFetch(`/sites/${siteId}/lists/${deletionsListId}/items`, {
       method: "POST",
-      body: JSON.stringify({ fields: { Title: documentName, DocumentName: documentName, Team: team || "—", DeletedBy: userName, DeletedDate: nowIso } })
+      body: JSON.stringify({ fields: {
+        Title: `${eventType}: ${documentName}`,
+        DocumentName: documentName,
+        Team: team || "—",
+        EventType: eventType,
+        EventBy: userName,
+        EventDate: nowIso
+      } })
     });
-    deletionLog.push({ itemId: created.id, documentName, team: team || "—", deletedBy: userName, deletedDate: nowIso });
+    deletionLog.push({ itemId: created.id, documentName, team: team || "—", eventType, eventBy: userName, eventDate: nowIso });
   } catch (e) {
-    console.warn("Could not log this deletion to History (the delete itself still succeeded):", e);
+    console.warn(`Could not log "${eventType}" event to History (the action itself still succeeded):`, e);
   }
 }
 
@@ -992,6 +1012,7 @@ async function reloadData() {
     renderTabs();
     renderContent();
     toast("Refreshed with latest data ✓", "success");
+    autoPurgeTrash().then(() => { renderTabs(); if (activeTab === "__TRASH__") renderContent(); }); // best-effort, runs quietly in the background
   } catch (err) {
     setSyncing(false, false);
     toast("Refresh failed: " + err.message, "error");
@@ -1062,9 +1083,13 @@ function getTabList() {
 
 function tabLabel(key) { return key === "Welcome" ? "Overview" : key; }
 
+function isTrashed(item) {
+  return !!(item && item.trash && item.trash.trashedDate);
+}
+
 function itemsForTab(tabKey) {
   if (!groupField || tabKey === "Welcome") return [];
-  return allItems.filter(it => it.values[groupField] === tabKey);
+  return allItems.filter(it => it.values[groupField] === tabKey && !isTrashed(it));
 }
 
 function renderTabs() {
@@ -1079,8 +1104,9 @@ function renderTabs() {
   const isHistory = activeTab === "__HISTORY__";
   const isApprovals = activeTab === "__APPROVALS__";
   const isPermissions = activeTab === "__PERMISSIONS__";
-  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions || !canEditTeam(activeTab)) ? "none" : "";
-  document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions) ? "none" : "";
+  const isTrash = activeTab === "__TRASH__";
+  document.getElementById("addEntryBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions || isTrash || !canEditTeam(activeTab)) ? "none" : "";
+  document.getElementById("exportBtn").style.display = (isWelcome || isHistory || isApprovals || isPermissions || isTrash) ? "none" : "";
   const historyBtn = document.getElementById("historyBtn");
   historyBtn.style.display = hasAnyEditAccess() ? "" : "none";
   historyBtn.className = "btn " + (isHistory ? "btn-primary" : "btn-secondary");
@@ -1090,10 +1116,17 @@ function renderTabs() {
   const permissionsBtn = document.getElementById("permissionsBtn");
   permissionsBtn.style.display = isPermissionAdmin ? "" : "none";
   permissionsBtn.className = "btn " + (isPermissions ? "btn-primary" : "btn-secondary");
+  const trashBtn = document.getElementById("trashBtn");
+  trashBtn.style.display = hasAnyEditAccess() ? "" : "none";
+  trashBtn.className = "btn " + (isTrash ? "btn-primary" : "btn-secondary");
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
   approvalsCount.textContent = pendingCount;
+  const trashCount = document.getElementById("trashCount");
+  const myTrashCount = trashedItemsVisibleToMe().length;
+  trashCount.style.display = myTrashCount > 0 ? "" : "none";
+  trashCount.textContent = myTrashCount;
 }
 
 function defaultSortColIndex() {
@@ -1133,7 +1166,10 @@ function getStatusClass(s) {
 // APPROVAL WORKFLOW HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 function pendingApprovalItems() {
-  return allItems.filter(it => it.approval && it.approval.status === "Pending Approval");
+  return allItems.filter(it => it.approval && it.approval.status === "Pending Approval" && !isTrashed(it));
+}
+function trashedItemsVisibleToMe() {
+  return allItems.filter(it => isTrashed(it) && canEditTeam(groupField ? it.values[groupField] : null));
 }
 function approvalBadgeClass(status) {
   if (status === "Pending Approval") return "approval-pending";
@@ -1186,14 +1222,85 @@ function showPermissions() {
   renderContent();
 }
 
+function showTrash() {
+  if (!hasAnyEditAccess()) return; // safety net — button is already hidden otherwise
+  activeTab = "__TRASH__";
+  searchQ = ""; filterStatus = ""; filterCategory = "";
+  editingItemId = null; guideEditing = false; announcementEditing = false;
+  renderTabs();
+  renderContent();
+}
+
 function renderContent() {
   const main = document.getElementById("mainContent");
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
   else if (activeTab === "__HISTORY__") main.innerHTML = renderHistory();
   else if (activeTab === "__APPROVALS__") main.innerHTML = renderApprovals();
   else if (activeTab === "__PERMISSIONS__") main.innerHTML = renderPermissions();
+  else if (activeTab === "__TRASH__") main.innerHTML = renderTrash();
   else main.innerHTML = renderTable();
   attachEvents();
+}
+
+function renderTrash() {
+  const fmt = iso => {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return iso; }
+  };
+  const daysLeft = trashedDate => {
+    if (!trashedDate) return "—";
+    const elapsedMs = Date.now() - new Date(trashedDate).getTime();
+    const left = TRASH_RETENTION_DAYS - Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
+    return left > 0 ? `${left} day${left === 1 ? "" : "s"}` : "due for cleanup";
+  };
+
+  const trashed = trashedItemsVisibleToMe().sort((a, b) => {
+    const at = a.trash?.trashedDate ? new Date(a.trash.trashedDate).getTime() : 0;
+    const bt = b.trash?.trashedDate ? new Date(b.trash.trashedDate).getTime() : 0;
+    return bt - at;
+  });
+
+  let html = `
+  <div class="welcome-card" style="max-width:none">
+    <div class="welcome-card-header"><h2>Trash</h2></div>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">Deleted documents stay here for ${TRASH_RETENTION_DAYS} days before being permanently deleted. You can restore them any time before then.</p>
+    <div class="table-container" style="margin-top:16px">
+      <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Document Name</th>
+          <th>Team</th>
+          <th>Deleted By</th>
+          <th>Deleted</th>
+          <th>Time Left</th>
+          <th style="width:220px">Action</th>
+        </tr></thead>
+        <tbody>`;
+
+  if (trashed.length === 0) {
+    html += `<tr><td colspan="6"><div class="empty"><div class="empty-icon">&#128465;</div><p>Trash is empty.</p></div></td></tr>`;
+  } else {
+    trashed.forEach(it => {
+      const docName = it.values["Title"] || "—";
+      const team = groupField ? (it.values[groupField] || "—") : "—";
+      html += `<tr>
+        <td class="doc-name">&#128465; ${escapeHtml(docName)}</td>
+        <td>${escapeHtml(team)}</td>
+        <td>${escapeHtml(it.trash?.trashedBy || "—")}</td>
+        <td>${escapeHtml(fmt(it.trash?.trashedDate))}</td>
+        <td>${escapeHtml(daysLeft(it.trash?.trashedDate))}</td>
+        <td><div class="row-actions always-show">
+          <button class="btn btn-primary btn-sm" onclick="restoreItem('${it.itemId}')">&#9850; Restore</button>
+          <button class="btn btn-danger btn-sm" onclick="permanentlyDeleteItem('${it.itemId}')">&#128465; Delete Forever</button>
+        </div></td>
+      </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div></div></div>`;
+  return html;
 }
 
 function renderApprovals() {
@@ -1402,27 +1509,16 @@ function renderHistory() {
       return new Date(iso).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     } catch (e) { return iso; }
   };
+  const eventBadge = type => {
+    if (type === "Created") return `<span class="chip approval-approved">&#10133; Created</span>`;
+    if (type === "Modified") return `<span class="chip approval-pending">&#9999;&#65039; Modified</span>`;
+    if (type === "Deleted") return `<span class="chip approval-rejected">&#128465; Deleted</span>`;
+    if (type === "Restored") return `<span class="chip approval-approved">&#9850; Restored</span>`;
+    if (type === "Permanently Deleted") return `<span class="chip approval-rejected">&#128465; Permanently Deleted</span>`;
+    return `<span class="chip">${escapeHtml(type)}</span>`;
+  };
 
-  const liveRows = allItems.map(it => ({
-    kind: "live",
-    docName: it.values["Title"] || "—",
-    team: groupField ? (it.values[groupField] || "—") : "—",
-    eventDate: it.modified,
-    eventBy: it.modifiedBy || "—",
-    created: it.created,
-    createdBy: it.createdBy || "—"
-  }));
-  const deletedRows = deletionLog.map(d => ({
-    kind: "deleted",
-    docName: d.documentName,
-    team: d.team,
-    eventDate: d.deletedDate,
-    eventBy: d.deletedBy,
-    created: null,
-    createdBy: null
-  }));
-
-  const sorted = [...liveRows, ...deletedRows].sort((a, b) => {
+  const sorted = [...deletionLog].sort((a, b) => {
     const at = a.eventDate ? new Date(a.eventDate).getTime() : 0;
     const bt = b.eventDate ? new Date(b.eventDate).getTime() : 0;
     return bt - at;
@@ -1431,7 +1527,10 @@ function renderHistory() {
   let html = `
   <div class="welcome-card" style="max-width:none">
     <div class="welcome-card-header"><h2>Change History</h2></div>
-    <p style="color:var(--text3); font-size:12px; margin-top:6px;">Showing all documents across every team, most recently changed first — including deleted documents. Visible to editors only.</p>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">
+      Every create, edit, delete, and restore event, most recent first — including documents that no longer exist. Visible to editors only.
+      ${!deletionsListId ? `<br><span style="color:#fbbf24;">The "Document Repository Deletions" list hasn't been created in SharePoint yet, so history isn't being recorded. See SETUP_DELETIONS.md.</span>` : ""}
+    </p>
     <div class="table-container" style="margin-top:16px">
       <div class="table-scroll">
       <table>
@@ -1441,24 +1540,19 @@ function renderHistory() {
           <th>Event</th>
           <th>Date</th>
           <th>By</th>
-          <th>Created</th>
-          <th>Created By</th>
         </tr></thead>
         <tbody>`;
 
   if (sorted.length === 0) {
-    html += `<tr><td colspan="7"><div class="empty"><div class="empty-icon">&#128337;</div><p>No history yet.</p></div></td></tr>`;
+    html += `<tr><td colspan="5"><div class="empty"><div class="empty-icon">&#128337;</div><p>No history yet.</p></div></td></tr>`;
   } else {
     sorted.forEach(row => {
-      const isDeleted = row.kind === "deleted";
-      html += `<tr${isDeleted ? ` style="opacity:.75"` : ""}>
-        <td class="doc-name">${escapeHtml(row.docName)}</td>
+      html += `<tr>
+        <td class="doc-name">${escapeHtml(row.documentName)}</td>
         <td>${escapeHtml(row.team)}</td>
-        <td>${isDeleted ? `<span class="chip approval-rejected">&#128465; Deleted</span>` : `<span class="chip approval-approved">Active</span>`}</td>
+        <td>${eventBadge(row.eventType)}</td>
         <td>${escapeHtml(fmt(row.eventDate))}</td>
         <td>${escapeHtml(row.eventBy)}</td>
-        <td>${row.created ? escapeHtml(fmt(row.created)) : "—"}</td>
-        <td>${row.createdBy ? escapeHtml(row.createdBy) : "—"}</td>
       </tr>`;
     });
   }
@@ -1488,11 +1582,12 @@ function sanitizeGuideHtml(html) {
 }
 
 function renderWelcome() {
-  const totalAll = allItems.length;
+  const nonTrashedItems = allItems.filter(it => !isTrashed(it));
+  const totalAll = nonTrashedItems.length;
   const sCol = statusCol();
   const counts = { active: 0, pending: 0, archived: 0 };
   if (sCol) {
-    allItems.forEach(it => {
+    nonTrashedItems.forEach(it => {
       const s = (it.values[sCol.name] || "").toLowerCase();
       if (s.includes("active") && !s.includes("pending")) counts.active++;
       else if (s.includes("pending")) counts.pending++;
@@ -2195,6 +2290,7 @@ async function saveRow(itemId) {
     item.modified = new Date().toISOString();
     item.modifiedBy = currentAccount?.name || currentAccount?.username || item.modifiedBy;
     await submitForApproval(itemId, item);
+    await logHistoryEvent("Modified", item.values["Title"] || "Untitled", groupField ? item.values[groupField] : null);
   }
   renderTabs();
   renderContent();
@@ -2213,20 +2309,89 @@ async function deleteRow(itemId) {
   const item = allItems.find(it => it.itemId === itemId);
   const team = item && groupField ? item.values[groupField] : activeTab;
   if (!canEditTeam(team)) return;
-  if (!confirm("Delete this item? It will also be removed from SharePoint.")) return;
+  if (!confirm(`Move this item to Trash? It'll be recoverable for ${TRASH_RETENTION_DAYS} days, then permanently deleted.`)) return;
   const docName = item ? (item.values["Title"] || "Untitled") : "Untitled";
+  const userName = currentAccount?.name || currentAccount?.username || "Unknown";
+  const nowIso = new Date().toISOString();
   setSyncing(true);
   try {
-    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}`, { method: "DELETE" });
-    allItems = allItems.filter(it => it.itemId !== itemId);
-    await logDeletion(docName, team);
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ TrashedDate: nowIso, TrashedBy: userName })
+    });
+    if (item) item.trash = { trashedDate: nowIso, trashedBy: userName };
+    await logHistoryEvent("Deleted", docName, team);
     renderTabs();
     renderContent();
     setSyncing(false, true);
-    toast("Deleted", "success");
+    toast("Moved to Trash", "success");
   } catch (err) {
     setSyncing(false, false);
     toast("Delete failed: " + err.message, "error");
+  }
+}
+
+async function restoreItem(itemId) {
+  const item = allItems.find(it => it.itemId === itemId);
+  if (!item) return;
+  const team = groupField ? item.values[groupField] : null;
+  if (!canEditTeam(team)) return;
+  const docName = item.values["Title"] || "Untitled";
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ TrashedDate: null, TrashedBy: "" })
+    });
+    item.trash = { trashedDate: null, trashedBy: null };
+    await logHistoryEvent("Restored", docName, team);
+    renderTabs();
+    renderContent();
+    setSyncing(false, true);
+    toast("Restored ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Restore failed: " + err.message, "error");
+  }
+}
+
+async function permanentlyDeleteItem(itemId, { silent } = {}) {
+  const item = allItems.find(it => it.itemId === itemId);
+  if (!item) return;
+  const team = groupField ? item.values[groupField] : null;
+  if (!silent) {
+    if (!canEditTeam(team)) return;
+    if (!confirm("Permanently delete this item? This cannot be undone.")) return;
+  }
+  const docName = item.values["Title"] || "Untitled";
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}`, { method: "DELETE" });
+    allItems = allItems.filter(it => it.itemId !== itemId);
+    await logHistoryEvent("Permanently Deleted", docName, team);
+    if (!silent) {
+      renderTabs();
+      renderContent();
+      setSyncing(false, true);
+      toast("Permanently deleted", "success");
+    }
+  } catch (err) {
+    if (!silent) {
+      setSyncing(false, false);
+      toast("Delete failed: " + err.message, "error");
+    } else {
+      console.warn("Auto-purge failed for a trashed item (will retry next load):", err);
+    }
+  }
+}
+
+// Runs quietly whenever anyone loads the app — permanently deletes anything that's been sitting
+// in Trash longer than TRASH_RETENTION_DAYS. There's no server/scheduled job in this app, so this
+// is the practical equivalent: best-effort cleanup that happens on every normal page load.
+async function autoPurgeTrash() {
+  const cutoff = Date.now() - TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const toPurge = allItems.filter(it => isTrashed(it) && new Date(it.trash.trashedDate).getTime() < cutoff);
+  for (const it of toPurge) {
+    await permanentlyDeleteItem(it.itemId, { silent: true });
   }
 }
 
@@ -2461,10 +2626,12 @@ async function saveModal() {
       itemId,
       values: columns.reduce((acc, col) => { acc[col.name] = savedValues[col.name] ?? null; return acc; }, {}),
       approval: { status: "Approved", submittedBy: null, submittedDate: null, approvedBy: null, approvedDate: null, rejectionReason: null },
+      trash: { trashedDate: null, trashedBy: null },
       modified: nowIso, modifiedBy: userName, created: nowIso, createdBy: userName
     };
     allItems.push(newItem);
     await submitForApproval(itemId, newItem);
+    await logHistoryEvent("Created", values["Title"], groupField ? values[groupField] : null);
     closeModal();
     renderTabs();
     renderContent();
