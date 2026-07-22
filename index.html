@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-3";
+const BUILD_ID = "2026-07-16-4";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -455,6 +455,7 @@ const ADMIN_EMAILS = [
 ];
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
+const TRASH_LABEL = "\ud83d\uddd1\ufe0f Trash Access"; // special value granted via the Permissions tab meaning "this person can see and use the Trash"
 const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster", "QA"]; // must exactly match SharePoint Team choice values — Revision History only shows on these tabs
 const TRASH_RETENTION_DAYS = 30; // trashed documents are permanently, automatically deleted after this many days
 
@@ -607,6 +608,7 @@ let filterCategory = "";
 let sortCol = -1, sortAsc = true;
 let editingItemId = null;
 let isApprover = false;
+let canAccessTrash = false;
 let isPermissionAdmin = false;
 let permissionsListId = null;
 let permissionRows = []; // [{ itemId, userEmail, team }]
@@ -992,6 +994,7 @@ function refreshAccessFlags() {
   const fromConfig = !!email && APPROVER_EMAILS.map(e => e.toLowerCase()).includes(email);
   const fromPermissionsList = !!email && permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team === APPROVER_LABEL);
   isApprover = fromConfig || fromPermissionsList;
+  canAccessTrash = isPermissionAdmin || (!!email && permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team === TRASH_LABEL));
 }
 
 async function isNewVersionAvailable() {
@@ -1130,7 +1133,7 @@ function renderTabs() {
   permissionsBtn.style.display = isPermissionAdmin ? "" : "none";
   permissionsBtn.className = "btn " + (isPermissions ? "btn-primary" : "btn-secondary");
   const trashBtn = document.getElementById("trashBtn");
-  trashBtn.style.display = hasAnyEditAccess() ? "" : "none";
+  trashBtn.style.display = canAccessTrash ? "" : "none";
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
@@ -1236,7 +1239,7 @@ function showPermissions() {
 }
 
 function showTrash() {
-  if (!hasAnyEditAccess()) return; // safety net — button is already hidden otherwise
+  if (!canAccessTrash) return; // safety net — button is already hidden otherwise
   activeTab = "__TRASH__";
   searchQ = ""; filterStatus = ""; filterCategory = "";
   editingItemId = null; guideEditing = false; announcementEditing = false;
@@ -1423,7 +1426,7 @@ async function rejectItem(itemId) {
 // PER-TEAM PERMISSIONS ADMIN PANEL
 // ═══════════════════════════════════════════════════════════════════════════
 function renderPermissions() {
-  const teamOptions = [...teamChoices, ALL_TEAMS_LABEL, APPROVER_LABEL]
+  const teamOptions = [...teamChoices, ALL_TEAMS_LABEL, APPROVER_LABEL, TRASH_LABEL]
     .map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
 
   const sorted = [...permissionRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
@@ -1585,7 +1588,11 @@ function goToHistoryDocument(documentId) {
     return;
   }
   if (isTrashed(item)) {
-    showTrash();
+    if (canAccessTrash) {
+      showTrash();
+    } else {
+      toast("This document has been deleted.", "error");
+    }
     return;
   }
   const team = groupField ? item.values[groupField] : null;
