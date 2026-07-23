@@ -257,15 +257,15 @@
 
   .org-tree-wrap { overflow-x: auto; padding-bottom: 4px; }
   .org-grid { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); grid-template-rows: auto 26px auto 34px auto 26px auto 26px auto 26px auto; column-gap: 0; row-gap: 0; min-width: 800px; padding: 18px 6px 4px; }
-  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; text-align: center; margin: 0 8px; }
+  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; text-align: center; margin: 0 8px; position: relative; z-index: 1; }
   .org-node-box .org-name { font-size: 13px; font-weight: 700; color: var(--text); }
   .org-node-box .org-title2 { font-size: 11px; color: var(--text3); margin-top: 2px; }
   .org-leaf-box { cursor: pointer; transition: all .15s; }
   .org-leaf-box:hover { border-color: var(--accent); transform: translateY(-1px); }
   .org-cell-box { justify-self: center; align-self: center; }
   .org-connector { grid-column: 1 / 7; position: relative; }
-  .org-vline { position: absolute; top: 0; width: 1px; height: 100%; background: var(--border); }
-  .org-hline { position: absolute; top: 50%; height: 1px; background: var(--border); }
+  .org-vline { position: absolute; top: 0; width: 2px; height: 100%; background: var(--border); }
+  .org-hline { position: absolute; top: 50%; height: 2px; background: var(--border); }
   .welcome-edit-area { width: 100%; min-height: 220px; background: var(--surface2); border: 1px solid var(--accent); border-radius: 0 0 8px 8px; padding: 14px; color: var(--text); font-size: 14px; font-family: 'Inter', sans-serif; line-height: 1.7; outline: none; overflow-y: auto; }
   .quick-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
 
@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-4";
+const BUILD_ID = "2026-07-16-7";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1883,6 +1883,7 @@ function renderOrgChart() {
       </div>
 
       <div class="org-connector" style="grid-row:7;">
+        ${orgVLine(OC.biz)}
         ${orgVLine(OC.c3)}
         ${orgVLine(OC.c4)}
       </div>
@@ -1929,6 +1930,12 @@ function renderOrgChart() {
         ${orgVLine(OC.c6)}
       </div>
 
+      <div class="org-connector" style="grid-row:11;">
+        ${orgVLine(OC.c1, 0, 50)}
+        ${orgVLine(OC.c2, 0, 50)}
+        ${orgVLine(OC.c3, 0, 50)}
+        ${orgVLine(OC.c4, 0, 50)}
+      </div>
       ${orgLeafBox(bo.manager.teams[0].label, bo.manager.teams[0].team, 1)}
       ${orgLeafBox(bo.manager.teams[1].label, bo.manager.teams[1].team, 2)}
       ${orgLeafBox(it.label, it.team, 3)}
