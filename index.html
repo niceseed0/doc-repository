@@ -392,11 +392,11 @@
 
 <div class="modal-bg" id="revisionModal">
   <div class="modal">
-    <h3 id="revisionModalTitle">Add Revision</h3>
+    <h3 id="revisionModalTitle">Add Version</h3>
     <div id="revisionModalForm"></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeRevisionModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveRevisionModal()">Save Revision</button>
+      <button class="btn btn-primary" onclick="saveRevisionModal()">Save Version</button>
     </div>
   </div>
 </div>
@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-7";
+const BUILD_ID = "2026-07-16-8";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -456,7 +456,8 @@ const ADMIN_EMAILS = [
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 const TRASH_LABEL = "\ud83d\uddd1\ufe0f Trash Access"; // special value granted via the Permissions tab meaning "this person can see and use the Trash"
-const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster", "QA"]; // must exactly match SharePoint Team choice values — Revision History only shows on these tabs
+const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster", "QA"]; // must exactly match SharePoint Team choice values — Version History only shows on these tabs
+const CONTROL_NUMBER_TEAMS = ["QA", "General", "John's Cluster", "Gary's Cluster"]; // on these tabs, the Description column header shows "Control#" and the full description shows as a tooltip on the document title instead
 const TRASH_RETENTION_DAYS = 30; // trashed documents are permanently, automatically deleted after this many days
 
 // These 6 SharePoint columns must be added to the "Document Repository System" list
@@ -2179,9 +2180,13 @@ function renderResults() {
     <div class="table-scroll">
     <table>
       <thead><tr>
-        ${cols.map((c, i) => `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(c.displayName || c.name)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`).join("")}
+        ${cols.map((c, i) => {
+          const isDescCol = descCol() && c.name === descCol().name;
+          const label = (isDescCol && CONTROL_NUMBER_TEAMS.includes(activeTab)) ? "Control#" : (c.displayName || c.name);
+          return `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(label)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`;
+        }).join("")}
         <th style="width:120px">Approval</th>
-        ${isIsoTab ? `<th style="width:110px">Revisions</th>` : ""}
+        ${isIsoTab ? `<th style="width:110px">Versions</th>` : ""}
         <th style="width:100px">Actions</th>
       </tr></thead>
       <tbody>`;
@@ -2205,7 +2210,9 @@ function renderResults() {
           const isReal = v && String(v).startsWith("http");
           html += `<td class="link-cell">${isReal ? `<a href="${escapeAttr(v)}" target="_blank">&#128279; Open</a>` : `<span class="link-placeholder">${escapeHtml(v || "No link")}</span>`}</td>`;
         } else if (col.name === "Title") {
-          html += `<td class="doc-name">${escapeHtml(v || "—")}</td>`;
+          const showDescTooltip = CONTROL_NUMBER_TEAMS.includes(activeTab) && descCol();
+          const tooltipAttr = showDescTooltip ? ` title="${escapeAttr(it.values[descCol().name] || "")}"` : "";
+          html += `<td class="doc-name"${tooltipAttr}>${escapeHtml(v || "—")}</td>`;
         } else if (descCol() && col.name === descCol().name) {
           const s = v ? String(v) : "";
           html += `<td class="desc" title="${escapeAttr(s)}">${escapeHtml(s.length > 80 ? s.slice(0, 80) + "…" : (s || "—"))}</td>`;
@@ -2217,7 +2224,7 @@ function renderResults() {
       if (isIsoTab) {
         const revCount = revisionRows.filter(r => r.documentId === it.itemId).length;
         const isExpanded = expandedRevisionDocIds.has(it.itemId);
-        html += `<td><button class="btn btn-secondary btn-sm" onclick="toggleRevisionPanel('${it.itemId}')" title="Revision History">
+        html += `<td><button class="btn btn-secondary btn-sm" onclick="toggleRevisionPanel('${it.itemId}')" title="Version History">
           ${isExpanded ? "&#9650;" : "&#9660;"} &#128203;${revCount > 0 ? ` ${revCount}` : ""}
         </button></td>`;
       }
@@ -2472,13 +2479,13 @@ function renderRevisionPanel(documentItemId, docName) {
   return `
   <div class="revision-panel">
     <div class="revision-panel-header">
-      <b>&#128203; Revision History — ${escapeHtml(docName)}</b>
-      ${(canEditRev && revisionsListId) ? `<button class="btn btn-primary btn-sm" onclick="openRevisionModal('${documentItemId}')">&#65291; Add Revision</button>` : ""}
+      <b>&#128203; Version History — ${escapeHtml(docName)}</b>
+      ${(canEditRev && revisionsListId) ? `<button class="btn btn-primary btn-sm" onclick="openRevisionModal('${documentItemId}')">&#65291; Add Version</button>` : ""}
     </div>
     <div class="table-scroll">
     <table class="revision-table">
       <thead><tr>
-        <th>Revision #</th><th>Date Requested</th><th>Requested by</th><th>Approved by</th><th>Date Completed</th><th>Change Notes</th>
+        <th>Version #</th><th>Date Requested</th><th>Requested by</th><th>Approved by</th><th>Date Completed</th><th>Change Notes</th>
         ${canEditRev ? `<th style="width:90px">Actions</th>` : ""}
       </tr></thead>
       <tbody>${rowsHtml}</tbody>
@@ -2496,10 +2503,10 @@ function openRevisionModal(documentItemId, revisionItemId) {
   const nextRevNum = existing ? existing.revisionNumber : (existingNums.length ? Math.max(...existingNums) + 1 : 1);
   const userName = currentAccount?.name || currentAccount?.username || "";
 
-  document.getElementById("revisionModalTitle").textContent = existing ? "Edit Revision" : "Add Revision";
+  document.getElementById("revisionModalTitle").textContent = existing ? "Edit Version" : "Add Version";
   document.getElementById("revisionModalForm").innerHTML = `
     <div class="form-row">
-      <div class="form-group"><label>Revision #</label><input class="form-input" id="revNumberInput" type="number" value="${escapeAttr(nextRevNum)}"></div>
+      <div class="form-group"><label>Version #</label><input class="form-input" id="revNumberInput" type="number" value="${escapeAttr(nextRevNum)}"></div>
       <div class="form-group"><label>Date Requested</label><input class="form-input" id="revDateRequestedInput" type="date" value="${escapeAttr(existing?.dateRequested ? formatDateShort(existing.dateRequested) : "")}"></div>
     </div>
     <div class="form-row">
@@ -2549,7 +2556,7 @@ async function saveRevisionModal() {
     closeRevisionModal();
     renderContent();
     setSyncing(false, true);
-    toast("Revision saved ✓", "success");
+    toast("Version saved ✓", "success");
   } catch (err) {
     setSyncing(false, false);
     toast("Save failed: " + err.message, "error");
@@ -2565,7 +2572,7 @@ async function deleteRevision(revisionItemId) {
     revisionRows = revisionRows.filter(r => r.itemId !== revisionItemId);
     renderContent();
     setSyncing(false, true);
-    toast("Revision deleted", "success");
+    toast("Version deleted", "success");
   } catch (err) {
     setSyncing(false, false);
     toast("Delete failed: " + err.message, "error");
