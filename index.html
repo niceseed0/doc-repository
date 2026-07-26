@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-8";
+const BUILD_ID = "2026-07-16-9";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -745,8 +745,10 @@ async function loadColumns() {
 }
 
 function displayColumns() {
-  // Columns shown in the table / add-entry form (excludes the Team/group column, which is handled by tabs)
-  return columns.filter(c => c.name !== groupField);
+  // Columns shown in the table / add-entry form (excludes the Team/group column, which is handled by tabs).
+  // The "Control#" column (if it exists in SharePoint) is a separate, dedicated field that only
+  // applies to certain teams — hidden everywhere else, in both the table and the Add/Edit form.
+  return columns.filter(c => c.name !== groupField && (c.displayName !== "Control#" || CONTROL_NUMBER_TEAMS.includes(activeTab)));
 }
 
 function isHyperlinkCol(col) {
@@ -2180,11 +2182,7 @@ function renderResults() {
     <div class="table-scroll">
     <table>
       <thead><tr>
-        ${cols.map((c, i) => {
-          const isDescCol = descCol() && c.name === descCol().name;
-          const label = (isDescCol && CONTROL_NUMBER_TEAMS.includes(activeTab)) ? "Control#" : (c.displayName || c.name);
-          return `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(label)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`;
-        }).join("")}
+        ${cols.map((c, i) => `<th class="sortable ${sortCol === i ? "sorted" : ""}" onclick="onSort(${i})">${escapeHtml(c.displayName || c.name)}<span class="sort-icon">${sortCol === i ? (sortAsc ? "↑" : "↓") : "↕"}</span></th>`).join("")}
         <th style="width:120px">Approval</th>
         ${isIsoTab ? `<th style="width:110px">Versions</th>` : ""}
         <th style="width:100px">Actions</th>
