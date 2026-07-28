@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-9";
+const BUILD_ID = "2026-07-16-10";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -745,10 +745,23 @@ async function loadColumns() {
 }
 
 function displayColumns() {
-  // Columns shown in the table / add-entry form (excludes the Team/group column, which is handled by tabs).
-  // The "Control#" column (if it exists in SharePoint) is a separate, dedicated field that only
-  // applies to certain teams — hidden everywhere else, in both the table and the Add/Edit form.
+  // Columns shown in the Add/Edit form. Description always stays here (it's still a real,
+  // editable field) — Control# is additionally included on the designated teams.
   return columns.filter(c => c.name !== groupField && (c.displayName !== "Control#" || CONTROL_NUMBER_TEAMS.includes(activeTab)));
+}
+
+function tableColumns() {
+  // Columns shown in the visible table. On the designated teams, Control# takes Description's
+  // exact spot in the table (Description itself is hidden from the table there — it's still
+  // editable via the form, and its content shows as a tooltip on the document title instead).
+  const cols = displayColumns();
+  if (!CONTROL_NUMBER_TEAMS.includes(activeTab)) return cols;
+  const dCol = descCol();
+  const ctrlCol = cols.find(c => c.displayName === "Control#");
+  if (!dCol || !ctrlCol) return cols;
+  return cols
+    .filter(c => c.displayName !== "Control#")
+    .map(c => c.name === dCol.name ? ctrlCol : c);
 }
 
 function isHyperlinkCol(col) {
@@ -1149,7 +1162,7 @@ function renderTabs() {
 }
 
 function defaultSortColIndex() {
-  const cols = displayColumns();
+  const cols = tableColumns();
   const catCol = categoryCol();
   if (!catCol) return -1;
   return cols.findIndex(c => c.name === catCol.name);
@@ -2096,13 +2109,14 @@ async function saveGuide() {
 
 // ── Document table ───────────────────────────────────────────────────────
 function computeFilteredItems() {
-  const cols = displayColumns();
+  const searchCols = displayColumns(); // search still matches Description even when it's hidden from the table
+  const sortCols = tableColumns(); // sortCol is an index into whatever columns are actually rendered
   let items = itemsForTab(activeTab);
   const sCol = statusCol(), cCol = categoryCol();
 
   if (searchQ) {
     const q = searchQ.toLowerCase();
-    items = items.filter(it => cols.some(c => it.values[c.name] && String(it.values[c.name]).toLowerCase().includes(q)));
+    items = items.filter(it => searchCols.some(c => it.values[c.name] && String(it.values[c.name]).toLowerCase().includes(q)));
   }
   if (filterStatus && sCol) {
     items = items.filter(it => it.values[sCol.name] && String(it.values[sCol.name]).toLowerCase().includes(filterStatus.toLowerCase()));
@@ -2110,8 +2124,8 @@ function computeFilteredItems() {
   if (filterCategory && cCol) {
     items = items.filter(it => it.values[cCol.name] === filterCategory);
   }
-  if (sortCol >= 0 && cols[sortCol]) {
-    const key = cols[sortCol].name;
+  if (sortCol >= 0 && sortCols[sortCol]) {
+    const key = sortCols[sortCol].name;
     items = [...items].sort((a, b) => {
       const av = a.values[key] || "", bv = b.values[key] || "";
       return sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
@@ -2151,7 +2165,7 @@ function renderToolbar() {
 
 // Stats + table. This is the only part rebuilt on every search/filter/sort/edit change.
 function renderResults() {
-  const cols = displayColumns();
+  const cols = tableColumns();
   const items = computeFilteredItems();
   const sCol = statusCol();
   const isIsoTab = REVISION_ENABLED_TEAMS.includes(activeTab);
@@ -2692,7 +2706,7 @@ document.getElementById("addModal").addEventListener("click", function (e) { if 
 
 function exportCSV() {
   if (activeTab === "Welcome") return;
-  const cols = displayColumns();
+  const cols = tableColumns();
   const items = itemsForTab(activeTab);
   const lines = [cols.map(c => c.displayName || c.name).join(",")];
   items.forEach(it => {
