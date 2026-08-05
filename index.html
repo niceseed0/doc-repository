@@ -257,7 +257,7 @@
 
   .org-tree-wrap { overflow-x: auto; padding-bottom: 4px; }
   .org-grid { display: grid; grid-template-columns: repeat(6, minmax(100px, 1fr)); grid-template-rows: auto 26px auto 34px auto 26px auto 26px auto 26px auto; column-gap: 0; row-gap: 0; min-width: 800px; padding: 18px 6px 4px; }
-  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; text-align: center; margin: 0 8px; position: relative; z-index: 1; }
+  .org-node-box { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; text-align: center; margin: 0 8px; position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; }
   .org-node-box .org-name { font-size: 13px; font-weight: 700; color: var(--text); }
   .org-node-box .org-title2 { font-size: 11px; color: var(--text3); margin-top: 2px; }
   .org-leaf-box { cursor: pointer; transition: all .15s; }
@@ -410,7 +410,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-10";
+const BUILD_ID = "2026-07-16-11";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1907,11 +1907,15 @@ function renderOrgChart() {
         <div class="org-name">${escapeHtml(bo.lead.name)}</div>
         <div class="org-title2">${escapeHtml(bo.lead.title)}</div>
       </div>
-      <div class="org-node-box org-cell-box" style="grid-column:5; grid-row:7;">
+      <div class="org-connector" style="grid-row:7 / 10; z-index:0;">
+        ${orgVLine(OC.c5)}
+        ${orgVLine(OC.c6)}
+      </div>
+      <div class="org-node-box org-cell-box" style="grid-column:5; grid-row:7 / 10;">
         <div class="org-name">${escapeHtml(gso.leads[0].name)}</div>
         <div class="org-title2">${escapeHtml(gso.leads[0].title)}</div>
       </div>
-      <div class="org-node-box org-cell-box" style="grid-column:6; grid-row:7;">
+      <div class="org-node-box org-cell-box" style="grid-column:6; grid-row:7 / 10;">
         <div class="org-name">${escapeHtml(gso.leads[1].name)}</div>
         <div class="org-title2">${escapeHtml(gso.leads[1].title)}</div>
       </div>
@@ -1920,8 +1924,6 @@ function renderOrgChart() {
         ${orgVLine(OC.biz)}
         ${orgVLine(OC.c3)}
         ${orgVLine(OC.c4)}
-        ${orgVLine(OC.c5)}
-        ${orgVLine(OC.c6)}
       </div>
 
       <div class="org-connector" style="grid-row:9;">
