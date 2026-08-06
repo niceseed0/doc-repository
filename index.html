@@ -1110,6 +1110,77 @@ function statusBadge(status) {
   return `<span style="font-size:11px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 8px;">${escapeHtml(status)}</span>`;
 }
 
+// Repopulates a Team <datalist> based on the currently selected Cluster —
+// non-cluster teams when no cluster is picked, existing sub-teams of that cluster otherwise.
+// The Team field stays a free-text input either way so a brand-new sub-team can be typed in.
+function updateClusterTeamOptions(clusterSelectId, datalistId) {
+  const clusterSel = document.getElementById(clusterSelectId);
+  const datalist = document.getElementById(datalistId);
+  if (!clusterSel || !datalist) return;
+  const cluster = clusterSel.value;
+  const options = cluster
+    ? subteamsForCluster(cluster).map(s => s.team)
+    : CONFIG.teamOrder.filter(t => !CONFIG.clusterTeams.includes(t));
+  datalist.innerHTML = options.map(t => `<option value="${escapeHtml(t)}"></option>`).join("");
+}
+
+function openAddEmployeeForm() {
+  if (!canAccessHR || !employeesListId) return; // defense in depth
+  hrView = { mode: "addEmployee" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+async function submitAddEmployee() {
+  const name = document.getElementById("hrAddName").value.trim();
+  const cluster = document.getElementById("hrAddCluster").value;
+  const team = document.getElementById("hrAddTeam").value.trim();
+  const position = document.getElementById("hrAddPosition").value.trim();
+  const status = document.getElementById("hrAddStatus").value;
+  const hireDate = document.getElementById("hrAddHireDate").value;
+  const resumeUrl = document.getElementById("hrAddResumeUrl").value.trim();
+  const photoUrl = document.getElementById("hrAddPhotoUrl").value.trim();
+  const separationDate = document.getElementById("hrAddSeparationDate").value;
+  const separationReason = document.getElementById("hrAddSeparationReason").value.trim();
+  if (!name || !team || !position || !status) { toast("Fill in name, team, position, and status.", "error"); return; }
+  setSyncing(true);
+  try {
+    const fields = {
+      Title: name, Team: team, Cluster: cluster, Position: position, Status: status,
+      HireDate: hireDate || null, ResumeUrl: resumeUrl, PhotoUrl: photoUrl,
+      SeparationDate: status === "Resigned" ? (separationDate || null) : null,
+      SeparationReason: status === "Resigned" ? separationReason : ""
+    };
+    const created = await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields })
+    });
+    const emp = {
+      id: created.id, name, photo: photoUrl, team, cluster, position, status,
+      hireDate: hireDate || null, resumeUrl,
+      separationDate: fields.SeparationDate, separationReason: fields.SeparationReason
+    };
+    employees.push(emp);
+    setSyncing(false, true);
+    toast("Employee added ✓", "success");
+    openTeamRoster(team, cluster);
+    renderContent();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not add employee: " + err.message, "error");
+  }
+}
+
+function renderHRAddSeparationFields() {
+  const statusSel = document.getElementById("hrAddStatus");
+  const box = document.getElementById("hrAddSeparationFields");
+  if (!statusSel || !box) return;
+  box.innerHTML = statusSel.value === "Resigned" ? `
+    <div class="form-group"><label>Separation date</label><input id="hrAddSeparationDate" type="date" /></div>
+    <div class="form-group"><label>Separation reason</label><input id="hrAddSeparationReason" type="text" /></div>
+  ` : `<input id="hrAddSeparationDate" type="hidden" /><input id="hrAddSeparationReason" type="hidden" />`;
+}
+
 function subteamsForCluster(cluster) {
   const names = [...new Set(employees.filter(e => e.cluster === cluster).map(e => e.team).filter(Boolean))];
   names.sort((a, b) => a.localeCompare(b));
@@ -1334,7 +1405,7 @@ function renderHRModal() {
       <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · ${escapeHtml(emp.position || "—")}</div>
       <div class="form-group">
         <label>Cluster (leave blank for non-cluster teams)</label>
-        <select id="hrChangeCluster" onchange="updateHRChangeTeamOptions()">
+        <select id="hrChangeCluster" onchange="updateClusterTeamOptions('hrChangeCluster','hrChangeTeamOptions')">
           <option value="" ${!emp.cluster ? "selected" : ""}>— Not part of a cluster —</option>
           ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}" ${emp.cluster === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
         </select>
@@ -1352,22 +1423,50 @@ function renderHRModal() {
         <button class="btn btn-primary" onclick="submitLogChange()">Save change</button>
       </div>
     `;
-    updateHRChangeTeamOptions();
+    updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeamOptions');
   }
-}
 
-// Repopulates the Team <datalist> suggestions based on the currently selected Cluster —
-// non-cluster teams when no cluster is picked, existing sub-teams of that cluster otherwise.
-// The Team field stays a free-text input either way so a brand-new sub-team can be typed in.
-function updateHRChangeTeamOptions() {
-  const clusterSel = document.getElementById("hrChangeCluster");
-  const datalist = document.getElementById("hrChangeTeamOptions");
-  if (!clusterSel || !datalist) return;
-  const cluster = clusterSel.value;
-  const options = cluster
-    ? subteamsForCluster(cluster).map(s => s.team)
-    : CONFIG.teamOrder.filter(t => !CONFIG.clusterTeams.includes(t));
-  datalist.innerHTML = options.map(t => `<option value="${escapeHtml(t)}"></option>`).join("");
+  if (hrView.mode === "addEmployee") {
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+        <h3 style="margin-bottom:2px;">Add employee</h3>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">Creates a record in HR Employees. Visible only to HR-Sensitive-Access.</div>
+      <div class="form-group"><label>Name</label><input id="hrAddName" type="text" /></div>
+      <div class="form-group">
+        <label>Cluster (leave blank for non-cluster teams)</label>
+        <select id="hrAddCluster" onchange="updateClusterTeamOptions('hrAddCluster','hrAddTeamOptions')">
+          <option value="" selected>— Not part of a cluster —</option>
+          ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Team</label>
+        <input id="hrAddTeam" list="hrAddTeamOptions" type="text" />
+        <datalist id="hrAddTeamOptions"></datalist>
+      </div>
+      <div class="form-group"><label>Position</label><input id="hrAddPosition" type="text" /></div>
+      <div class="form-group">
+        <label>Status</label>
+        <select id="hrAddStatus" onchange="renderHRAddSeparationFields()">
+          <option value="Active" selected>Active</option>
+          <option value="On Long Leave">On Long Leave</option>
+          <option value="Resigned">Resigned</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Hire date</label><input id="hrAddHireDate" type="date" /></div>
+      <div class="form-group"><label>Resume URL (optional)</label><input id="hrAddResumeUrl" type="text" /></div>
+      <div class="form-group"><label>Photo URL (optional)</label><input id="hrAddPhotoUrl" type="text" /></div>
+      <div id="hrAddSeparationFields"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitAddEmployee()">Add employee</button>
+      </div>
+    `;
+    updateClusterTeamOptions('hrAddCluster', 'hrAddTeamOptions');
+    renderHRAddSeparationFields();
+  }
 }
 
 function rosterRow(e, clickable) {
@@ -2378,10 +2477,16 @@ function renderOrgChart() {
   const it = ORG_CHART.mdDirectTeams[0];
   const cxqa = ORG_CHART.mdDirectTeams[1];
 
+  const addEmployeeIcon = (canAccessHR && employeesListId)
+    ? `<span class="org-roster-icon" onclick="openAddEmployeeForm()" title="Add employee (HR only)"
+         style="position:absolute; bottom:14px; right:14px; top:auto; left:auto;">➕</span>`
+    : "";
+
   return `
-  <div class="welcome-card">
+  <div class="welcome-card" style="position:relative;">
     <div class="welcome-card-header"><h2>Company Organization</h2></div>
     <p style="color:var(--text3); font-size:12px; margin-top:6px;">Click a team box to jump straight to its documents.</p>
+    ${addEmployeeIcon}
     <div class="org-tree-wrap">
     <div class="org-grid">
 
