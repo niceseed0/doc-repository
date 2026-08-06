@@ -401,6 +401,10 @@
   </div>
 </div>
 
+<div class="modal-bg" id="hrModal">
+  <div class="modal" id="hrModalInner" style="width:min(560px, 92vw)"></div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -423,8 +427,16 @@ const CONFIG = {
   permissionsListDisplayName: "Document Repository Permissions",
   revisionsListDisplayName: "Document Repository Revisions",
   deletionsListDisplayName: "Document Repository Deletions",
+  employeesListDisplayName: "HR Employees",
+  positionHistoryListDisplayName: "HR Position History",
+  salaryHistoryListDisplayName: "HR Salary History",
+  evaluationScoresListDisplayName: "HR Evaluation Scores",
+  incidentsListDisplayName: "HR Incidents",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
+  // Org chart boxes for these two teams contain sub-teams rather than members directly —
+  // clicking their 👥 icon opens a sub-team list first instead of a member roster.
+  clusterTeams: ["John's Cluster", "Gary's Cluster"],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -453,6 +465,17 @@ const APPROVER_EMAILS = [
 const ADMIN_EMAILS = [
   "jkim@elitegsl.com"
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HR MODULE — SENSITIVE DATA ACCESS
+// Object ID of the "HR-Sensitive-Access" security group in Microsoft Entra ID.
+// Only members of this group (CEO / Managing Director / HOC / Admin Manager)
+// can see salary history, evaluation scores, incidents, and separation details,
+// and can open an employee's HR detail page at all.
+// Unlike canEdit above, this check FAILS CLOSED — if anything is uncertain
+// (missing claim, overage, error), access is denied rather than granted.
+// ═══════════════════════════════════════════════════════════════════════════
+const HR_ACCESS_GROUP_ID = "f4059871-1a92-4745-8197-44dd32c37c38";
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 const TRASH_LABEL = "\ud83d\uddd1\ufe0f Trash Access"; // special value granted via the Permissions tab meaning "this person can see and use the Trash"
@@ -620,6 +643,23 @@ let revisionModalContext = null; // { documentItemId, revisionItemId }
 let deletionsListId = null;
 let deletionLog = []; // [{ itemId, documentName, team, deletedBy, deletedDate }]
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
+let canAccessHR = false; // whether the signed-in user is in the HR-Sensitive-Access group (checked at startup, fails closed)
+let hrAccessOverage = false; // true if the ID token couldn't list all of this user's groups (too many groups) — set as a signal to fall back to a Graph check later if needed
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HR MODULE STATE
+// employeesListId etc. stay null (feature quietly hides itself) until the
+// matching SharePoint lists are created — see SETUP_HR.md.
+// ═══════════════════════════════════════════════════════════════════════════
+let employeesListId = null;
+let positionHistoryListId = null;
+let salaryHistoryListId = null;
+let evaluationScoresListId = null;
+let incidentsListId = null;
+let employees = []; // [{ id, name, photo, team, position, status, hireDate, resumeUrl, separationDate, separationReason }]
+let hrView = null; // { mode:'roster', team } | { mode:'detail', employeeId } | { mode:'logChange', employeeId } | null
+let hrShowFormer = false; // whether the "show former members" toggle is expanded in the current roster view
+let hrDetail = null; // { positions:[], salaries:[], evaluations:[], incidents:[] } for the currently open detail employee
 
 // ═══════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
@@ -627,6 +667,7 @@ let canEdit = true; // whether the signed-in user has edit rights on the SharePo
 async function startApp() {
   isPermissionAdmin = !!(currentAccount && currentAccount.username &&
     ADMIN_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
+  checkHRAccess();
   document.getElementById("authCard").innerHTML = `
     <div class="spinner"></div>
     <h2>Connecting to SharePoint&hellip;</h2>
@@ -635,7 +676,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -673,6 +714,16 @@ async function resolveSiteAndLists() {
   revisionsListId = revMatch ? revMatch.id : null; // optional — Revision History feature just stays hidden/empty if missing
   const delMatch = (lists.value || []).find(l => l.displayName === CONFIG.deletionsListDisplayName);
   deletionsListId = delMatch ? delMatch.id : null; // optional — deleted documents just won't show in History if missing
+  const empMatch = (lists.value || []).find(l => l.displayName === CONFIG.employeesListDisplayName);
+  employeesListId = empMatch ? empMatch.id : null; // optional — HR module stays hidden entirely if missing
+  const posMatch = (lists.value || []).find(l => l.displayName === CONFIG.positionHistoryListDisplayName);
+  positionHistoryListId = posMatch ? posMatch.id : null;
+  const salMatch = (lists.value || []).find(l => l.displayName === CONFIG.salaryHistoryListDisplayName);
+  salaryHistoryListId = salMatch ? salMatch.id : null;
+  const evalMatch = (lists.value || []).find(l => l.displayName === CONFIG.evaluationScoresListDisplayName);
+  evaluationScoresListId = evalMatch ? evalMatch.id : null;
+  const incMatch = (lists.value || []).find(l => l.displayName === CONFIG.incidentsListDisplayName);
+  incidentsListId = incMatch ? incMatch.id : null;
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -684,6 +735,28 @@ function hasEditListItemsPermission(high, low) {
   // SP.PermissionKind.EditListItems = 3 -> bit position 3 within the "Low" 32-bit value
   const bit = 1 << (3 - 1);
   return (low & bit) !== 0;
+}
+
+// Checks whether the signed-in user belongs to the HR-Sensitive-Access group, using the
+// "groups" claim Azure AD adds to the ID token (Token configuration > Add groups claim).
+// FAILS CLOSED: any uncertainty (no claims, no groups array, overage) results in canAccessHR = false.
+function checkHRAccess() {
+  canAccessHR = false;
+  hrAccessOverage = false;
+  const claims = currentAccount && currentAccount.idTokenClaims;
+  if (!claims) return;
+  if (Array.isArray(claims.groups)) {
+    canAccessHR = claims.groups.includes(HR_ACCESS_GROUP_ID);
+    return;
+  }
+  // "hasgroups": true (or an _claim_names/groups overage indicator) means the user belongs to
+  // too many groups for Azure to list them in the token. We can't confirm membership from the
+  // token alone in this case, so we stay closed and just flag it for a possible Graph-based
+  // fallback check later (e.g. POST /me/checkMemberGroups) if this ever actually happens here.
+  if (claims.hasgroups || claims._claim_names) {
+    hrAccessOverage = true;
+    console.warn("HR access check: group list overage — could not confirm HR-Sensitive-Access membership from the ID token.");
+  }
 }
 
 async function checkEditPermission() {
@@ -948,6 +1021,441 @@ async function loadDeletionLog() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HR MODULE
+// Employees list holds only CURRENT values (team, position, status). The four
+// history lists (position/salary/evaluation/incidents) are append-only logs,
+// loaded on demand for one employee at a time when their detail page opens.
+// The whole module simply stays invisible if "HR Employees" hasn't been
+// created yet in SharePoint — see SETUP_HR.md.
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadEmployees() {
+  employees = [];
+  if (!employeesListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${employeesListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const name = it.fields["Title"];
+        if (!name) return;
+        employees.push({
+          id: it.id,
+          name: String(name).trim(),
+          photo: it.fields["PhotoUrl"] || "",
+          team: it.fields["Team"] || "",
+          cluster: it.fields["Cluster"] || "", // "John's Cluster" / "Gary's Cluster" / "" for non-cluster teams
+          position: it.fields["Position"] || "",
+          status: it.fields["Status"] || "Active", // Active | On Long Leave | Resigned
+          hireDate: it.fields["HireDate"] || null,
+          resumeUrl: it.fields["ResumeUrl"] || "",
+          separationDate: it.fields["SeparationDate"] || null,
+          separationReason: it.fields["SeparationReason"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR employees (list may not exist yet):", e);
+    employees = [];
+  }
+}
+
+function employeesForTeam(team, includeFormer, cluster) {
+  return employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
+}
+
+function initials(name) {
+  const parts = String(name || "").trim().split(/\s+/);
+  return ((parts[0] || "")[0] || "") + ((parts[1] || "")[0] || "");
+}
+
+function tenureLabel(hireDateStr, endDateStr) {
+  if (!hireDateStr) return "—";
+  const start = new Date(hireDateStr);
+  const end = endDateStr ? new Date(endDateStr) : new Date();
+  let months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+  if (months < 0) months = 0;
+  const years = Math.floor(months / 12);
+  const remMonths = months % 12;
+  if (years <= 0) return `${remMonths} mo${remMonths === 1 ? "" : "s"}`;
+  return `${years} yr${years === 1 ? "" : "s"} ${remMonths} mo${remMonths === 1 ? "" : "s"}`;
+}
+
+function statusBadge(status) {
+  const map = {
+    "Active": ["#1e2b1f", "#4ade80"],
+    "On Long Leave": ["#2a2410", "#fbbf24"],
+    "Resigned": ["#2b1f1f", "#f87171"]
+  };
+  const [bg, fg] = map[status] || map["Active"];
+  return `<span style="font-size:11px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 8px;">${escapeHtml(status)}</span>`;
+}
+
+function subteamsForCluster(cluster) {
+  const names = [...new Set(employees.filter(e => e.cluster === cluster).map(e => e.team).filter(Boolean))];
+  names.sort((a, b) => a.localeCompare(b));
+  return names.map(team => ({
+    team,
+    activeCount: employees.filter(e => e.cluster === cluster && e.team === team && e.status !== "Resigned").length
+  }));
+}
+
+function openTeamRoster(team, cluster) {
+  if (!employeesListId) return; // feature not set up yet
+  if (!cluster && CONFIG.clusterTeams.includes(team)) {
+    hrView = { mode: "clusterTeams", cluster: team };
+    document.getElementById("hrModal").classList.add("open");
+    renderHRModal();
+    return;
+  }
+  hrView = { mode: "roster", team, cluster: cluster || "" };
+  hrShowFormer = false;
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+function closeHRModal() {
+  document.getElementById("hrModal").classList.remove("open");
+  hrView = null;
+  hrDetail = null;
+}
+
+function toggleFormerMembers() {
+  hrShowFormer = !hrShowFormer;
+  renderHRModal();
+}
+
+async function openEmployeeDetail(employeeId) {
+  if (!canAccessHR) return; // defense in depth — this should never be reachable from the UI otherwise
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  hrView = { mode: "detail", employeeId };
+  hrDetail = null;
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal(); // shows a loading state first
+  hrDetail = await loadEmployeeDetail(employeeId);
+  if (hrView && hrView.mode === "detail" && hrView.employeeId === employeeId) renderHRModal();
+}
+
+async function loadEmployeeDetail(employeeId) {
+  const result = { positions: [], salaries: [], evaluations: [], incidents: [] };
+  async function loadList(listId, mapFn) {
+    if (!listId) return [];
+    const out = [];
+    try {
+      let url = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => {
+          if (String(it.fields["EmployeeId"]) !== String(employeeId)) return;
+          out.push(mapFn(it));
+        });
+        url = data["@odata.nextLink"] || null;
+      }
+    } catch (e) {
+      console.warn("Could not load HR sub-list:", e);
+    }
+    return out;
+  }
+  [result.positions, result.salaries, result.evaluations, result.incidents] = await Promise.all([
+    loadList(positionHistoryListId, it => ({
+      itemId: it.id,
+      date: it.fields["EffectiveDate"] || "",
+      description: it.fields["Description"] || ""
+    })),
+    loadList(salaryHistoryListId, it => ({
+      itemId: it.id,
+      date: it.fields["EffectiveDate"] || "",
+      amount: it.fields["Amount"] != null ? Number(it.fields["Amount"]) : null
+    })),
+    loadList(evaluationScoresListId, it => ({
+      itemId: it.id,
+      year: it.fields["Year"] || "",
+      attendance: it.fields["Attendance"] != null ? Number(it.fields["Attendance"]) : null,
+      performance: it.fields["Performance"] != null ? Number(it.fields["Performance"]) : null,
+      behavioral: it.fields["BehavioralFactor"] != null ? Number(it.fields["BehavioralFactor"]) : null
+    })),
+    loadList(incidentsListId, it => ({
+      itemId: it.id,
+      date: it.fields["Date"] || "",
+      type: it.fields["Type"] || "Issue", // NTE | Coaching | Issue
+      description: it.fields["Description"] || ""
+    }))
+  ]);
+  result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  result.salaries.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  result.evaluations.sort((a, b) => String(b.year).localeCompare(String(a.year)));
+  result.incidents.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  return result;
+}
+
+function openLogChangeForm(employeeId) {
+  if (!canAccessHR) return;
+  hrView = { mode: "logChange", employeeId };
+  renderHRModal();
+}
+
+async function submitLogChange() {
+  const emp = employees.find(e => e.id === hrView.employeeId);
+  if (!emp) return;
+  const cluster = document.getElementById("hrChangeCluster").value;
+  const team = document.getElementById("hrChangeTeam").value.trim();
+  const position = document.getElementById("hrChangePosition").value.trim();
+  const effectiveDate = document.getElementById("hrChangeDate").value;
+  const reason = document.getElementById("hrChangeReason").value.trim();
+  if (!team || !position || !effectiveDate) { toast("Fill in team, position, and effective date.", "error"); return; }
+  setSyncing(true);
+  try {
+    const oldLabel = emp.cluster ? `${emp.cluster} / ${emp.team || "—"}` : (emp.team || "—");
+    const newLabel = cluster ? `${cluster} / ${team}` : team;
+    const description = (team !== emp.team || cluster !== (emp.cluster || ""))
+      ? `Transferred: ${oldLabel} → ${newLabel}${position !== emp.position ? ` · ${position}` : ""}`
+      : `Position change: ${position}`;
+    if (positionHistoryListId) {
+      await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ fields: { Title: emp.name, EmployeeId: String(emp.id), EffectiveDate: effectiveDate, Description: reason ? `${description} (${reason})` : description } })
+      });
+    }
+    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Team: team, Cluster: cluster, Position: position })
+    });
+    emp.team = team;
+    emp.cluster = cluster;
+    emp.position = position;
+    setSyncing(false, true);
+    toast("Change logged ✓", "success");
+    hrView = { mode: "detail", employeeId: emp.id };
+    hrDetail = await loadEmployeeDetail(emp.id);
+    renderHRModal();
+    renderContent(); // org chart / team tabs may reference current team
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save change: " + err.message, "error");
+  }
+}
+
+function renderHRModal() {
+  const box = document.getElementById("hrModalInner");
+  if (!hrView) { box.innerHTML = ""; return; }
+
+  if (hrView.mode === "clusterTeams") {
+    const cluster = hrView.cluster;
+    const subteams = subteamsForCluster(cluster);
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <h3 style="margin-bottom:2px;">${escapeHtml(cluster)}</h3>
+          <div style="font-size:12px; color:var(--text2);">${subteams.length} team${subteams.length === 1 ? "" : "s"}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
+        ${subteams.length ? subteams.map(s => `
+          <div onclick="openTeamRoster('${jsAttrEscape(s.team)}', '${jsAttrEscape(cluster)}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+            <span style="font-size:13px; color:var(--accent);">${escapeHtml(s.team)}</span>
+            <span style="font-size:11px; color:var(--text2);">${s.activeCount} member${s.activeCount === 1 ? "" : "s"} ›</span>
+          </div>
+        `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No teams on file yet.</div>`}
+      </div>
+    `;
+    return;
+  }
+
+  if (hrView.mode === "roster") {
+    const team = hrView.team;
+    const cluster = hrView.cluster || "";
+    const active = employeesForTeam(team, false, cluster);
+    const former = employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && e.status === "Resigned");
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          ${cluster ? `<div onclick="openTeamRoster('${jsAttrEscape(cluster)}')" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; ${escapeHtml(cluster)}</div>` : ""}
+          <h3 style="margin-bottom:2px;">${escapeHtml(team)}</h3>
+          <div style="font-size:12px; color:var(--text2);">${active.length} active member${active.length === 1 ? "" : "s"}${canAccessHR && former.length ? ` · ${former.length} former` : ""}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
+        ${active.length ? active.map(e => rosterRow(e, true)).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No active members on file yet.</div>`}
+      </div>
+      ${canAccessHR && former.length ? `
+        <div onclick="toggleFormerMembers()" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--accent); padding:10px 2px; cursor:pointer;">
+          ${hrShowFormer ? "▾" : "▸"} Show former members (${former.length})
+        </div>
+        ${hrShowFormer ? `<div style="display:flex; flex-direction:column; gap:6px; opacity:.6;">${former.map(e => rosterRow(e, true)).join("")}</div>` : ""}
+      ` : ""}
+    `;
+    return;
+  }
+
+  if (hrView.mode === "detail") {
+    const emp = employees.find(e => e.id === hrView.employeeId);
+    if (!emp) { box.innerHTML = `<div style="font-size:13px;">Employee not found.</div>`; return; }
+    if (!hrDetail) {
+      box.innerHTML = `
+        <div style="display:flex; justify-content:space-between;"><h3>${escapeHtml(emp.name)}</h3><button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button></div>
+        <div style="font-size:13px; color:var(--text2); padding:20px 0;">Loading…</div>
+      `;
+      return;
+    }
+    box.innerHTML = renderEmployeeDetailHtml(emp, hrDetail);
+    return;
+  }
+
+  if (hrView.mode === "logChange") {
+    const emp = employees.find(e => e.id === hrView.employeeId);
+    if (!emp) return;
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+        <h3 style="margin-bottom:2px;">Log a change</h3>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · ${escapeHtml(emp.position || "—")}</div>
+      <div class="form-group">
+        <label>Cluster (leave blank for non-cluster teams)</label>
+        <select id="hrChangeCluster" onchange="updateHRChangeTeamOptions()">
+          <option value="" ${!emp.cluster ? "selected" : ""}>— Not part of a cluster —</option>
+          ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}" ${emp.cluster === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Team</label>
+        <input id="hrChangeTeam" list="hrChangeTeamOptions" type="text" value="${escapeHtml(emp.team || "")}" />
+        <datalist id="hrChangeTeamOptions"></datalist>
+      </div>
+      <div class="form-group"><label>New position</label><input id="hrChangePosition" type="text" value="${escapeHtml(emp.position || "")}" /></div>
+      <div class="form-group"><label>Effective date</label><input id="hrChangeDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
+      <div class="form-group"><label>Reason (optional)</label><input id="hrChangeReason" type="text" placeholder="e.g. promotion" /></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitLogChange()">Save change</button>
+      </div>
+    `;
+    updateHRChangeTeamOptions();
+  }
+}
+
+// Repopulates the Team <datalist> suggestions based on the currently selected Cluster —
+// non-cluster teams when no cluster is picked, existing sub-teams of that cluster otherwise.
+// The Team field stays a free-text input either way so a brand-new sub-team can be typed in.
+function updateHRChangeTeamOptions() {
+  const clusterSel = document.getElementById("hrChangeCluster");
+  const datalist = document.getElementById("hrChangeTeamOptions");
+  if (!clusterSel || !datalist) return;
+  const cluster = clusterSel.value;
+  const options = cluster
+    ? subteamsForCluster(cluster).map(s => s.team)
+    : CONFIG.teamOrder.filter(t => !CONFIG.clusterTeams.includes(t));
+  datalist.innerHTML = options.map(t => `<option value="${escapeHtml(t)}"></option>`).join("");
+}
+
+function rosterRow(e, clickable) {
+  const isClickable = clickable && canAccessHR;
+  return `
+    <div ${isClickable ? `onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer;"` : ""}
+         style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+      <div style="width:30px; height:30px; border-radius:50%; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:600; color:var(--accent); overflow:hidden;">
+        ${e.photo ? `<img src="${escapeAttr(e.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(e.name).toUpperCase())}
+      </div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:13px; color:${isClickable ? "var(--accent)" : "var(--text)"};">${escapeHtml(e.name)}</div>
+        <div style="font-size:11px; color:var(--text2);">${escapeHtml(e.position || "—")}</div>
+      </div>
+      ${statusBadge(e.status)}
+    </div>
+  `;
+}
+
+function renderEmployeeDetailHtml(emp, detail) {
+  const isResigned = emp.status === "Resigned";
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+
+    <div style="display:flex; gap:16px; align-items:center; padding:14px 0 18px; ${isResigned ? "" : "border-bottom:1px solid var(--border); margin-bottom:18px;"}">
+      <div style="width:56px; height:56px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; font-weight:600; color:var(--accent); overflow:hidden;">
+        ${emp.photo ? `<img src="${escapeAttr(emp.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(emp.name).toUpperCase())}
+      </div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
+        <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.position || "—")}</div>
+        <div style="margin-top:6px;">${statusBadge(emp.status)}</div>
+      </div>
+      ${emp.resumeUrl ? `<a href="${escapeAttr(emp.resumeUrl)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
+    </div>
+
+    ${isResigned ? `
+      <div style="background:var(--surface2); border:1px solid #4a2626; border-radius:10px; padding:10px 12px; margin-bottom:18px; display:flex; gap:24px;">
+        <div><div style="font-size:11px; color:var(--text2);">Separation date</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationDate || "—")}</div></div>
+        <div><div style="font-size:11px; color:var(--text2);">Separation reason</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationReason || "—")}</div></div>
+      </div>
+    ` : ""}
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
+        <div style="font-size:11px; color:var(--text2);">Hire date</div>
+        <div style="font-size:13px; margin-top:2px;">${escapeHtml(emp.hireDate || "—")}</div>
+      </div>
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
+        <div style="font-size:11px; color:var(--text2);">Tenure</div>
+        <div style="font-size:13px; margin-top:2px;">${tenureLabel(emp.hireDate, emp.separationDate)}</div>
+      </div>
+    </div>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:12px; color:var(--text2);">Position history</div>
+      ${canAccessHR ? `<button class="btn btn-secondary" onclick="openLogChangeForm('${emp.id}')" style="padding:3px 10px; font-size:11px;">Log a change</button>` : ""}
+    </div>
+    <div style="margin-bottom:18px;">
+      ${detail.positions.length ? detail.positions.map(p => `
+        <div style="display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+          <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(p.date || "—")}</div>
+          <div style="font-size:13px;">${escapeHtml(p.description)}</div>
+        </div>
+      `).join("") : `<div style="font-size:12px; color:var(--text2);">No history recorded yet.</div>`}
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px;">
+      <div>
+        <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Salary history</div>
+        ${detail.salaries.length ? `
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(s.date || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td></tr>`).join("")}
+          </table>
+        ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+      </div>
+      <div>
+        <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Yearly evaluation scores</div>
+        ${detail.evaluations.length ? `
+          <table style="width:100%; font-size:11px; border-collapse:collapse;">
+            <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attend.</td><td style="text-align:right;">Perf.</td><td style="text-align:right;">Behav.</td></tr>
+            ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td></tr>`).join("")}
+          </table>
+        ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+      </div>
+    </div>
+
+    <div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Notable incidents</div>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${detail.incidents.length ? detail.incidents.map(i => `
+          <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+            <span style="font-size:10px; background:#2b1f1f; color:#f87171; border-radius:5px; padding:2px 7px; flex-shrink:0;">${escapeHtml(i.type)}</span>
+            <span style="font-size:12px;">${escapeHtml(i.date || "")} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
+          </div>
+        `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+
+
 // Records a Created/Modified/Deleted/Restored/Permanently Deleted event so History shows a full,
 // permanent timeline — including events for documents that no longer exist. Best-effort: if this
 // fails, whatever action triggered it (save/delete/restore) has already succeeded, so we just warn.
@@ -1039,7 +1547,8 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), checkEditPermission()]);
+    checkHRAccess();
     refreshAccessFlags();
     renderTabs();
     renderContent();
@@ -1827,7 +2336,11 @@ function toggleGuidelineSection() {
 }
 
 function orgLeafBox(label, team, col) {
-  return `<div class="org-node-box org-cell-box org-leaf-box" style="grid-column:${col}; grid-row:11;" onclick="switchTab('${jsAttrEscape(team)}')">
+  const rosterIcon = employeesListId
+    ? `<span onclick="event.stopPropagation(); openTeamRoster('${jsAttrEscape(team)}')" title="View team members" style="position:absolute; top:4px; right:6px; font-size:11px; opacity:.55; cursor:pointer;">👥</span>`
+    : "";
+  return `<div class="org-node-box org-cell-box org-leaf-box" style="grid-column:${col}; grid-row:11; position:relative;" onclick="switchTab('${jsAttrEscape(team)}')">
+    ${rosterIcon}
     <div class="org-name">${escapeHtml(label)}</div>
   </div>`;
 }
