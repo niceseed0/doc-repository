@@ -1089,9 +1089,20 @@ function tenureLabel(hireDateStr, endDateStr) {
   return `${years} yr${years === 1 ? "" : "s"} ${remMonths} mo${remMonths === 1 ? "" : "s"}`;
 }
 
+function incidentTypeBadge(type) {
+  const map = {
+    "NTE": ["#2b1f1f", "#f87171"],
+    "Sanction": ["#2b1f1f", "#f87171"],
+    "Coaching": ["#2a2410", "#fbbf24"],
+    "Personal Issue": ["#1a2440", "#8fb3ff"],
+    "Other": ["#22263a", "#94a3b8"]
+  };
+  const [bg, fg] = map[type] || map["Other"];
+  return `<span style="font-size:10px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 7px; flex-shrink:0;">${escapeHtml(type)}</span>`;
+}
+
 function statusBadge(status) {
   const map = {
-    "Active": ["#1e2b1f", "#4ade80"],
     "On Long Leave": ["#2a2410", "#fbbf24"],
     "Resigned": ["#2b1f1f", "#f87171"]
   };
@@ -1186,7 +1197,7 @@ async function loadEmployeeDetail(employeeId) {
     loadList(incidentsListId, it => ({
       itemId: it.id,
       date: it.fields["Date"] || "",
-      type: it.fields["Type"] || "Issue", // NTE | Coaching | Issue
+      type: it.fields["IncidentType"] || "Other", // NTE | Coaching | Sanction | Personal Issue | Other
       description: it.fields["Description"] || ""
     }))
   ]);
@@ -1452,7 +1463,7 @@ function renderEmployeeDetailHtml(emp, detail) {
       <div style="display:flex; flex-direction:column; gap:6px;">
         ${detail.incidents.length ? detail.incidents.map(i => `
           <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
-            <span style="font-size:10px; background:#2b1f1f; color:#f87171; border-radius:5px; padding:2px 7px; flex-shrink:0;">${escapeHtml(i.type)}</span>
+            ${incidentTypeBadge(i.type)}
             <span style="font-size:12px;">${escapeHtml(i.date || "")} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
