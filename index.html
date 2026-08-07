@@ -482,8 +482,17 @@ const ADMIN_EMAILS = [
 // and can open an employee's HR detail page at all.
 // Unlike canEdit above, this check FAILS CLOSED — if anything is uncertain
 // (missing claim, overage, error), access is denied rather than granted.
+//
+// Salary history and Notable incidents are split into their own group IDs
+// below so access to those two specific sections can be narrowed later
+// without touching any other code — just point SALARY_ACCESS_GROUP_ID and/or
+// INCIDENTS_ACCESS_GROUP_ID at a different (smaller) Entra ID group. Left
+// equal to HR_ACCESS_GROUP_ID for now, so all four HR-Sensitive-Access
+// members see everything, same as before.
 // ═══════════════════════════════════════════════════════════════════════════
 const HR_ACCESS_GROUP_ID = "f4059871-1a92-4745-8197-44dd32c37c38";
+const SALARY_ACCESS_GROUP_ID = HR_ACCESS_GROUP_ID;
+const INCIDENTS_ACCESS_GROUP_ID = HR_ACCESS_GROUP_ID;
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 const TRASH_LABEL = "\ud83d\uddd1\ufe0f Trash Access"; // special value granted via the Permissions tab meaning "this person can see and use the Trash"
@@ -652,6 +661,8 @@ let deletionsListId = null;
 let deletionLog = []; // [{ itemId, documentName, team, deletedBy, deletedDate }]
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 let canAccessHR = false; // whether the signed-in user is in the HR-Sensitive-Access group (checked at startup, fails closed)
+let canAccessSalary = false; // access to Salary history specifically — same group as canAccessHR today, can be split later
+let canAccessIncidents = false; // access to Notable incidents specifically — same group as canAccessHR today, can be split later
 let hrAccessOverage = false; // true if the ID token couldn't list all of this user's groups (too many groups) — set as a signal to fall back to a Graph check later if needed
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -754,11 +765,15 @@ function hasEditListItemsPermission(high, low) {
 // FAILS CLOSED: any uncertainty (no claims, no groups array, overage) results in canAccessHR = false.
 function checkHRAccess() {
   canAccessHR = false;
+  canAccessSalary = false;
+  canAccessIncidents = false;
   hrAccessOverage = false;
   const claims = currentAccount && currentAccount.idTokenClaims;
   if (!claims) return;
   if (Array.isArray(claims.groups)) {
     canAccessHR = claims.groups.includes(HR_ACCESS_GROUP_ID);
+    canAccessSalary = claims.groups.includes(SALARY_ACCESS_GROUP_ID);
+    canAccessIncidents = claims.groups.includes(INCIDENTS_ACCESS_GROUP_ID);
     return;
   }
   // "hasgroups": true (or an _claim_names/groups overage indicator) means the user belongs to
@@ -1058,7 +1073,7 @@ async function loadEmployees() {
           team: it.fields["Team"] || "",
           cluster: it.fields["Cluster"] || "", // "John's Cluster" / "Gary's Cluster" / "" for non-cluster teams
           position: it.fields["Position"] || "",
-          status: it.fields["Status"] || "Active", // Active | On Long Leave | Resigned
+          status: it.fields["Status"] || "Regular", // Probationary | Regular | Contractual | Leave of Absence | Resigned
           hireDate: it.fields["HireDate"] || null,
           resumeUrl: it.fields["ResumeUrl"] || "",
           separationDate: it.fields["SeparationDate"] || null,
@@ -1135,11 +1150,13 @@ function incidentTypeBadge(type) {
 
 function statusBadge(status) {
   const map = {
-    "Active": ["#1e2b1f", "#4ade80"],
-    "On Long Leave": ["#2a2410", "#fbbf24"],
+    "Probationary": ["#1a2440", "#8fb3ff"],
+    "Regular": ["#1e2b1f", "#4ade80"],
+    "Contractual": ["#22263a", "#94a3b8"],
+    "Leave of Absence": ["#2a2410", "#fbbf24"],
     "Resigned": ["#2b1f1f", "#f87171"]
   };
-  const [bg, fg] = map[status] || map["Active"];
+  const [bg, fg] = map[status] || map["Regular"];
   return `<span style="font-size:11px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 8px;">${escapeHtml(status)}</span>`;
 }
 
@@ -1304,7 +1321,7 @@ function toggleFormerMembers() {
 }
 
 async function openEmployeeDetail(employeeId) {
-  if (!canAccessHR) return; // defense in depth — this should never be reachable from the UI otherwise
+  if (!canAccessHR && !canAccessSalary && !canAccessIncidents) return; // defense in depth — this should never be reachable from the UI otherwise
   const emp = employees.find(e => e.id === employeeId);
   if (!emp) return;
   hrView = { mode: "detail", employeeId };
@@ -1418,8 +1435,14 @@ async function submitLogChange() {
 const HR_SUB_LIST = { position: () => positionHistoryListId, salary: () => salaryHistoryListId, evaluation: () => evaluationScoresListId, incident: () => incidentsListId };
 const HR_SUB_LABEL = { position: "position history entry", salary: "salary entry", evaluation: "evaluation", incident: "incident" };
 
+function canAccessHRKind(kind) {
+  if (kind === "salary") return canAccessSalary;
+  if (kind === "incident") return canAccessIncidents;
+  return canAccessHR;
+}
+
 function openAddSubRecordForm(kind, employeeId) {
-  if (!canAccessHR) return;
+  if (!canAccessHRKind(kind)) return;
   hrView = { mode: "addSub", kind, employeeId };
   renderHRModal();
 }
@@ -1516,6 +1539,7 @@ async function submitAddSubRecord() {
 }
 
 async function deleteHRSubRecord(kind, itemId) {
+  if (!canAccessHRKind(kind)) return; // defense in depth
   const listId = HR_SUB_LIST[kind]();
   if (!listId) return;
   if (!confirm(`Delete this ${HR_SUB_LABEL[kind]}? This can't be undone.`)) return;
@@ -1681,10 +1705,12 @@ function renderHRModal() {
       </div>
       <div class="form-group"><label>Position</label><input id="hrAddPosition" type="text" /></div>
       <div class="form-group">
-        <label>Status</label>
+        <label>Employment Status</label>
         <select id="hrAddStatus" onchange="renderHRAddSeparationFields()">
-          <option value="Active" selected>Active</option>
-          <option value="On Long Leave">On Long Leave</option>
+          <option value="Probationary">Probationary</option>
+          <option value="Regular" selected>Regular</option>
+          <option value="Contractual">Contractual</option>
+          <option value="Leave of Absence">Leave of Absence</option>
           <option value="Resigned">Resigned</option>
         </select>
       </div>
@@ -1724,7 +1750,7 @@ function renderHRModal() {
 }
 
 function rosterRow(e, clickable) {
-  const isClickable = clickable && canAccessHR;
+  const isClickable = clickable && (canAccessHR || canAccessSalary || canAccessIncidents);
   return `
     <div ${isClickable ? `onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer;"` : ""}
          style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
@@ -1744,47 +1770,58 @@ function renderEmployeeDetailHtml(emp, detail) {
   const isResigned = emp.status === "Resigned";
   const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
   const addBtn = (kind, label) => `<button class="btn btn-secondary" onclick="openAddSubRecordForm('${kind}','${emp.id}')" style="padding:3px 10px; font-size:11px;">${label}</button>`;
+  const sectionLabel = (n, text) => `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px;">${n}. ${text}</div>`;
+
   return `
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
       <div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
 
-    <div style="display:flex; gap:16px; align-items:center; padding:14px 0 18px; ${isResigned ? "" : "border-bottom:1px solid var(--border); margin-bottom:18px;"}">
-      <div style="width:56px; height:56px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; font-weight:600; color:var(--accent); overflow:hidden;">
-        ${emp.photo ? `<img src="${escapeAttr(emp.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(emp.name).toUpperCase())}
-      </div>
-      <div style="flex:1; min-width:0;">
-        <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
-        <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.position || "—")}</div>
-        <div style="margin-top:6px;">${statusBadge(emp.status)}</div>
-      </div>
-      ${emp.resumeUrl ? `<a href="${escapeAttr(emp.resumeUrl)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
-    </div>
-
-    ${isResigned ? `
-      <div style="background:var(--surface2); border:1px solid #4a2626; border-radius:10px; padding:10px 12px; margin-bottom:18px; display:flex; gap:24px;">
-        <div><div style="font-size:11px; color:var(--text2);">Separation date</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(dateOnly(emp.separationDate) || "—")}</div></div>
-        <div><div style="font-size:11px; color:var(--text2);">Separation reason</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationReason || "—")}</div></div>
-      </div>
-    ` : ""}
-
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">
-      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
-        <div style="font-size:11px; color:var(--text2);">Hire date</div>
-        <div style="font-size:13px; margin-top:2px;">${escapeHtml(dateOnly(emp.hireDate) || "—")}</div>
-      </div>
-      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
-        <div style="font-size:11px; color:var(--text2);">Tenure</div>
-        <div style="font-size:13px; margin-top:2px;">${tenureLabel(emp.hireDate, emp.separationDate)}</div>
+    <!-- 1. Employee Overview -->
+    <div style="margin-top:14px; margin-bottom:20px;">
+      ${sectionLabel(1, "Employee Overview")}
+      <div style="display:flex; gap:16px; align-items:center;">
+        <div style="width:56px; height:56px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; font-weight:600; color:var(--accent); overflow:hidden;">
+          ${emp.photo ? `<img src="${escapeAttr(emp.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(emp.name).toUpperCase())}
+        </div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
+          <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.team)}${emp.cluster ? ` <span style="color:var(--text3);">· ${escapeHtml(emp.cluster)}</span>` : ""}</div>
+          <div style="font-size:13px; color:var(--text2); margin-top:1px;">${escapeHtml(emp.position || "—")}</div>
+        </div>
+        ${emp.resumeUrl ? `<a href="${escapeAttr(emp.resumeUrl)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
       </div>
     </div>
 
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <div style="font-size:12px; color:var(--text2);">Employee History</div>
-      ${canAccessHR ? `<button class="btn btn-secondary" onclick="openLogChangeForm('${emp.id}')" style="padding:3px 10px; font-size:11px;">Transfer / Log change</button>` : ""}
+    <!-- 2. Employment -->
+    <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
+      ${sectionLabel(2, "Employment")}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
+          <div style="font-size:11px; color:var(--text2);">Hire date</div>
+          <div style="font-size:13px; margin-top:2px;">${escapeHtml(dateOnly(emp.hireDate) || "—")}</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:4px;">${tenureLabel(emp.hireDate, emp.separationDate)} tenure</div>
+        </div>
+        <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
+          <div style="font-size:11px; color:var(--text2); margin-bottom:6px;">Employment status</div>
+          ${statusBadge(emp.status)}
+        </div>
+      </div>
+      ${isResigned ? `
+        <div style="background:var(--surface2); border:1px solid #4a2626; border-radius:10px; padding:10px 12px; margin-top:10px; display:flex; gap:24px;">
+          <div><div style="font-size:11px; color:var(--text2);">Separation date</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(dateOnly(emp.separationDate) || "—")}</div></div>
+          <div><div style="font-size:11px; color:var(--text2);">Separation reason</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationReason || "—")}</div></div>
+        </div>
+      ` : ""}
     </div>
-    <div style="margin-bottom:18px;">
+
+    <!-- 3. Employee History -->
+    <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        ${sectionLabel(3, "Employee History")}
+        ${canAccessHR ? `<button class="btn btn-secondary" onclick="openLogChangeForm('${emp.id}')" style="padding:3px 10px; font-size:11px;">Transfer / Log change</button>` : ""}
+      </div>
       ${detail.positions.length ? detail.positions.map(p => `
         <div style="display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--border);">
           <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(dateOnly(p.date) || "—")}</div>
@@ -1794,35 +1831,25 @@ function renderEmployeeDetailHtml(emp, detail) {
       `).join("") : `<div style="font-size:12px; color:var(--text2);">No history recorded yet.</div>`}
     </div>
 
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px;">
-      <div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <div style="font-size:12px; color:var(--text2);">Salary history</div>
-          ${addBtn("salary", "+ Add")}
-        </div>
-        ${detail.salaries.length ? `
-          <table style="width:100%; font-size:12px; border-collapse:collapse;">
-            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
-          </table>
-        ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+    <!-- 4. Performance Evaluation -->
+    <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        ${sectionLabel(4, "Performance Evaluation")}
+        ${addBtn("evaluation", "+ Add")}
       </div>
-      <div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <div style="font-size:12px; color:var(--text2);">Yearly evaluation scores</div>
-          ${addBtn("evaluation", "+ Add")}
-        </div>
-        ${detail.evaluations.length ? `
-          <table style="width:100%; font-size:11px; border-collapse:collapse;">
-            <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attend.</td><td style="text-align:right;">Perf.</td><td style="text-align:right;">Behav.</td><td></td></tr>
-            ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${delBtn("evaluation", ev.itemId)}</td></tr>`).join("")}
-          </table>
-        ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
-      </div>
+      ${detail.evaluations.length ? `
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attendance</td><td style="text-align:right;">Performance</td><td style="text-align:right;">Behavioral factor</td><td></td></tr>
+          ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${delBtn("evaluation", ev.itemId)}</td></tr>`).join("")}
+        </table>
+      ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
     </div>
 
-    <div style="margin-bottom:18px;">
+    ${canAccessIncidents ? `
+    <!-- 5. Notable incidents -->
+    <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:12px; color:var(--text2);">Notable incidents</div>
+        ${sectionLabel(5, "Notable incidents")}
         ${addBtn("incident", "+ Add")}
       </div>
       <div style="display:flex; flex-direction:column; gap:6px;">
@@ -1835,13 +1862,30 @@ function renderEmployeeDetailHtml(emp, detail) {
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
       </div>
     </div>
+    ` : ""}
 
+    ${canAccessSalary ? `
+    <!-- 6. Salary history -->
+    <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        ${sectionLabel(6, "Salary history")}
+        ${addBtn("salary", "+ Add")}
+      </div>
+      ${detail.salaries.length ? `
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
+        </table>
+      ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+    </div>
+    ` : ""}
+
+    ${canAccessHR ? `
     <div style="border-top:1px solid var(--border); padding-top:14px; text-align:right;">
       <span onclick="deleteEmployeeRecord('${emp.id}')" style="font-size:11px; color:#f87171; cursor:pointer;">Delete employee record</span>
     </div>
+    ` : ""}
   `;
 }
-
 
 
 // Records a Created/Modified/Deleted/Restored/Permanently Deleted event so History shows a full,
