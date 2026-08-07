@@ -483,7 +483,7 @@ const ADMIN_EMAILS = [
 // Unlike canEdit above, this check FAILS CLOSED — if anything is uncertain
 // (missing claim, overage, error), access is denied rather than granted.
 //
-// Salary history and Notable incidents are split into their own group IDs
+// Salary history and HR Records (formerly "Notable incidents") are split into their own group IDs
 // below so access to those two specific sections can be narrowed later
 // without touching any other code — just point SALARY_ACCESS_GROUP_ID and/or
 // INCIDENTS_ACCESS_GROUP_ID at a different (smaller) Entra ID group. Left
@@ -662,7 +662,7 @@ let deletionLog = []; // [{ itemId, documentName, team, deletedBy, deletedDate }
 let canEdit = true; // whether the signed-in user has edit rights on the SharePoint list (checked at startup)
 let canAccessHR = false; // whether the signed-in user is in the HR-Sensitive-Access group (checked at startup, fails closed)
 let canAccessSalary = false; // access to Salary history specifically — same group as canAccessHR today, can be split later
-let canAccessIncidents = false; // access to Notable incidents specifically — same group as canAccessHR today, can be split later
+let canAccessIncidents = false; // access to HR Records (incidents/recognition) specifically — same group as canAccessHR today, can be split later
 let hrAccessOverage = false; // true if the ID token couldn't list all of this user's groups (too many groups) — set as a signal to fall back to a Graph check later if needed
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1138,6 +1138,7 @@ function tenureLabel(hireDateStr, endDateStr) {
 
 function incidentTypeBadge(type) {
   const map = {
+    "Recognition": ["#0f2e2a", "#2dd4bf"],
     "NTE": ["#2b1f1f", "#f87171"],
     "Sanction": ["#2b1f1f", "#f87171"],
     "Coaching": ["#2a2410", "#fbbf24"],
@@ -1433,7 +1434,7 @@ async function submitLogChange() {
 
 // ── Salary / evaluation / incident quick-add forms ─────────────────────────
 const HR_SUB_LIST = { position: () => positionHistoryListId, salary: () => salaryHistoryListId, evaluation: () => evaluationScoresListId, incident: () => incidentsListId };
-const HR_SUB_LABEL = { position: "position history entry", salary: "salary entry", evaluation: "evaluation", incident: "incident" };
+const HR_SUB_LABEL = { position: "position history entry", salary: "salary entry", evaluation: "evaluation", incident: "HR record" };
 
 function canAccessHRKind(kind) {
   if (kind === "salary") return canAccessSalary;
@@ -1450,7 +1451,7 @@ function openAddSubRecordForm(kind, employeeId) {
 function renderAddSubRecordForm(kind, employeeId) {
   const emp = employees.find(e => e.id === employeeId);
   if (!emp) return "";
-  const titleMap = { salary: "Add salary entry", evaluation: "Add evaluation", incident: "Add incident" };
+  const titleMap = { salary: "Add salary entry", evaluation: "Add evaluation", incident: "Add HR record" };
   let fields = "";
   if (kind === "salary") {
     fields = `
@@ -1471,11 +1472,12 @@ function renderAddSubRecordForm(kind, employeeId) {
       <div class="form-group">
         <label>Type</label>
         <select id="hrSubType">
+          <option value="Recognition" selected>Recognition</option>
           <option value="NTE">NTE</option>
           <option value="Coaching">Coaching</option>
           <option value="Sanction">Sanction</option>
           <option value="Personal Issue">Personal Issue</option>
-          <option value="Other" selected>Other</option>
+          <option value="Other">Other</option>
         </select>
       </div>
       <div class="form-group"><label>Description</label><input id="hrSubDescription" type="text" /></div>
@@ -1846,10 +1848,10 @@ function renderEmployeeDetailHtml(emp, detail) {
     </div>
 
     ${canAccessIncidents ? `
-    <!-- 5. Notable incidents -->
+    <!-- 5. HR Records -->
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        ${sectionLabel(5, "Notable incidents")}
+        ${sectionLabel(5, "HR Records")}
         ${addBtn("incident", "+ Add")}
       </div>
       <div style="display:flex; flex-direction:column; gap:6px;">
