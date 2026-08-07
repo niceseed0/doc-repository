@@ -439,6 +439,7 @@ const CONFIG = {
   salaryHistoryListDisplayName: "HR Salary History",
   evaluationScoresListDisplayName: "HR Evaluation Scores",
   incidentsListDisplayName: "HR Incidents",
+  teamsListDisplayName: "HR Teams",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -663,6 +664,8 @@ let positionHistoryListId = null;
 let salaryHistoryListId = null;
 let evaluationScoresListId = null;
 let incidentsListId = null;
+let teamsListId = null;
+let hrTeams = []; // pre-declared teams: [{ itemId, cluster, team }] — lets a team exist with zero members yet
 let employees = []; // [{ id, name, photo, team, position, status, hireDate, resumeUrl, separationDate, separationReason }]
 let hrView = null; // { mode:'roster', team } | { mode:'detail', employeeId } | { mode:'logChange', employeeId } | null
 let hrShowFormer = false; // whether the "show former members" toggle is expanded in the current roster view
@@ -683,7 +686,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -731,6 +734,8 @@ async function resolveSiteAndLists() {
   evaluationScoresListId = evalMatch ? evalMatch.id : null;
   const incMatch = (lists.value || []).find(l => l.displayName === CONFIG.incidentsListDisplayName);
   incidentsListId = incMatch ? incMatch.id : null;
+  const teamsMatch = (lists.value || []).find(l => l.displayName === CONFIG.teamsListDisplayName);
+  teamsListId = teamsMatch ? teamsMatch.id : null; // optional — pre-declared empty teams just won't show without it
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -1068,6 +1073,26 @@ async function loadEmployees() {
   }
 }
 
+async function loadHRTeams() {
+  hrTeams = [];
+  if (!teamsListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${teamsListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const team = it.fields["Title"];
+        if (!team) return;
+        hrTeams.push({ itemId: it.id, cluster: it.fields["Cluster"] || "", team: String(team).trim() });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR teams (list may not exist yet):", e);
+    hrTeams = [];
+  }
+}
+
 function employeesForTeam(team, includeFormer, cluster) {
   return employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
 }
@@ -1212,12 +1237,45 @@ function renderHRAddSeparationFields() {
 }
 
 function subteamsForCluster(cluster) {
-  const names = [...new Set(employees.filter(e => e.cluster === cluster).map(e => e.team).filter(Boolean))];
+  const fromEmployees = employees.filter(e => e.cluster === cluster).map(e => e.team);
+  const fromPreDeclared = hrTeams.filter(t => t.cluster === cluster).map(t => t.team);
+  const names = [...new Set([...fromEmployees, ...fromPreDeclared])].filter(Boolean);
   names.sort((a, b) => a.localeCompare(b));
   return names.map(team => ({
     team,
     activeCount: employees.filter(e => e.cluster === cluster && e.team === team && e.status !== "Resigned").length
   }));
+}
+
+function openAddTeamForm(cluster) {
+  if (!canAccessHR || !teamsListId) return;
+  hrView = { mode: "addTeam", cluster };
+  renderHRModal();
+}
+
+async function submitAddTeam() {
+  const cluster = hrView.cluster;
+  const name = document.getElementById("hrNewTeamName").value.trim();
+  if (!name) { toast("Enter a team name.", "error"); return; }
+  if (subteamsForCluster(cluster).some(s => s.team.toLowerCase() === name.toLowerCase())) {
+    toast("That team already exists.", "error");
+    return;
+  }
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${teamsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { Title: name, Cluster: cluster } })
+    });
+    hrTeams.push({ itemId: created.id, cluster, team: name });
+    setSyncing(false, true);
+    toast("Team added ✓", "success");
+    hrView = { mode: "clusterTeams", cluster };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not add team: " + err.message, "error");
+  }
 }
 
 function openTeamRoster(team, cluster) {
@@ -1518,6 +1576,7 @@ function renderHRModal() {
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No teams on file yet.</div>`}
       </div>
+      ${canAccessHR && teamsListId ? `<button class="btn btn-secondary" onclick="openAddTeamForm('${jsAttrEscape(cluster)}')" style="margin-top:14px; padding:5px 12px; font-size:12px;">+ Add team</button>` : ""}
     `;
     return;
   }
@@ -1644,6 +1703,23 @@ function renderHRModal() {
 
   if (hrView.mode === "addSub") {
     box.innerHTML = renderAddSubRecordForm(hrView.kind, hrView.employeeId);
+  }
+
+  if (hrView.mode === "addTeam") {
+    const cluster = hrView.cluster;
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+        <h3 style="margin-bottom:2px;">Add team</h3>
+        <button class="btn btn-secondary" onclick="openTeamRoster('${jsAttrEscape(cluster)}')" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(cluster)}</div>
+      <div class="form-group"><label>Team name</label><input id="hrNewTeamName" type="text" placeholder="e.g. Payments Team" /></div>
+      <div style="font-size:11px; color:var(--text2); margin-bottom:8px;">Creates an empty team you can assign people to later — no members needed yet.</div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="openTeamRoster('${jsAttrEscape(cluster)}')">Cancel</button>
+        <button class="btn btn-primary" onclick="submitAddTeam()">Add team</button>
+      </div>
+    `;
   }
 }
 
@@ -1859,7 +1935,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
