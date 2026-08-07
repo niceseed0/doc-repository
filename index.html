@@ -1111,18 +1111,40 @@ function statusBadge(status) {
   return `<span style="font-size:11px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 8px;">${escapeHtml(status)}</span>`;
 }
 
-// Repopulates a Team <datalist> based on the currently selected Cluster —
-// non-cluster teams when no cluster is picked, existing sub-teams of that cluster otherwise.
-// The Team field stays a free-text input either way so a brand-new sub-team can be typed in.
-function updateClusterTeamOptions(clusterSelectId, datalistId) {
+// Repopulates a Team <select> based on the currently selected Cluster — existing non-cluster
+// teams when no cluster is picked, existing sub-teams of that cluster otherwise — plus a
+// "+ Add new team…" option. Using a real dropdown (instead of free text) prevents the same
+// team ending up stored under slightly different spellings/casing/spacing.
+function updateClusterTeamOptions(clusterSelectId, teamSelectId, presetValue) {
   const clusterSel = document.getElementById(clusterSelectId);
-  const datalist = document.getElementById(datalistId);
-  if (!clusterSel || !datalist) return;
+  const teamSel = document.getElementById(teamSelectId);
+  if (!clusterSel || !teamSel) return;
   const cluster = clusterSel.value;
   const options = cluster
     ? subteamsForCluster(cluster).map(s => s.team)
     : CONFIG.teamOrder.filter(t => !CONFIG.clusterTeams.includes(t));
-  datalist.innerHTML = options.map(t => `<option value="${escapeHtml(t)}"></option>`).join("");
+  // If the employee's current team isn't in the list yet (new/legacy value), keep it selectable.
+  if (presetValue && !options.includes(presetValue)) options.unshift(presetValue);
+  teamSel.innerHTML = options.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")
+    + `<option value="__new__">+ Add new team…</option>`;
+  teamSel.value = presetValue && options.includes(presetValue) ? presetValue : (options[0] || "__new__");
+  onHRTeamSelectChange(teamSelectId, teamSelectId + "NewWrap");
+}
+
+// Shows/hides the "type a new team name" text box next to a Team <select>.
+function onHRTeamSelectChange(selectId, wrapId) {
+  const sel = document.getElementById(selectId);
+  const wrap = document.getElementById(wrapId);
+  if (!sel || !wrap) return;
+  wrap.style.display = sel.value === "__new__" ? "block" : "none";
+}
+
+// Resolves the actual team name from a Team <select> + its paired "new team" text input.
+function selectedTeamValue(selectId, newInputId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return "";
+  if (sel.value === "__new__") return document.getElementById(newInputId).value.trim();
+  return sel.value;
 }
 
 function openAddEmployeeForm() {
@@ -1135,7 +1157,7 @@ function openAddEmployeeForm() {
 async function submitAddEmployee() {
   const name = document.getElementById("hrAddName").value.trim();
   const cluster = document.getElementById("hrAddCluster").value;
-  const team = document.getElementById("hrAddTeam").value.trim();
+  const team = selectedTeamValue("hrAddTeam", "hrAddTeamNew");
   const position = document.getElementById("hrAddPosition").value.trim();
   const status = document.getElementById("hrAddStatus").value;
   const hireDate = document.getElementById("hrAddHireDate").value;
@@ -1290,7 +1312,7 @@ async function submitLogChange() {
   const emp = employees.find(e => e.id === hrView.employeeId);
   if (!emp) return;
   const cluster = document.getElementById("hrChangeCluster").value;
-  const team = document.getElementById("hrChangeTeam").value.trim();
+  const team = selectedTeamValue("hrChangeTeam", "hrChangeTeamNew");
   const position = document.getElementById("hrChangePosition").value.trim();
   const effectiveDate = document.getElementById("hrChangeDate").value;
   const reason = document.getElementById("hrChangeReason").value.trim();
@@ -1324,6 +1346,145 @@ async function submitLogChange() {
   } catch (err) {
     setSyncing(false, false);
     toast("Could not save change: " + err.message, "error");
+  }
+}
+
+// ── Salary / evaluation / incident quick-add forms ─────────────────────────
+const HR_SUB_LIST = { position: () => positionHistoryListId, salary: () => salaryHistoryListId, evaluation: () => evaluationScoresListId, incident: () => incidentsListId };
+const HR_SUB_LABEL = { position: "position history entry", salary: "salary entry", evaluation: "evaluation", incident: "incident" };
+
+function openAddSubRecordForm(kind, employeeId) {
+  if (!canAccessHR) return;
+  hrView = { mode: "addSub", kind, employeeId };
+  renderHRModal();
+}
+
+function renderAddSubRecordForm(kind, employeeId) {
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp) return "";
+  const titleMap = { salary: "Add salary entry", evaluation: "Add evaluation", incident: "Add incident" };
+  let fields = "";
+  if (kind === "salary") {
+    fields = `
+      <div class="form-group"><label>Effective date</label><input id="hrSubDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
+      <div class="form-group"><label>Amount (₱)</label><input id="hrSubAmount" type="number" step="0.01" /></div>
+    `;
+  } else if (kind === "evaluation") {
+    const year = new Date().getFullYear();
+    fields = `
+      <div class="form-group"><label>Year</label><input id="hrSubYear" type="number" value="${year}" /></div>
+      <div class="form-group"><label>Attendance</label><input id="hrSubAttendance" type="number" step="0.1" /></div>
+      <div class="form-group"><label>Performance</label><input id="hrSubPerformance" type="number" step="0.1" /></div>
+      <div class="form-group"><label>Behavioral factor</label><input id="hrSubBehavioral" type="number" step="0.1" /></div>
+    `;
+  } else if (kind === "incident") {
+    fields = `
+      <div class="form-group"><label>Date</label><input id="hrSubDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
+      <div class="form-group">
+        <label>Type</label>
+        <select id="hrSubType">
+          <option value="NTE">NTE</option>
+          <option value="Coaching">Coaching</option>
+          <option value="Sanction">Sanction</option>
+          <option value="Personal Issue">Personal Issue</option>
+          <option value="Other" selected>Other</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Description</label><input id="hrSubDescription" type="text" /></div>
+    `;
+  }
+  return `
+    <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+      <h3 style="margin-bottom:2px;">${titleMap[kind]}</h3>
+      <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)}</div>
+    ${fields}
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddSubRecord()">Save</button>
+    </div>
+  `;
+}
+
+async function submitAddSubRecord() {
+  const { kind, employeeId } = hrView;
+  const emp = employees.find(e => e.id === employeeId);
+  const listId = HR_SUB_LIST[kind]();
+  if (!emp || !listId) { toast("That list isn't set up yet.", "error"); return; }
+
+  let fields = { Title: emp.name, EmployeeId: String(emp.id) };
+  if (kind === "salary") {
+    const date = document.getElementById("hrSubDate").value;
+    const amount = document.getElementById("hrSubAmount").value;
+    if (!date || amount === "") { toast("Fill in date and amount.", "error"); return; }
+    fields.EffectiveDate = date;
+    fields.Amount = Number(amount);
+  } else if (kind === "evaluation") {
+    const year = document.getElementById("hrSubYear").value;
+    if (!year) { toast("Fill in the year.", "error"); return; }
+    fields.Year = Number(year);
+    fields.Attendance = document.getElementById("hrSubAttendance").value ? Number(document.getElementById("hrSubAttendance").value) : null;
+    fields.Performance = document.getElementById("hrSubPerformance").value ? Number(document.getElementById("hrSubPerformance").value) : null;
+    fields.BehavioralFactor = document.getElementById("hrSubBehavioral").value ? Number(document.getElementById("hrSubBehavioral").value) : null;
+  } else if (kind === "incident") {
+    const date = document.getElementById("hrSubDate").value;
+    const description = document.getElementById("hrSubDescription").value.trim();
+    if (!description) { toast("Add a short description.", "error"); return; }
+    fields.Date = date;
+    fields.IncidentType = document.getElementById("hrSubType").value;
+    fields.Description = description;
+  }
+
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    setSyncing(false, true);
+    toast(`Added ${HR_SUB_LABEL[kind]} ✓`, "success");
+    hrView = { mode: "detail", employeeId };
+    hrDetail = await loadEmployeeDetail(employeeId);
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
+async function deleteHRSubRecord(kind, itemId) {
+  const listId = HR_SUB_LIST[kind]();
+  if (!listId) return;
+  if (!confirm(`Delete this ${HR_SUB_LABEL[kind]}? This can't be undone.`)) return;
+  const employeeId = hrView && hrView.employeeId;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}`, { method: "DELETE" });
+    setSyncing(false, true);
+    toast("Deleted ✓", "success");
+    if (employeeId) {
+      hrDetail = await loadEmployeeDetail(employeeId);
+      renderHRModal();
+    }
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+async function deleteEmployeeRecord(employeeId) {
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp || !canAccessHR) return;
+  if (!confirm(`Delete ${emp.name}'s HR record? This removes their profile (not their salary/evaluation/incident history, which stays on file). This can't be undone.`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${employeeId}`, { method: "DELETE" });
+    employees = employees.filter(e => e.id !== employeeId);
+    setSyncing(false, true);
+    toast("Employee record deleted ✓", "success");
+    openTeamRoster(emp.team, emp.cluster);
+    renderContent();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
   }
 }
 
@@ -1406,15 +1567,17 @@ function renderHRModal() {
       <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · ${escapeHtml(emp.position || "—")}</div>
       <div class="form-group">
         <label>Cluster (leave blank for non-cluster teams)</label>
-        <select id="hrChangeCluster" onchange="updateClusterTeamOptions('hrChangeCluster','hrChangeTeamOptions')">
+        <select id="hrChangeCluster" onchange="updateClusterTeamOptions('hrChangeCluster','hrChangeTeam')">
           <option value="" ${!emp.cluster ? "selected" : ""}>— Not part of a cluster —</option>
           ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}" ${emp.cluster === c ? "selected" : ""}>${escapeHtml(c)}</option>`).join("")}
         </select>
       </div>
       <div class="form-group">
         <label>Team</label>
-        <input id="hrChangeTeam" list="hrChangeTeamOptions" type="text" value="${escapeHtml(emp.team || "")}" />
-        <datalist id="hrChangeTeamOptions"></datalist>
+        <select id="hrChangeTeam" onchange="onHRTeamSelectChange('hrChangeTeam','hrChangeTeamNewWrap')"></select>
+        <div id="hrChangeTeamNewWrap" style="display:none; margin-top:6px;">
+          <input id="hrChangeTeamNew" type="text" placeholder="New team name" />
+        </div>
       </div>
       <div class="form-group"><label>New position</label><input id="hrChangePosition" type="text" value="${escapeHtml(emp.position || "")}" /></div>
       <div class="form-group"><label>Effective date</label><input id="hrChangeDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
@@ -1424,7 +1587,7 @@ function renderHRModal() {
         <button class="btn btn-primary" onclick="submitLogChange()">Save change</button>
       </div>
     `;
-    updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeamOptions');
+    updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeam', emp.team);
   }
 
   if (hrView.mode === "addEmployee") {
@@ -1437,15 +1600,17 @@ function renderHRModal() {
       <div class="form-group"><label>Name</label><input id="hrAddName" type="text" /></div>
       <div class="form-group">
         <label>Cluster (leave blank for non-cluster teams)</label>
-        <select id="hrAddCluster" onchange="updateClusterTeamOptions('hrAddCluster','hrAddTeamOptions')">
+        <select id="hrAddCluster" onchange="updateClusterTeamOptions('hrAddCluster','hrAddTeam')">
           <option value="" selected>— Not part of a cluster —</option>
           ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
         </select>
       </div>
       <div class="form-group">
         <label>Team</label>
-        <input id="hrAddTeam" list="hrAddTeamOptions" type="text" />
-        <datalist id="hrAddTeamOptions"></datalist>
+        <select id="hrAddTeam" onchange="onHRTeamSelectChange('hrAddTeam','hrAddTeamNewWrap')"></select>
+        <div id="hrAddTeamNewWrap" style="display:none; margin-top:6px;">
+          <input id="hrAddTeamNew" type="text" placeholder="New team name" />
+        </div>
       </div>
       <div class="form-group"><label>Position</label><input id="hrAddPosition" type="text" /></div>
       <div class="form-group">
@@ -1465,8 +1630,12 @@ function renderHRModal() {
         <button class="btn btn-primary" onclick="submitAddEmployee()">Add employee</button>
       </div>
     `;
-    updateClusterTeamOptions('hrAddCluster', 'hrAddTeamOptions');
+    updateClusterTeamOptions('hrAddCluster', 'hrAddTeam');
     renderHRAddSeparationFields();
+  }
+
+  if (hrView.mode === "addSub") {
+    box.innerHTML = renderAddSubRecordForm(hrView.kind, hrView.employeeId);
   }
 }
 
@@ -1489,6 +1658,8 @@ function rosterRow(e, clickable) {
 
 function renderEmployeeDetailHtml(emp, detail) {
   const isResigned = emp.status === "Resigned";
+  const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
+  const addBtn = (kind, label) => `<button class="btn btn-secondary" onclick="openAddSubRecordForm('${kind}','${emp.id}')" style="padding:3px 10px; font-size:11px;">${label}</button>`;
   return `
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
       <div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>
@@ -1531,43 +1702,58 @@ function renderEmployeeDetailHtml(emp, detail) {
     </div>
     <div style="margin-bottom:18px;">
       ${detail.positions.length ? detail.positions.map(p => `
-        <div style="display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--border);">
+        <div style="display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--border);">
           <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(p.date || "—")}</div>
-          <div style="font-size:13px;">${escapeHtml(p.description)}</div>
+          <div style="font-size:13px; flex:1;">${escapeHtml(p.description)}</div>
+          ${delBtn("position", p.itemId)}
         </div>
       `).join("") : `<div style="font-size:12px; color:var(--text2);">No history recorded yet.</div>`}
     </div>
 
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px;">
       <div>
-        <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Salary history</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="font-size:12px; color:var(--text2);">Salary history</div>
+          ${addBtn("salary", "+ Add")}
+        </div>
         ${detail.salaries.length ? `
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
-            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(s.date || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td></tr>`).join("")}
+            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(s.date || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
           </table>
         ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
       </div>
       <div>
-        <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Yearly evaluation scores</div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="font-size:12px; color:var(--text2);">Yearly evaluation scores</div>
+          ${addBtn("evaluation", "+ Add")}
+        </div>
         ${detail.evaluations.length ? `
           <table style="width:100%; font-size:11px; border-collapse:collapse;">
-            <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attend.</td><td style="text-align:right;">Perf.</td><td style="text-align:right;">Behav.</td></tr>
-            ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td></tr>`).join("")}
+            <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attend.</td><td style="text-align:right;">Perf.</td><td style="text-align:right;">Behav.</td><td></td></tr>
+            ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${delBtn("evaluation", ev.itemId)}</td></tr>`).join("")}
           </table>
         ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
       </div>
     </div>
 
-    <div>
-      <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">Notable incidents</div>
+    <div style="margin-bottom:18px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:12px; color:var(--text2);">Notable incidents</div>
+        ${addBtn("incident", "+ Add")}
+      </div>
       <div style="display:flex; flex-direction:column; gap:6px;">
         ${detail.incidents.length ? detail.incidents.map(i => `
           <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
             ${incidentTypeBadge(i.type)}
-            <span style="font-size:12px;">${escapeHtml(i.date || "")} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
+            <span style="font-size:12px; flex:1;">${escapeHtml(i.date || "")} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
+            ${delBtn("incident", i.itemId)}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
       </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border); padding-top:14px; text-align:right;">
+      <span onclick="deleteEmployeeRecord('${emp.id}')" style="font-size:11px; color:#f87171; cursor:pointer;">Delete employee record</span>
     </div>
   `;
 }
