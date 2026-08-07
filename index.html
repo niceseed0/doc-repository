@@ -1072,8 +1072,15 @@ function employeesForTeam(team, includeFormer, cluster) {
   return employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
 }
 
-function initials(name) {
-  const parts = String(name || "").trim().split(/\s+/);
+// SharePoint Date/DateTime columns often come back as full ISO timestamps
+// (e.g. "2026-08-01T07:00:00Z") even for date-only fields — show just the date part.
+function dateOnly(value) {
+  if (!value) return "";
+  const m = String(value).match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : String(value);
+}
+
+function initials(name) {  const parts = String(name || "").trim().split(/\s+/);
   return ((parts[0] || "")[0] || "") + ((parts[1] || "")[0] || "");
 }
 
@@ -1680,7 +1687,7 @@ function renderEmployeeDetailHtml(emp, detail) {
 
     ${isResigned ? `
       <div style="background:var(--surface2); border:1px solid #4a2626; border-radius:10px; padding:10px 12px; margin-bottom:18px; display:flex; gap:24px;">
-        <div><div style="font-size:11px; color:var(--text2);">Separation date</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationDate || "—")}</div></div>
+        <div><div style="font-size:11px; color:var(--text2);">Separation date</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(dateOnly(emp.separationDate) || "—")}</div></div>
         <div><div style="font-size:11px; color:var(--text2);">Separation reason</div><div style="font-size:13px; margin-top:2px; color:#f87171;">${escapeHtml(emp.separationReason || "—")}</div></div>
       </div>
     ` : ""}
@@ -1688,7 +1695,7 @@ function renderEmployeeDetailHtml(emp, detail) {
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px;">
       <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
         <div style="font-size:11px; color:var(--text2);">Hire date</div>
-        <div style="font-size:13px; margin-top:2px;">${escapeHtml(emp.hireDate || "—")}</div>
+        <div style="font-size:13px; margin-top:2px;">${escapeHtml(dateOnly(emp.hireDate) || "—")}</div>
       </div>
       <div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
         <div style="font-size:11px; color:var(--text2);">Tenure</div>
@@ -1703,7 +1710,7 @@ function renderEmployeeDetailHtml(emp, detail) {
     <div style="margin-bottom:18px;">
       ${detail.positions.length ? detail.positions.map(p => `
         <div style="display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--border);">
-          <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(p.date || "—")}</div>
+          <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(dateOnly(p.date) || "—")}</div>
           <div style="font-size:13px; flex:1;">${escapeHtml(p.description)}</div>
           ${delBtn("position", p.itemId)}
         </div>
@@ -1718,7 +1725,7 @@ function renderEmployeeDetailHtml(emp, detail) {
         </div>
         ${detail.salaries.length ? `
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
-            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(s.date || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
+            ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
           </table>
         ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
       </div>
@@ -1745,7 +1752,7 @@ function renderEmployeeDetailHtml(emp, detail) {
         ${detail.incidents.length ? detail.incidents.map(i => `
           <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
             ${incidentTypeBadge(i.type)}
-            <span style="font-size:12px; flex:1;">${escapeHtml(i.date || "")} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
+            <span style="font-size:12px; flex:1;">${escapeHtml(dateOnly(i.date))} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
             ${delBtn("incident", i.itemId)}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
