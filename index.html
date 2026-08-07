@@ -1292,7 +1292,7 @@ async function loadEmployeeDetail(employeeId) {
       itemId: it.id,
       date: it.fields["Date"] || "",
       type: it.fields["IncidentType"] || "Other", // NTE | Coaching | Sanction | Personal Issue | Other
-      description: it.fields["Description"] || ""
+      description: it.fields["IncidentNotes"] || ""
     }))
   ]);
   result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -1433,7 +1433,7 @@ async function submitAddSubRecord() {
     if (!description) { toast("Add a short description.", "error"); return; }
     fields.Date = date;
     fields.IncidentType = document.getElementById("hrSubType").value;
-    fields.Description = description;
+    fields.IncidentNotes = description;
   }
 
   setSyncing(true);
