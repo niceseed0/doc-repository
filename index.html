@@ -445,6 +445,16 @@ const CONFIG = {
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
   // clicking their 👥 icon opens a sub-team list first instead of a member roster.
   clusterTeams: ["John's Cluster", "Gary's Cluster"],
+  // Seniority order (most senior first) for the team org-chart view, shown only for teams
+  // inside clusterTeams above. Positions not in this list are grouped at the bottom
+  // (alphabetically). Edit this list as new titles come into use.
+  positionRank: [
+    "Cluster Lead",
+    "Senior Product Manager",
+    "Product Manager",
+    "Senior Game Master",
+    "Game Master"
+  ],
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -1635,6 +1645,7 @@ async function deleteEmployeeRecord(employeeId) {
 function renderHRModal() {
   const box = document.getElementById("hrModalInner");
   if (!hrView) { box.innerHTML = ""; return; }
+  box.style.width = "min(560px, 92vw)"; // default; the cluster team org-chart view below widens this
 
   if (hrView.mode === "clusterTeams") {
     const cluster = hrView.cluster;
@@ -1665,6 +1676,8 @@ function renderHRModal() {
     const cluster = hrView.cluster || "";
     const active = employeesForTeam(team, false, cluster);
     const former = employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && e.status === "Resigned");
+    const useChart = !!cluster; // org-chart layout only for teams inside a cluster
+    if (useChart) box.style.width = "min(960px, 95vw)";
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
         <div>
@@ -1674,8 +1687,10 @@ function renderHRModal() {
         </div>
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
-      <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
-        ${active.length ? active.map(e => rosterRow(e, true)).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No active members on file yet.</div>`}
+      <div style="margin-top:14px;">
+        ${active.length
+          ? (useChart ? renderTeamOrgChart(active) : `<div style="display:flex; flex-direction:column; gap:6px;">${active.map(e => rosterRow(e, true)).join("")}</div>`)
+          : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No active members on file yet.</div>`}
       </div>
       ${canAccessHR && former.length ? `
         <div onclick="toggleFormerMembers()" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--accent); padding:10px 2px; cursor:pointer;">
@@ -1804,6 +1819,77 @@ function renderHRModal() {
       </div>
     `;
   }
+}
+
+// Renders a small position-based org chart for one team: members are grouped by position,
+// ordered top-to-bottom by CONFIG.positionRank (levels with nobody in them are simply
+// skipped), and within a level, ordered left-to-right by tenure (earliest hire first).
+// There's no per-person reporting-line data, so this draws one shared trunk line per level
+// transition (like the main company org chart) rather than a personalized tree.
+function renderTeamOrgChart(members) {
+  const groups = {};
+  members.forEach(m => { (groups[m.position || "—"] = groups[m.position || "—"] || []).push(m); });
+  const present = Object.keys(groups);
+  const ranked = CONFIG.positionRank.filter(p => groups[p]);
+  const unranked = present.filter(p => !CONFIG.positionRank.includes(p)).sort((a, b) => a.localeCompare(b));
+  const positions = [...ranked, ...unranked];
+  const levels = positions.map(p => groups[p].slice().sort((a, b) => (a.hireDate || "9999-99-99").localeCompare(b.hireDate || "9999-99-99")));
+
+  const colW = 180, boxH = 76, rowGap = 56, topPad = 10;
+  const maxWidth = Math.max(...levels.map(l => l.length), 1);
+  const totalW = maxWidth * colW;
+  const totalH = topPad + levels.length * boxH + (levels.length - 1) * rowGap + topPad;
+
+  const layout = levels.map((level, i) => {
+    const levelW = level.length * colW;
+    const startX = (totalW - levelW) / 2;
+    const y = topPad + i * (boxH + rowGap);
+    const boxes = level.map((m, j) => ({ emp: m, x: startX + j * colW, y, cx: startX + j * colW + colW / 2, cy: y + boxH / 2 }));
+    return { position: positions[i], boxes, groupCx: startX + levelW / 2 };
+  });
+
+  // Connector lines between each adjacent pair of levels (SVG, in the same px coordinate space as the boxes)
+  let svgPaths = "";
+  for (let i = 0; i < layout.length - 1; i++) {
+    const parent = layout[i], child = layout[i + 1];
+    const parentBottomY = parent.boxes[0].y + boxH;
+    const childTopY = child.boxes[0].y;
+    const midY = (parentBottomY + childTopY) / 2;
+    const trunkX = parent.groupCx;
+    svgPaths += `<path d="M ${trunkX} ${parentBottomY} L ${trunkX} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
+    if (child.boxes.length > 1) {
+      const firstCx = child.boxes[0].cx, lastCx = child.boxes[child.boxes.length - 1].cx;
+      svgPaths += `<path d="M ${firstCx} ${midY} L ${lastCx} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
+      if (trunkX < firstCx || trunkX > lastCx) {
+        // keep the trunk visually connecting into the spread line even if the parent's center falls outside it
+        svgPaths += `<path d="M ${trunkX} ${midY} L ${Math.max(firstCx, Math.min(trunkX, lastCx))} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
+      }
+    }
+    child.boxes.forEach(b => {
+      svgPaths += `<path d="M ${b.cx} ${midY} L ${b.cx} ${b.y}" stroke="var(--border)" stroke-width="2" fill="none" />`;
+    });
+  }
+
+  const boxesHtml = layout.flatMap(lvl => lvl.boxes.map(b => {
+    const e = b.emp;
+    const onLeave = e.status === "Leave of Absence";
+    return `
+      <div ${canAccessHR ? `onclick="openEmployeeDetail('${e.id}')"` : ""}
+           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; justify-content:center; ${canAccessHR ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
+        <div style="font-size:14px; font-weight:600; color:${canAccessHR ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
+        <div style="font-size:11px; color:var(--text2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.position || "—")}</div>
+        ${onLeave ? `<div style="margin-top:3px;">${statusBadge(e.status)}</div>` : ""}
+      </div>`;
+  }));
+
+  return `
+    <div style="overflow-x:auto; padding:8px 0 4px;">
+      <div style="position:relative; width:${totalW}px; height:${totalH}px; margin:0 auto;">
+        <svg width="${totalW}" height="${totalH}" style="position:absolute; left:0; top:0; z-index:0;">${svgPaths}</svg>
+        <div style="position:relative; z-index:1;">${boxesHtml.join("")}</div>
+      </div>
+    </div>
+  `;
 }
 
 function rosterRow(e, clickable) {
