@@ -452,6 +452,7 @@ const CONFIG = {
     "Cluster Lead",
     "Senior Product Manager",
     "Product Manager",
+    "Assistant Product Manager",
     "Senior Game Master",
     "Game Master"
   ],
@@ -1257,6 +1258,28 @@ function selectedTeamValue(selectId, newInputId) {
   return sel.value;
 }
 
+// CONFIG.positionRank first (in rank order), then any custom titles already in use that
+// aren't in that list yet (kept selectable, grouped alphabetically at the end).
+function knownPositions() {
+  const extra = [...new Set(employees.map(e => e.position).filter(Boolean))]
+    .filter(p => !CONFIG.positionRank.includes(p))
+    .sort((a, b) => a.localeCompare(b));
+  return [...CONFIG.positionRank, ...extra];
+}
+
+// Populates a Position <select> the same way updateClusterTeamOptions does for Team —
+// a real dropdown (existing titles + "Add new position…") instead of free text.
+function updatePositionOptions(positionSelectId, presetValue) {
+  const sel = document.getElementById(positionSelectId);
+  if (!sel) return;
+  const options = knownPositions();
+  if (presetValue && !options.includes(presetValue)) options.unshift(presetValue);
+  sel.innerHTML = options.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")
+    + `<option value="__new__">+ Add new position…</option>`;
+  sel.value = presetValue && options.includes(presetValue) ? presetValue : (options[0] || "__new__");
+  onHRTeamSelectChange(positionSelectId, positionSelectId + "NewWrap");
+}
+
 function openAddEmployeeForm() {
   if (!canAccessHR || !employeesListId) return; // defense in depth
   hrView = { mode: "addEmployee" };
@@ -1268,7 +1291,7 @@ async function submitAddEmployee() {
   const name = document.getElementById("hrAddName").value.trim();
   const cluster = document.getElementById("hrAddCluster").value;
   const team = selectedTeamValue("hrAddTeam", "hrAddTeamNew");
-  const position = document.getElementById("hrAddPosition").value.trim();
+  const position = selectedTeamValue("hrAddPosition", "hrAddPositionNew");
   const status = document.getElementById("hrAddStatus").value;
   const hireDate = document.getElementById("hrAddHireDate").value;
   const email = document.getElementById("hrAddEmail").value.trim();
@@ -1459,7 +1482,7 @@ async function submitLogChange() {
   if (!emp) return;
   const cluster = document.getElementById("hrChangeCluster").value;
   const team = selectedTeamValue("hrChangeTeam", "hrChangeTeamNew");
-  const position = document.getElementById("hrChangePosition").value.trim();
+  const position = selectedTeamValue("hrChangePosition", "hrChangePositionNew");
   const effectiveDate = document.getElementById("hrChangeDate").value;
   const reason = document.getElementById("hrChangeReason").value.trim();
   if (!team || !position || !effectiveDate) { toast("Fill in team, position, and effective date.", "error"); return; }
@@ -1740,7 +1763,13 @@ function renderHRModal() {
           <input id="hrChangeTeamNew" type="text" placeholder="New team name" />
         </div>
       </div>
-      <div class="form-group"><label>New position</label><input id="hrChangePosition" type="text" value="${escapeHtml(emp.position || "")}" /></div>
+      <div class="form-group">
+        <label>New position</label>
+        <select id="hrChangePosition" onchange="onHRTeamSelectChange('hrChangePosition','hrChangePositionNewWrap')"></select>
+        <div id="hrChangePositionNewWrap" style="display:none; margin-top:6px;">
+          <input id="hrChangePositionNew" type="text" placeholder="New position title" />
+        </div>
+      </div>
       <div class="form-group"><label>Effective date</label><input id="hrChangeDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
       <div class="form-group"><label>Reason (optional)</label><input id="hrChangeReason" type="text" placeholder="e.g. team restructuring, promotion" /></div>
       <div class="modal-actions">
@@ -1749,6 +1778,7 @@ function renderHRModal() {
       </div>
     `;
     updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeam', emp.team);
+    updatePositionOptions('hrChangePosition', emp.position);
   }
 
   if (hrView.mode === "addEmployee") {
@@ -1773,7 +1803,13 @@ function renderHRModal() {
           <input id="hrAddTeamNew" type="text" placeholder="New team name" />
         </div>
       </div>
-      <div class="form-group"><label>Position</label><input id="hrAddPosition" type="text" /></div>
+      <div class="form-group">
+        <label>Position</label>
+        <select id="hrAddPosition" onchange="onHRTeamSelectChange('hrAddPosition','hrAddPositionNewWrap')"></select>
+        <div id="hrAddPositionNewWrap" style="display:none; margin-top:6px;">
+          <input id="hrAddPositionNew" type="text" placeholder="New position title" />
+        </div>
+      </div>
       <div class="form-group">
         <label>Employment Status</label>
         <select id="hrAddStatus" onchange="renderHRAddSeparationFields()">
@@ -1796,6 +1832,7 @@ function renderHRModal() {
       </div>
     `;
     updateClusterTeamOptions('hrAddCluster', 'hrAddTeam');
+    updatePositionOptions('hrAddPosition');
     renderHRAddSeparationFields();
   }
 
