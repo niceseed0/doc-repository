@@ -344,6 +344,10 @@
         </div>
       </div>
       <div class="header-actions">
+        <button class="trash-icon-btn" onclick="openFormerEmployeesList()" id="formerEmployeesBtn" style="display:none" title="Former Employees">
+          &#128100;&#128683;
+          <span class="tab-count" id="formerEmployeesCount" style="display:none"></span>
+        </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
@@ -1340,6 +1344,17 @@ function renderHRAddSeparationFields() {
   ` : `<input id="hrAddSeparationDate" type="hidden" /><input id="hrAddSeparationReason" type="hidden" />`;
 }
 
+function renderHRChangeSeparationFields() {
+  const statusSel = document.getElementById("hrChangeStatus");
+  const box = document.getElementById("hrChangeSeparationFields");
+  if (!statusSel || !box) return;
+  const emp = employees.find(e => e.id === hrView.employeeId);
+  box.innerHTML = statusSel.value === "Resigned" ? `
+    <div class="form-group"><label>Separation date</label><input id="hrChangeSeparationDate" type="date" value="${escapeAttr(dateOnly(emp && emp.separationDate) || "")}" /></div>
+    <div class="form-group"><label>Separation reason</label><input id="hrChangeSeparationReason" type="text" value="${escapeAttr((emp && emp.separationReason) || "")}" /></div>
+  ` : "";
+}
+
 function subteamsForCluster(cluster) {
   const fromEmployees = employees.filter(e => e.cluster === cluster).map(e => e.team);
   const fromPreDeclared = hrTeams.filter(t => t.cluster === cluster).map(t => t.team);
@@ -1402,8 +1417,10 @@ function closeHRModal() {
   hrDetail = null;
 }
 
-function toggleFormerMembers() {
-  hrShowFormer = !hrShowFormer;
+function openFormerEmployeesList() {
+  if (!canAccessHR) return; // defense in depth
+  hrView = { mode: "formerEmployees" };
+  document.getElementById("hrModal").classList.add("open");
   renderHRModal();
 }
 
@@ -1483,35 +1500,53 @@ async function submitLogChange() {
   const cluster = document.getElementById("hrChangeCluster").value;
   const team = selectedTeamValue("hrChangeTeam", "hrChangeTeamNew");
   const position = selectedTeamValue("hrChangePosition", "hrChangePositionNew");
+  const status = document.getElementById("hrChangeStatus").value;
   const effectiveDate = document.getElementById("hrChangeDate").value;
   const reason = document.getElementById("hrChangeReason").value.trim();
-  if (!team || !position || !effectiveDate) { toast("Fill in team, position, and effective date.", "error"); return; }
+  const separationDate = document.getElementById("hrChangeSeparationDate") ? document.getElementById("hrChangeSeparationDate").value : "";
+  const separationReason = document.getElementById("hrChangeSeparationReason") ? document.getElementById("hrChangeSeparationReason").value.trim() : "";
+  if (!team || !position || !status || !effectiveDate) { toast("Fill in team, position, status, and effective date.", "error"); return; }
+  if (status === "Resigned" && !separationDate) { toast("Enter a separation date.", "error"); return; }
   setSyncing(true);
   try {
     const oldLabel = emp.cluster ? `${emp.cluster} / ${emp.team || "—"}` : (emp.team || "—");
     const newLabel = cluster ? `${cluster} / ${team}` : team;
-    const description = (team !== emp.team || cluster !== (emp.cluster || ""))
-      ? `Transferred: ${oldLabel} → ${newLabel}${position !== emp.position ? ` · ${position}` : ""}`
-      : `Position change: ${position}`;
+    const changes = [];
+    if (team !== emp.team || cluster !== (emp.cluster || "")) changes.push(`Transferred: ${oldLabel} → ${newLabel}`);
+    if (position !== emp.position) changes.push(`Position: ${emp.position || "—"} → ${position}`);
+    if (status !== emp.status) changes.push(`Status: ${emp.status} → ${status}`);
+    const description = changes.length ? changes.join(" · ") : "Record updated (no field changes)";
     if (positionHistoryListId) {
       await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items`, {
         method: "POST",
         body: JSON.stringify({ fields: { Title: emp.name, EmployeeId: String(emp.id), EffectiveDate: effectiveDate, Description: reason ? `${description} (${reason})` : description } })
       });
     }
+    const patchFields = {
+      Team: team, Cluster: cluster, Position: position, Status: status,
+      SeparationDate: status === "Resigned" ? separationDate : null,
+      SeparationReason: status === "Resigned" ? separationReason : ""
+    };
     await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, {
       method: "PATCH",
-      body: JSON.stringify({ Team: team, Cluster: cluster, Position: position })
+      body: JSON.stringify(patchFields)
     });
     emp.team = team;
     emp.cluster = cluster;
     emp.position = position;
+    emp.status = status;
+    emp.separationDate = patchFields.SeparationDate;
+    emp.separationReason = patchFields.SeparationReason;
     setSyncing(false, true);
     toast("Change logged ✓", "success");
-    hrView = { mode: "detail", employeeId: emp.id };
-    hrDetail = await loadEmployeeDetail(emp.id);
-    renderHRModal();
-    renderContent(); // org chart / team tabs may reference current team
+    if (status === "Resigned") {
+      closeHRModal(); // no longer belongs in a team roster — find them via Former Employees now
+    } else {
+      hrView = { mode: "detail", employeeId: emp.id };
+      hrDetail = await loadEmployeeDetail(emp.id);
+      renderHRModal();
+    }
+    renderContent(); // org chart / team tabs / former-employees count may reference this
   } catch (err) {
     setSyncing(false, false);
     toast("Could not save change: " + err.message, "error");
@@ -1698,7 +1733,6 @@ function renderHRModal() {
     const team = hrView.team;
     const cluster = hrView.cluster || "";
     const active = employeesForTeam(team, false, cluster);
-    const former = employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && e.status === "Resigned");
     const useChart = !!cluster; // org-chart layout only for teams inside a cluster
     if (useChart) box.style.width = "min(960px, 95vw)";
     box.innerHTML = `
@@ -1706,7 +1740,7 @@ function renderHRModal() {
         <div>
           ${cluster ? `<div onclick="openTeamRoster('${jsAttrEscape(cluster)}')" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; ${escapeHtml(cluster)}</div>` : ""}
           <h3 style="margin-bottom:2px;">${escapeHtml(team)}</h3>
-          <div style="font-size:12px; color:var(--text2);">${active.length} active member${active.length === 1 ? "" : "s"}${canAccessHR && former.length ? ` · ${former.length} former` : ""}</div>
+          <div style="font-size:12px; color:var(--text2);">${active.length} active member${active.length === 1 ? "" : "s"}</div>
         </div>
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
@@ -1715,12 +1749,35 @@ function renderHRModal() {
           ? (useChart ? renderTeamOrgChart(active) : `<div style="display:flex; flex-direction:column; gap:6px;">${active.map(e => rosterRow(e, true)).join("")}</div>`)
           : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No active members on file yet.</div>`}
       </div>
-      ${canAccessHR && former.length ? `
-        <div onclick="toggleFormerMembers()" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--accent); padding:10px 2px; cursor:pointer;">
-          ${hrShowFormer ? "▾" : "▸"} Show former members (${former.length})
+    `;
+    return;
+  }
+
+  if (hrView.mode === "formerEmployees") {
+    const former = employees.filter(e => e.status === "Resigned")
+      .sort((a, b) => (b.separationDate || "").localeCompare(a.separationDate || ""));
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <h3 style="margin-bottom:2px;">Former Employees</h3>
+          <div style="font-size:12px; color:var(--text2);">${former.length} on file</div>
         </div>
-        ${hrShowFormer ? `<div style="display:flex; flex-direction:column; gap:6px; opacity:.6;">${former.map(e => rosterRow(e, true)).join("")}</div>` : ""}
-      ` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
+        ${former.length ? former.map(e => `
+          <div onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer; display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+            <div style="width:30px; height:30px; border-radius:50%; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:600; color:var(--text3); overflow:hidden;">
+              ${e.photo ? `<img src="${escapeAttr(e.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(e.name).toUpperCase())}
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:13px; color:var(--accent);">${escapeHtml(e.name)}</div>
+              <div style="font-size:11px; color:var(--text2);">${escapeHtml(e.team)}${e.cluster ? ` · ${escapeHtml(e.cluster)}` : ""} — ${escapeHtml(e.position || "—")}</div>
+            </div>
+            <div style="text-align:right; font-size:11px; color:var(--text3); white-space:nowrap;">${escapeHtml(dateOnly(e.separationDate) || "—")}</div>
+          </div>
+        `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No former employees on file.</div>`}
+      </div>
     `;
     return;
   }
@@ -1770,6 +1827,17 @@ function renderHRModal() {
           <input id="hrChangePositionNew" type="text" placeholder="New position title" />
         </div>
       </div>
+      <div class="form-group">
+        <label>Employment Status</label>
+        <select id="hrChangeStatus" onchange="renderHRChangeSeparationFields()">
+          <option value="Probationary" ${emp.status === "Probationary" ? "selected" : ""}>Probationary</option>
+          <option value="Regular" ${emp.status === "Regular" ? "selected" : ""}>Regular</option>
+          <option value="Contractual" ${emp.status === "Contractual" ? "selected" : ""}>Contractual</option>
+          <option value="Leave of Absence" ${emp.status === "Leave of Absence" ? "selected" : ""}>Leave of Absence</option>
+          <option value="Resigned" ${emp.status === "Resigned" ? "selected" : ""}>Resigned</option>
+        </select>
+      </div>
+      <div id="hrChangeSeparationFields"></div>
       <div class="form-group"><label>Effective date</label><input id="hrChangeDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
       <div class="form-group"><label>Reason (optional)</label><input id="hrChangeReason" type="text" placeholder="e.g. team restructuring, promotion" /></div>
       <div class="modal-actions">
@@ -1779,6 +1847,7 @@ function renderHRModal() {
     `;
     updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeam', emp.team);
     updatePositionOptions('hrChangePosition', emp.position);
+    renderHRChangeSeparationFields();
   }
 
   if (hrView.mode === "addEmployee") {
@@ -2278,6 +2347,8 @@ function renderTabs() {
   const trashBtn = document.getElementById("trashBtn");
   trashBtn.style.display = canAccessTrash ? "" : "none";
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
+  const formerEmployeesBtn = document.getElementById("formerEmployeesBtn");
+  formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
@@ -2286,6 +2357,10 @@ function renderTabs() {
   const myTrashCount = trashedItemsVisibleToMe().length;
   trashCount.style.display = myTrashCount > 0 ? "" : "none";
   trashCount.textContent = myTrashCount;
+  const formerEmployeesCount = document.getElementById("formerEmployeesCount");
+  const formerCount = employees.filter(e => e.status === "Resigned").length;
+  formerEmployeesCount.style.display = formerCount > 0 ? "" : "none";
+  formerEmployeesCount.textContent = formerCount;
 }
 
 function defaultSortColIndex() {
