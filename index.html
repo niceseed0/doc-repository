@@ -352,6 +352,9 @@
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
         </button>
+        <button class="trash-icon-btn" onclick="openMyProfile()" id="myProfileBtn" style="display:none" title="My Profile">
+          &#129706;
+        </button>
         <div class="user-pill">
           <span class="sync-dot" id="syncDot"></span>
           <span class="user-avatar" id="userAvatar">?</span>
@@ -1436,6 +1439,25 @@ async function openEmployeeDetail(employeeId) {
   if (hrView && hrView.mode === "detail" && hrView.employeeId === employeeId) renderHRModal();
 }
 
+// Anyone can view their OWN profile in full (including salary/evaluations/incidents),
+// matched by comparing their signed-in email to the Email field on an HR Employees record.
+// Unlike openEmployeeDetail, this bypasses the HR-Sensitive-Access checks entirely — but
+// only for this one record, and only for viewing: edit/delete actions inside the detail
+// view stay gated on the real canAccessHR/canAccessSalary/canAccessIncidents flags, so a
+// self-view never lets someone change their own team, position, status, or sensitive data.
+async function openMyProfile() {
+  if (!employeesListId) return;
+  const myEmail = currentAccount && currentAccount.username ? currentAccount.username.toLowerCase() : "";
+  const emp = employees.find(e => e.email && e.email.toLowerCase() === myEmail);
+  if (!emp) { toast("No HR profile is linked to your account email yet.", "error"); return; }
+  hrView = { mode: "detail", employeeId: emp.id, selfView: true };
+  hrDetail = null;
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  hrDetail = await loadEmployeeDetail(emp.id);
+  if (hrView && hrView.mode === "detail" && hrView.employeeId === emp.id) renderHRModal();
+}
+
 async function loadEmployeeDetail(employeeId) {
   const result = { positions: [], salaries: [], evaluations: [], incidents: [] };
   async function loadList(listId, mapFn) {
@@ -1792,7 +1814,7 @@ function renderHRModal() {
       `;
       return;
     }
-    box.innerHTML = renderEmployeeDetailHtml(emp, hrDetail);
+    box.innerHTML = renderEmployeeDetailHtml(emp, hrDetail, !!hrView.selfView);
     return;
   }
 
@@ -2015,15 +2037,19 @@ function rosterRow(e, clickable) {
   `;
 }
 
-function renderEmployeeDetailHtml(emp, detail) {
+function renderEmployeeDetailHtml(emp, detail, selfView) {
   const isResigned = emp.status === "Resigned";
+  const canViewSalary = canAccessSalary || selfView;
+  const canViewIncidents = canAccessIncidents || selfView;
   const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
   const addBtn = (kind, label) => `<button class="btn btn-secondary" onclick="openAddSubRecordForm('${kind}','${emp.id}')" style="padding:3px 10px; font-size:11px;">${label}</button>`;
   const sectionLabel = (n, text) => `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px;">${n}. ${text}</div>`;
 
   return `
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-      <div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>
+      ${selfView
+        ? `<div style="font-size:12px; color:var(--accent);">My Profile</div>`
+        : `<div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>`}
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
 
@@ -2075,13 +2101,13 @@ function renderEmployeeDetailHtml(emp, detail) {
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         ${sectionLabel(3, "Employee History")}
-        ${canAccessHR ? `<button class="btn btn-secondary" onclick="openLogChangeForm('${emp.id}')" style="padding:3px 10px; font-size:11px;">Transfer / Log change</button>` : ""}
+        ${canAccessHR && !selfView ? `<button class="btn btn-secondary" onclick="openLogChangeForm('${emp.id}')" style="padding:3px 10px; font-size:11px;">Transfer / Log change</button>` : ""}
       </div>
       ${detail.positions.length ? detail.positions.map(p => `
         <div style="display:flex; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--border);">
           <div style="font-size:11px; color:var(--text2); width:80px; flex-shrink:0;">${escapeHtml(dateOnly(p.date) || "—")}</div>
           <div style="font-size:13px; flex:1;">${escapeHtml(p.description)}</div>
-          ${delBtn("position", p.itemId)}
+          ${canAccessHR ? delBtn("position", p.itemId) : ""}
         </div>
       `).join("") : `<div style="font-size:12px; color:var(--text2);">No history recorded yet.</div>`}
     </div>
@@ -2090,51 +2116,51 @@ function renderEmployeeDetailHtml(emp, detail) {
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         ${sectionLabel(4, "Performance Evaluation")}
-        ${addBtn("evaluation", "+ Add")}
+        ${canAccessHR ? addBtn("evaluation", "+ Add") : ""}
       </div>
       ${detail.evaluations.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
           <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attendance</td><td style="text-align:right;">Performance</td><td style="text-align:right;">Behavioral factor</td><td></td></tr>
-          ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${delBtn("evaluation", ev.itemId)}</td></tr>`).join("")}
+          ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${canAccessHR ? delBtn("evaluation", ev.itemId) : ""}</td></tr>`).join("")}
         </table>
       ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
     </div>
 
-    ${canAccessIncidents ? `
+    ${canViewIncidents ? `
     <!-- 5. HR Records -->
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         ${sectionLabel(5, "HR Records")}
-        ${addBtn("incident", "+ Add")}
+        ${canAccessIncidents ? addBtn("incident", "+ Add") : ""}
       </div>
       <div style="display:flex; flex-direction:column; gap:6px;">
         ${detail.incidents.length ? detail.incidents.map(i => `
           <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
             ${incidentTypeBadge(i.type)}
             <span style="font-size:12px; flex:1;">${escapeHtml(dateOnly(i.date))} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
-            ${delBtn("incident", i.itemId)}
+            ${canAccessIncidents ? delBtn("incident", i.itemId) : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
       </div>
     </div>
     ` : ""}
 
-    ${canAccessSalary ? `
+    ${canViewSalary ? `
     <!-- 6. Salary history -->
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         ${sectionLabel(6, "Salary history")}
-        ${addBtn("salary", "+ Add")}
+        ${canAccessSalary ? addBtn("salary", "+ Add") : ""}
       </div>
       ${detail.salaries.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
-          ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${delBtn("salary", s.itemId)}</td></tr>`).join("")}
+          ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${canAccessSalary ? delBtn("salary", s.itemId) : ""}</td></tr>`).join("")}
         </table>
       ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
     </div>
     ` : ""}
 
-    ${canAccessHR ? `
+    ${canAccessHR && !selfView ? `
     <div style="border-top:1px solid var(--border); padding-top:14px; text-align:right;">
       <span onclick="deleteEmployeeRecord('${emp.id}')" style="font-size:11px; color:#f87171; cursor:pointer;">Delete employee record</span>
     </div>
@@ -2349,6 +2375,8 @@ function renderTabs() {
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
   const formerEmployeesBtn = document.getElementById("formerEmployeesBtn");
   formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
+  const myProfileBtn = document.getElementById("myProfileBtn");
+  myProfileBtn.style.display = employeesListId ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
