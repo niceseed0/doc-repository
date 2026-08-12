@@ -464,12 +464,17 @@ const CONFIG = {
     "Senior Game Master",
     "Game Master"
   ],
-  // Annual leave/sick credit allotment — resets to these numbers every Jan 1.
-  // Nothing to run on the 1st: like the birthday board, this is just read live
-  // against today's date, so the new year's numbers are already correct the
-  // moment the calendar turns over. Edit these two numbers whenever the policy changes.
-  leaveDaysPerYear: 15,
-  sickDaysPerYear: 10,
+  // Annual leave/sick credit policy. All of this is computed live from hire date + today's
+  // date + logged usage — nothing is stored as a running balance, so there is no year-end
+  // job to run: the moment the calendar (or an anniversary) turns over, every number here
+  // is already correct the next time anyone opens the app.
+  probationMonths: 6,          // new hires are on probation until hireDate + this many months
+  serviceCreditDays: 5,        // granted at regularization (end of probation); shared pool for VL+SL
+  serviceCreditValidMonths: 6, // Service Credit expires this many months after regularization (= the 1-year mark)
+  baseVLDays: 5,                // Vacation Leave granted at the 1-year anniversary, and the Jan 1 base before any tenure bumps
+  baseSLDays: 5,                // Sick Leave — does not increase with tenure
+  maxVLDays: 10,                 // Vacation Leave cap — stops increasing once it reaches this
+  birthdayLeaveDays: 1,         // granted each year once the employee's birthday month arrives
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -1152,7 +1157,7 @@ async function loadLeaveUsage() {
         leaveUsage.push({
           itemId: it.id,
           employeeId: String(employeeId),
-          type: it.fields["UsageType"] === "Sick" ? "Sick" : "Leave",
+          type: it.fields["UsageType"] || "Vacation",
           date: it.fields["Date"] || null,
           days: it.fields["Days"] != null ? Number(it.fields["Days"]) : 0,
           notes: it.fields["Notes"] || ""
@@ -1189,18 +1194,108 @@ function monthDayLabel(value) {
   return `${months[Number(m) - 1]} ${Number(d)}`;
 }
 
-// Recomputed on every render from today's real date — this is what makes the birthday
-// board automatically switch over on the 1st of each month with no manual step and no
-// scheduled task: there's simply nothing to "roll over", it's always live.
-// Usage entries for one employee this calendar year, matching the same "just read live
-// against today's date" pattern as the credits reset — no year-end rollover job needed.
-function leaveUsageThisYear(employeeId, type) {
-  const year = new Date().getFullYear();
-  return leaveUsage.filter(u => u.employeeId === String(employeeId) && u.type === type && dateOnly(u.date).slice(0, 4) === String(year));
+// ═══════════════════════════════════════════════════════════════════════════
+// LEAVE / SICK / SERVICE-CREDIT / BIRTHDAY-LEAVE ENGINE
+// Every number here is a pure function of hireDate + birthday + today's date +
+// the logged usage entries. Nothing is stored as a running balance, so there
+// is nothing to reset on Jan 1, a work anniversary, or any other date — the
+// correct numbers simply fall out of these functions the moment the page is
+// opened, no matter how long it's been since the last visit.
+// ═══════════════════════════════════════════════════════════════════════════
+const LEAVE_USAGE_TYPES = ["Vacation", "Sick", "Birthday", "Special", "WithoutPay"];
+const USAGE_TYPE_LABEL = { Vacation: "Vacation Leave", Sick: "Sick Leave", Birthday: "Birthday Leave", Special: "Special (No Deduction)", WithoutPay: "Without Pay" };
+
+// A little test data may predate this rework, when there were only two usage types.
+function normalizeUsageType(raw) {
+  if (raw === "Leave") return "Vacation";
+  return LEAVE_USAGE_TYPES.includes(raw) ? raw : "Vacation";
 }
 
-function usedDaysFor(employeeId, type) {
-  return leaveUsageThisYear(employeeId, type).reduce((sum, u) => sum + (u.days || 0), 0);
+function addMonths(dateStr, months) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setMonth(d.getMonth() + months);
+  return d;
+}
+
+// Full years completed between a start date and today (proper anniversary-aware count,
+// not just a calendar-year subtraction).
+function fullYearsSince(dateStr, asOf) {
+  const start = new Date(dateStr + "T00:00:00");
+  let years = asOf.getFullYear() - start.getFullYear();
+  const anniversaryThisYear = new Date(start);
+  anniversaryThisYear.setFullYear(asOf.getFullYear());
+  if (asOf < anniversaryThisYear) years--;
+  return Math.max(0, years);
+}
+
+function usageDaysBetween(employeeId, type, startDate, endDate) {
+  return leaveUsage
+    .filter(u => u.employeeId === String(employeeId) && normalizeUsageType(u.type) === type)
+    .filter(u => {
+      const d = new Date(dateOnly(u.date) + "T00:00:00");
+      return d >= startDate && d <= endDate;
+    })
+    .reduce((sum, u) => sum + (u.days || 0), 0);
+}
+
+// Full leave/sick/service-credit/birthday-leave status for one employee, as of today.
+function leaveStatus(emp) {
+  const result = { phase: "unknown" };
+  if (!emp.hireDate) return result;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const hireDateStr = dateOnly(emp.hireDate);
+  const regularizationDate = addMonths(hireDateStr, CONFIG.probationMonths);
+  const serviceCreditExpiry = addMonths(hireDateStr, CONFIG.probationMonths + CONFIG.serviceCreditValidMonths);
+  const oneYearAnniversary = addMonths(hireDateStr, 12);
+  result.regularizationDate = regularizationDate;
+  result.oneYearAnniversary = oneYearAnniversary;
+
+  if (today < regularizationDate) {
+    result.phase = "probation";
+  } else if (today < oneYearAnniversary) {
+    result.phase = "serviceCredit";
+    const used = usageDaysBetween(emp.id, "Vacation", regularizationDate, today) + usageDaysBetween(emp.id, "Sick", regularizationDate, today);
+    result.serviceCredit = { total: CONFIG.serviceCreditDays, used, left: Math.max(0, CONFIG.serviceCreditDays - used), expiresOn: serviceCreditExpiry };
+  } else {
+    result.phase = "annual";
+    const yearsOfService = fullYearsSince(hireDateStr, today);
+    const vlBase = Math.min(CONFIG.maxVLDays, CONFIG.baseVLDays + Math.max(0, yearsOfService - 1));
+    const slBase = CONFIG.baseSLDays;
+    const jan1ThisYear = new Date(today.getFullYear(), 0, 1);
+    const cycleStart = oneYearAnniversary > jan1ThisYear ? oneYearAnniversary : jan1ThisYear;
+    const vlUsed = usageDaysBetween(emp.id, "Vacation", cycleStart, today);
+    const slUsed = usageDaysBetween(emp.id, "Sick", cycleStart, today);
+    result.vl = { base: vlBase, used: vlUsed, left: Math.max(0, vlBase - vlUsed) };
+    result.sl = { base: slBase, used: slUsed, left: Math.max(0, slBase - slUsed) };
+  }
+
+  if (emp.birthday) {
+    const bMonth = Number(dateOnly(emp.birthday).slice(5, 7));
+    const granted = (today.getMonth() + 1) >= bMonth;
+    const yearStart = new Date(today.getFullYear(), bMonth - 1, 1);
+    const used = granted ? usageDaysBetween(emp.id, "Birthday", yearStart, today) : 0;
+    result.birthday = { total: CONFIG.birthdayLeaveDays, granted, used, left: Math.max(0, CONFIG.birthdayLeaveDays - used), month: bMonth };
+  }
+
+  return result;
+}
+
+function usageTypeBadge(rawType) {
+  const type = normalizeUsageType(rawType);
+  const map = {
+    Vacation: ["#1e2b1f", "#4ade80"],
+    Sick: ["#2b1f1f", "#f87171"],
+    Birthday: ["#0f2e2a", "#2dd4bf"],
+    Special: ["#1a2440", "#8fb3ff"],
+    WithoutPay: ["#2a2410", "#fbbf24"]
+  };
+  const [bg, fg] = map[type];
+  return `<span style="font-size:10px; background:${bg}; color:${fg}; border-radius:5px; padding:2px 7px; white-space:nowrap;">${escapeHtml(USAGE_TYPE_LABEL[type])}</span>`;
+}
+
+function leaveUsageThisYear(employeeId) {
+  const year = new Date().getFullYear();
+  return leaveUsage.filter(u => u.employeeId === String(employeeId) && dateOnly(u.date).slice(0, 4) === String(year));
 }
 
 function thisMonthBirthdays() {
@@ -2030,17 +2125,26 @@ function renderHRModal() {
   if (hrView.mode === "logUsage") {
     const emp = employees.find(e => e.id === hrView.employeeId);
     if (!emp) return;
+    const st = leaveStatus(emp);
+    let summary = "";
+    if (st.phase === "probation") summary = `On probation until ${dateOnly(st.regularizationDate.toISOString())}`;
+    else if (st.phase === "serviceCredit") summary = `Service Credit: ${st.serviceCredit.left}/${st.serviceCredit.total} left (expires ${dateOnly(st.serviceCredit.expiresOn.toISOString())})`;
+    else if (st.phase === "annual") summary = `&#127796; ${st.vl.left}/${st.vl.base} VL · &#129298; ${st.sl.left}/${st.sl.base} SL`;
+    if (st.birthday) summary += `${summary ? " · " : ""}&#127874; ${st.birthday.left}/${st.birthday.total} Birthday`;
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
         <h3 style="margin-bottom:2px;">Log leave / sick usage</h3>
         <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')" style="padding:4px 10px;">✕</button>
       </div>
-      <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · &#127796; ${Math.max(0, CONFIG.leaveDaysPerYear - usedDaysFor(emp.id, "Leave"))} left · &#129298; ${Math.max(0, CONFIG.sickDaysPerYear - usedDaysFor(emp.id, "Sick"))} left</div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · ${summary}</div>
       <div class="form-group">
         <label>Type</label>
         <select id="hrUsageType">
-          <option value="Leave">Leave</option>
-          <option value="Sick">Sick</option>
+          <option value="Vacation">Vacation Leave</option>
+          <option value="Sick">Sick Leave</option>
+          <option value="Birthday">Birthday Leave</option>
+          <option value="Special">Special (no deduction — e.g. maternity/paternity, bereavement)</option>
+          <option value="WithoutPay">Without Pay (balance already used up)</option>
         </select>
       </div>
       <div class="form-group"><label>Date</label><input id="hrUsageDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
@@ -2166,10 +2270,37 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
   const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
   const addBtn = (kind, label) => `<button class="btn btn-secondary" onclick="openAddSubRecordForm('${kind}','${emp.id}')" style="padding:3px 10px; font-size:11px;">${label}</button>`;
   const sectionLabel = (n, text) => `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px;">${n}. ${text}</div>`;
-  const leaveLeft = Math.max(0, CONFIG.leaveDaysPerYear - usedDaysFor(emp.id, "Leave"));
-  const sickLeft = Math.max(0, CONFIG.sickDaysPerYear - usedDaysFor(emp.id, "Sick"));
-  const usageThisYear = [...leaveUsageThisYear(emp.id, "Leave"), ...leaveUsageThisYear(emp.id, "Sick")]
-    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const leaveSt = leaveStatus(emp);
+  const usageThisYear = leaveUsageThisYear(emp.id).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+  const creditsBoxInner = () => {
+    if (leaveSt.phase === "probation") {
+      return `
+        <div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;">Leave / Sick Credits</div>
+        <div style="font-size:12px; margin-top:3px; color:var(--text2);">On probation</div>
+        <div style="font-size:10px; color:var(--text3); margin-top:2px;">Service Credit from ${dateOnly(leaveSt.regularizationDate.toISOString())}</div>
+      `;
+    }
+    if (leaveSt.phase === "serviceCredit") {
+      const sc = leaveSt.serviceCredit;
+      return `
+        <div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;">Service Credit</div>
+        <div style="font-size:13px; margin-top:3px;">&#9889; ${sc.left} <span style="color:var(--text3);">/ ${sc.total}</span></div>
+        <div style="font-size:10px; color:var(--text3); margin-top:2px;">Expires ${dateOnly(sc.expiresOn.toISOString())}</div>
+      `;
+    }
+    if (leaveSt.phase === "annual") {
+      return `
+        <div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;">Leave / Sick Credits</div>
+        <div style="font-size:13px; margin-top:3px;">&#127796; ${leaveSt.vl.left} <span style="color:var(--text3);">/ ${leaveSt.vl.base}</span> <span style="color:var(--text3);">·</span> &#129298; ${leaveSt.sl.left} <span style="color:var(--text3);">/ ${leaveSt.sl.base}</span></div>
+        <div style="font-size:10px; color:var(--text3); margin-top:2px;">Resets Jan 1 · ${new Date().getFullYear()} cycle</div>
+      `;
+    }
+    return `<div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;">Leave / Sick Credits</div><div style="font-size:12px; color:var(--text2); margin-top:3px;">No hire date on file</div>`;
+  };
+  const birthdayLine = leaveSt.birthday
+    ? `<div style="font-size:12px; margin-top:6px; padding-top:6px; border-top:1px solid var(--border);">&#127874; ${leaveSt.birthday.left} <span style="color:var(--text3);">/ ${leaveSt.birthday.total} birthday leave${leaveSt.birthday.granted ? "" : ` (from month ${leaveSt.birthday.month})`}</span></div>`
+    : "";
 
   return `
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
@@ -2193,10 +2324,9 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; flex-shrink:0;">
           ${emp.resumeUrl ? `<a href="${escapeAttr(emp.resumeUrl)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
-          <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; text-align:right; white-space:nowrap;">
-            <div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;">Leave / Sick Credits</div>
-            <div style="font-size:13px; margin-top:3px;">&#127796; ${leaveLeft} <span style="color:var(--text3);">/ ${CONFIG.leaveDaysPerYear}</span> <span style="color:var(--text3);">·</span> &#129298; ${sickLeft} <span style="color:var(--text3);">/ ${CONFIG.sickDaysPerYear}</span></div>
-            <div style="font-size:10px; color:var(--text3); margin-top:2px;">Resets Jan 1 · ${new Date().getFullYear()} cycle</div>
+          <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; text-align:right; white-space:nowrap; min-width:180px;">
+            ${creditsBoxInner()}
+            ${birthdayLine}
             ${canAccessHR ? `<div onclick="openLogUsageForm('${emp.id}')" style="font-size:11px; color:var(--accent); cursor:pointer; margin-top:6px;">+ Log usage</div>` : ""}
           </div>
         </div>
@@ -2209,10 +2339,10 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
       ` : ""}
       ${usageThisYear.length ? `
         <div style="margin-top:12px;">
-          <div style="font-size:11px; color:var(--text2); margin-bottom:6px;">${new Date().getFullYear()} usage</div>
+          <div style="font-size:11px; color:var(--text2); margin-bottom:6px;">${new Date().getFullYear()} leave/sick usage</div>
           ${usageThisYear.map(u => `
             <div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--border); font-size:12px;">
-              <span style="color:${u.type === "Sick" ? "#f87171" : "#4ade80"};">${u.type === "Sick" ? "&#129298;" : "&#127796;"} ${escapeHtml(u.type)}</span>
+              ${usageTypeBadge(u.type)}
               <span style="color:var(--text2);">${escapeHtml(dateOnly(u.date) || "—")}</span>
               <span>${u.days}d</span>
               <span style="color:var(--text2); flex:1;">${escapeHtml(u.notes || "")}</span>
