@@ -348,6 +348,9 @@
           &#128100;&#128683;
           <span class="tab-count" id="formerEmployeesCount" style="display:none"></span>
         </button>
+        <button class="trash-icon-btn" onclick="openLeaveReport()" id="leaveReportBtn" style="display:none" title="Leave & Sick Report">
+          &#128202;
+        </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
@@ -1239,10 +1242,15 @@ function usageDaysBetween(employeeId, type, startDate, endDate) {
 }
 
 // Full leave/sick/service-credit/birthday-leave status for one employee, as of today.
-function leaveStatus(emp) {
+// asOf lets us ask "what did this person's balance look like on any given date" —
+// leaveStatus(emp) below is just this called with today, but the exact same logic
+// (probation → service credit → annual, with the tenure-based VL bump) also answers
+// "what was the picture on Dec 31 of some past year", which is how the year-by-year
+// history and the admin report are computed with no separate code path.
+function leaveStatusAsOf(emp, asOf) {
   const result = { phase: "unknown" };
   if (!emp.hireDate) return result;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  asOf = new Date(asOf); asOf.setHours(0, 0, 0, 0);
   const hireDateStr = dateOnly(emp.hireDate);
   const regularizationDate = addMonths(hireDateStr, CONFIG.probationMonths);
   const serviceCreditExpiry = addMonths(hireDateStr, CONFIG.probationMonths + CONFIG.serviceCreditValidMonths);
@@ -1250,34 +1258,38 @@ function leaveStatus(emp) {
   result.regularizationDate = regularizationDate;
   result.oneYearAnniversary = oneYearAnniversary;
 
-  if (today < regularizationDate) {
+  if (asOf < regularizationDate) {
     result.phase = "probation";
-  } else if (today < oneYearAnniversary) {
+  } else if (asOf < oneYearAnniversary) {
     result.phase = "serviceCredit";
-    const used = usageDaysBetween(emp.id, "Vacation", regularizationDate, today) + usageDaysBetween(emp.id, "Sick", regularizationDate, today);
+    const used = usageDaysBetween(emp.id, "Vacation", regularizationDate, asOf) + usageDaysBetween(emp.id, "Sick", regularizationDate, asOf);
     result.serviceCredit = { total: CONFIG.serviceCreditDays, used, left: Math.max(0, CONFIG.serviceCreditDays - used), expiresOn: serviceCreditExpiry };
   } else {
     result.phase = "annual";
-    const yearsOfService = fullYearsSince(hireDateStr, today);
+    const yearsOfService = fullYearsSince(hireDateStr, asOf);
     const vlBase = Math.min(CONFIG.maxVLDays, CONFIG.baseVLDays + Math.max(0, yearsOfService - 1));
     const slBase = CONFIG.baseSLDays;
-    const jan1ThisYear = new Date(today.getFullYear(), 0, 1);
-    const cycleStart = oneYearAnniversary > jan1ThisYear ? oneYearAnniversary : jan1ThisYear;
-    const vlUsed = usageDaysBetween(emp.id, "Vacation", cycleStart, today);
-    const slUsed = usageDaysBetween(emp.id, "Sick", cycleStart, today);
+    const jan1ThatYear = new Date(asOf.getFullYear(), 0, 1);
+    const cycleStart = oneYearAnniversary > jan1ThatYear ? oneYearAnniversary : jan1ThatYear;
+    const vlUsed = usageDaysBetween(emp.id, "Vacation", cycleStart, asOf);
+    const slUsed = usageDaysBetween(emp.id, "Sick", cycleStart, asOf);
     result.vl = { base: vlBase, used: vlUsed, left: Math.max(0, vlBase - vlUsed) };
     result.sl = { base: slBase, used: slUsed, left: Math.max(0, slBase - slUsed) };
   }
 
   if (emp.birthday) {
     const bMonth = Number(dateOnly(emp.birthday).slice(5, 7));
-    const granted = (today.getMonth() + 1) >= bMonth;
-    const yearStart = new Date(today.getFullYear(), bMonth - 1, 1);
-    const used = granted ? usageDaysBetween(emp.id, "Birthday", yearStart, today) : 0;
+    const granted = (asOf.getMonth() + 1) >= bMonth;
+    const yearStart = new Date(asOf.getFullYear(), bMonth - 1, 1);
+    const used = granted ? usageDaysBetween(emp.id, "Birthday", yearStart, asOf) : 0;
     result.birthday = { total: CONFIG.birthdayLeaveDays, granted, used, left: Math.max(0, CONFIG.birthdayLeaveDays - used), month: bMonth };
   }
 
   return result;
+}
+
+function leaveStatus(emp) {
+  return leaveStatusAsOf(emp, new Date());
 }
 
 function usageTypeBadge(rawType) {
@@ -1296,6 +1308,65 @@ function usageTypeBadge(rawType) {
 function leaveUsageThisYear(employeeId) {
   const year = new Date().getFullYear();
   return leaveUsage.filter(u => u.employeeId === String(employeeId) && dateOnly(u.date).slice(0, 4) === String(year));
+}
+
+function leaveUsageForYear(employeeId, year) {
+  return leaveUsage.filter(u => u.employeeId === String(employeeId) && dateOnly(u.date).slice(0, 4) === String(year))
+    .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+
+// Which past-year panels are currently expanded, per employee — "empId:year" keys.
+// Admin-only (canAccessSalary) and intentionally left out of My Profile.
+let expandedLeaveYears = new Set();
+function toggleLeaveYear(employeeId, year) {
+  const key = `${employeeId}:${year}`;
+  if (expandedLeaveYears.has(key)) expandedLeaveYears.delete(key);
+  else expandedLeaveYears.add(key);
+  renderHRModal();
+}
+
+function renderPastYearsUsage(emp) {
+  const currentYear = new Date().getFullYear();
+  const years = [...new Set(leaveUsage.filter(u => u.employeeId === String(emp.id)).map(u => Number(dateOnly(u.date).slice(0, 4))))]
+    .filter(y => y && y < currentYear)
+    .sort((a, b) => b - a);
+  if (!years.length) return "";
+  return `
+    <div style="margin-top:16px; border-top:1px solid var(--border); padding-top:12px;">
+      <div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.03em; margin-bottom:6px;">Past years (admin only)</div>
+      ${years.map(year => {
+        const key = `${emp.id}:${year}`;
+        const open = expandedLeaveYears.has(key);
+        const st = leaveStatusAsOf(emp, new Date(year, 11, 31));
+        const entries = leaveUsageForYear(emp.id, year);
+        const summary = st.phase === "annual"
+          ? `&#127796; ${st.vl.left}/${st.vl.base} VL left · &#129298; ${st.sl.left}/${st.sl.base} SL left`
+          : st.phase === "serviceCredit" ? `&#9889; ${st.serviceCredit.left}/${st.serviceCredit.total} Service Credit left`
+          : "Not yet regularized";
+        return `
+          <div style="margin-bottom:4px;">
+            <div onclick="toggleLeaveYear('${emp.id}', ${year})" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; padding:8px 0;">
+              <span style="font-size:13px; color:var(--accent);">${open ? "▾" : "▸"} ${year}</span>
+              <span style="font-size:11px; color:var(--text2);">${summary}</span>
+            </div>
+            ${open ? `
+              <div style="padding-left:14px; margin-bottom:8px;">
+                ${entries.length ? entries.map(u => `
+                  <div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--border); font-size:12px;">
+                    ${usageTypeBadge(u.type)}
+                    <span style="color:var(--text2);">${escapeHtml(dateOnly(u.date) || "—")}</span>
+                    <span>${u.days}d</span>
+                    <span style="color:var(--text2); flex:1;">${escapeHtml(u.notes || "")}</span>
+                    <span onclick="deleteLeaveUsage('${u.itemId}')" title="Delete" style="cursor:pointer; color:var(--text3);">✕</span>
+                  </div>
+                `).join("") : `<div style="font-size:12px; color:var(--text2);">No entries.</div>`}
+              </div>
+            ` : ""}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function thisMonthBirthdays() {
@@ -1567,6 +1638,13 @@ function closeHRModal() {
 function openFormerEmployeesList() {
   if (!canAccessHR) return; // defense in depth
   hrView = { mode: "formerEmployees" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+function openLeaveReport(year) {
+  if (!canAccessSalary) return; // same tier as salary access — Admin Manager and above
+  hrView = { mode: "leaveReport", year: year || new Date().getFullYear() };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
 }
@@ -1995,6 +2073,60 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "leaveReport") {
+    box.style.width = "min(900px, 95vw)";
+    const year = hrView.year;
+    const currentYear = new Date().getFullYear();
+    const asOf = year === currentYear ? new Date() : new Date(year, 11, 31);
+    const roster = employees.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const rows = roster.map(e => {
+      const st = leaveStatusAsOf(e, asOf);
+      let vlCell = "—", slCell = "—", phaseNote = "";
+      if (st.phase === "annual") { vlCell = `${st.vl.left} / ${st.vl.base}`; slCell = `${st.sl.left} / ${st.sl.base}`; }
+      else if (st.phase === "serviceCredit") { phaseNote = `Service Credit ${st.serviceCredit.left}/${st.serviceCredit.total}`; }
+      else if (st.phase === "probation") { phaseNote = "On probation"; }
+      const bdayCell = st.birthday ? `${st.birthday.left} / ${st.birthday.total}` : "—";
+      return `<tr onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer;">
+        <td style="text-align:left;">${escapeHtml(e.name)}${e.status === "Resigned" ? ` <span style="color:var(--text3);">(former)</span>` : ""}</td>
+        <td style="text-align:left;">${escapeHtml(e.team)}${e.cluster ? ` <span style="color:var(--text3);">· ${escapeHtml(e.cluster)}</span>` : ""}</td>
+        <td>${phaseNote ? `<span style="color:var(--text3);">${escapeHtml(phaseNote)}</span>` : vlCell}</td>
+        <td>${phaseNote ? "—" : slCell}</td>
+        <td>${bdayCell}</td>
+      </tr>`;
+    }).join("");
+    const yearOptions = [];
+    const hireYears = employees.map(e => e.hireDate ? Number(dateOnly(e.hireDate).slice(0, 4)) : currentYear).filter(Boolean);
+    const minYear = Math.min(currentYear, ...(hireYears.length ? hireYears : [currentYear]));
+    for (let y = currentYear; y >= minYear; y--) yearOptions.push(y);
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <h3 style="margin-bottom:2px;">Leave & Sick Report</h3>
+          <div style="font-size:12px; color:var(--text2);">All employees · balances as of ${year === currentYear ? "today" : `Dec 31, ${year}`}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="margin:12px 0;">
+        <select onchange="openLeaveReport(Number(this.value))" style="width:auto;">
+          ${yearOptions.map(y => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("")}
+        </select>
+      </div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+            <td style="padding:6px 0; text-align:left;">Name</td>
+            <td style="text-align:left;">Team</td>
+            <td>VL left / base</td>
+            <td>SL left / base</td>
+            <td>Birthday left / total</td>
+          </tr>
+          ${rows}
+        </table>
+      </div>
+    `;
+    return;
+  }
+
   if (hrView.mode === "detail") {
     const emp = employees.find(e => e.id === hrView.employeeId);
     if (!emp) { box.innerHTML = `<div style="font-size:13px;">Employee not found.</div>`; return; }
@@ -2351,6 +2483,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           `).join("")}
         </div>
       ` : ""}
+      ${(canAccessSalary && !selfView) ? renderPastYearsUsage(emp) : ""}
     </div>
 
     <!-- 2. Employment -->
@@ -2653,6 +2786,8 @@ function renderTabs() {
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
   const formerEmployeesBtn = document.getElementById("formerEmployeesBtn");
   formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
+  const leaveReportBtn = document.getElementById("leaveReportBtn");
+  leaveReportBtn.style.display = canAccessSalary ? "" : "none";
   const myProfileBtn = document.getElementById("myProfileBtn");
   myProfileBtn.style.display = employeesListId ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
