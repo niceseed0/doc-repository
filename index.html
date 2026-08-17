@@ -422,6 +422,22 @@
   <div class="modal" id="hrModalInner" style="width:min(560px, 92vw)"></div>
 </div>
 
+<div class="modal-bg" id="bioModal">
+  <div class="modal" style="width:min(800px, 95vw); height:min(900px, 90vh); display:flex; flex-direction:column; padding:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+      <div>
+        <h3 id="bioViewerTitle" style="margin-bottom:2px;"></h3>
+        <div id="bioViewerSubtitle" style="font-size:12px; color:var(--text2);"></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px;">
+        <a id="bioViewerOpenLink" href="#" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent);">Open in new tab ↗</a>
+        <button class="btn btn-secondary" onclick="closeBioViewer()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    <iframe id="bioViewerFrame" src="about:blank" style="flex:1; width:100%; border:1px solid var(--border); border-radius:8px; background:var(--surface2);"></iframe>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -485,6 +501,7 @@ const CONFIG = {
   hrFilesLibrary: "HR Files",
   hrPhotosFolder: "Photos",
   hrResumesFolder: "Resumes",
+  hrBiosFolder: "Bios",
   photoExtensions: ["jpg", "jpeg", "png"], // tried in this order until one loads
   resumeExtension: "pdf",
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
@@ -1202,6 +1219,32 @@ function emailPrefix(email) {
 
 function sharePointFileUrl(folder, filename) {
   return `https://${CONFIG.hostname}${CONFIG.sitePath}/${encodeURIComponent(CONFIG.hrFilesLibrary)}/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
+}
+
+function slugify(name) {
+  return String(name || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function bioPdfUrl(name) {
+  const slug = slugify(name);
+  return slug ? sharePointFileUrl(CONFIG.hrBiosFolder, `${slug}.pdf`) : "";
+}
+
+// Shows a leadership bio PDF embedded right in the page (native browser PDF viewer inside
+// an iframe) rather than downloading or opening a new tab. Open to everyone — this is public
+// introduction content, not gated like the HR module. File is auto-located the same way
+// photos/resumes are: HR Files/Bios/<slugified-name>.pdf — nothing to link manually.
+function openBioViewer(name, title) {
+  const url = bioPdfUrl(name);
+  document.getElementById("bioViewerTitle").textContent = name;
+  document.getElementById("bioViewerSubtitle").textContent = title || "";
+  document.getElementById("bioViewerFrame").src = url;
+  document.getElementById("bioViewerOpenLink").href = url;
+  document.getElementById("bioModal").classList.add("open");
+}
+function closeBioViewer() {
+  document.getElementById("bioModal").classList.remove("open");
+  document.getElementById("bioViewerFrame").src = "about:blank";
 }
 
 function autoResumeUrl(emp) {
@@ -3557,7 +3600,7 @@ function renderOrgChart() {
     <div class="org-tree-wrap">
     <div class="org-grid">
 
-      <div class="org-node-box org-cell-box" style="grid-column:1/7; grid-row:1;">
+      <div class="org-node-box org-cell-box org-leaf-box" style="grid-column:1/7; grid-row:1;" onclick="openBioViewer('${jsAttrEscape(ORG_CHART.ceo.name)}','${jsAttrEscape(ORG_CHART.ceo.title)}')">
         <div class="org-name">${escapeHtml(ORG_CHART.ceo.name)}</div>
         <div class="org-title2">${escapeHtml(ORG_CHART.ceo.title)}</div>
       </div>
@@ -3566,7 +3609,7 @@ function renderOrgChart() {
         ${orgVLine(OC.mid)}
       </div>
 
-      <div class="org-node-box org-cell-box" style="grid-column:1/7; grid-row:3;">
+      <div class="org-node-box org-cell-box org-leaf-box" style="grid-column:1/7; grid-row:3;" onclick="openBioViewer('${jsAttrEscape(ORG_CHART.md.name)}','${jsAttrEscape(ORG_CHART.md.title)}')">
         <div class="org-name">${escapeHtml(ORG_CHART.md.name)}</div>
         <div class="org-title2">${escapeHtml(ORG_CHART.md.title)}</div>
       </div>
@@ -3606,7 +3649,7 @@ function renderOrgChart() {
         ${orgVLine(OC.c3)}
         ${orgVLine(OC.c4)}
       </div>
-      <div class="org-node-box org-cell-box" style="grid-column:1/3; grid-row:7;">
+      <div class="org-node-box org-cell-box org-leaf-box" style="grid-column:1/3; grid-row:7;" onclick="openBioViewer('${jsAttrEscape(bo.lead.name)}','${jsAttrEscape(bo.lead.title)}')">
         <div class="org-name">${escapeHtml(bo.lead.name)}</div>
         <div class="org-title2">${escapeHtml(bo.lead.title)}</div>
       </div>
@@ -3614,11 +3657,11 @@ function renderOrgChart() {
         ${orgVLine(OC.c5)}
         ${orgVLine(OC.c6)}
       </div>
-      <div class="org-node-box org-cell-box" style="grid-column:5; grid-row:7 / 10;">
+      <div class="org-node-box org-cell-box org-leaf-box" style="grid-column:5; grid-row:7 / 10;" onclick="openBioViewer('${jsAttrEscape(gso.leads[0].name)}','${jsAttrEscape(gso.leads[0].title)}')">
         <div class="org-name">${escapeHtml(gso.leads[0].name)}</div>
         <div class="org-title2">${escapeHtml(gso.leads[0].title)}</div>
       </div>
-      <div class="org-node-box org-cell-box" style="grid-column:6; grid-row:7 / 10;">
+      <div class="org-node-box org-cell-box org-leaf-box" style="grid-column:6; grid-row:7 / 10;" onclick="openBioViewer('${jsAttrEscape(gso.leads[1].name)}','${jsAttrEscape(gso.leads[1].title)}')">
         <div class="org-name">${escapeHtml(gso.leads[1].name)}</div>
         <div class="org-title2">${escapeHtml(gso.leads[1].title)}</div>
       </div>
