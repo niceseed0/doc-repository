@@ -478,6 +478,15 @@ const CONFIG = {
   baseSLDays: 5,                // Sick Leave — does not increase with tenure
   maxVLDays: 10,                 // Vacation Leave cap — stops increasing once it reaches this
   birthdayLeaveDays: 1,         // granted each year once the employee's birthday month arrives
+  // Photos/resumes are auto-located from the employee's email, so nobody has to copy/paste a
+  // link after uploading — just save the file under this library/folder, named as the part of
+  // the email before "@" (e.g. jkim@elitegsl.com -> "jkim.jpg" / "jkim.pdf"). PhotoUrl/ResumeUrl
+  // in HR Employees still work as a manual override when set, but are optional.
+  hrFilesLibrary: "HR Files",
+  hrPhotosFolder: "Photos",
+  hrResumesFolder: "Resumes",
+  photoExtensions: ["jpg", "jpeg", "png"], // tried in this order until one loads
+  resumeExtension: "pdf",
   preferredColumnOrder: ["Category", "Sub-Category", "Document Name", "Description", "Owner", "Link", "Update Cycle", "Status", "Last Updated"],
   // Fallback: some SharePoint/Graph responses omit the hyperlinkOrPicture facet even for real Hyperlink columns.
   // Any column whose display name matches one of these is always treated as a hyperlink field.
@@ -1184,6 +1193,48 @@ function dateOnly(value) {
   if (!value) return "";
   const m = String(value).match(/^\d{4}-\d{2}-\d{2}/);
   return m ? m[0] : String(value);
+}
+
+// ── Auto-located photo/resume files (see CONFIG.hrFilesLibrary above) ──────
+function emailPrefix(email) {
+  return String(email || "").split("@")[0].trim();
+}
+
+function sharePointFileUrl(folder, filename) {
+  return `https://${CONFIG.hostname}${CONFIG.sitePath}/${encodeURIComponent(CONFIG.hrFilesLibrary)}/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}`;
+}
+
+function autoResumeUrl(emp) {
+  const prefix = emailPrefix(emp.email);
+  return prefix ? sharePointFileUrl(CONFIG.hrResumesFolder, `${prefix}.${CONFIG.resumeExtension}`) : "";
+}
+
+// An avatar <div> with an <img> inside that tries: the manual PhotoUrl override (if set), then
+// each extension in CONFIG.photoExtensions in turn at the auto-computed path, falling back to
+// initials only if every candidate 404s. No link ever needs to be copy/pasted for this to work.
+function avatarHtml(emp, sizePx, fontPx) {
+  const initialsText = escapeHtml(initials(emp.name).toUpperCase());
+  const candidates = [];
+  if (emp.photo) candidates.push(emp.photo);
+  const prefix = emailPrefix(emp.email);
+  if (prefix) CONFIG.photoExtensions.forEach(ext => candidates.push(sharePointFileUrl(CONFIG.hrPhotosFolder, `${prefix}.${ext}`)));
+  const boxStyle = `width:${sizePx}px; height:${sizePx}px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:${fontPx}px; font-weight:600; color:var(--accent); overflow:hidden;`;
+  if (!candidates.length) return `<div style="${boxStyle}">${initialsText}</div>`;
+  const first = candidates[0];
+  const rest = JSON.stringify(candidates.slice(1)).replace(/"/g, "&quot;");
+  return `<div style="${boxStyle}"><img src="${escapeAttr(first)}" data-fallbacks="${rest}" data-initials="${initialsText}" onerror="avatarImgError(this)" style="width:100%; height:100%; object-fit:cover;" /></div>`;
+}
+
+function avatarImgError(img) {
+  let fallbacks = [];
+  try { fallbacks = JSON.parse(img.getAttribute("data-fallbacks") || "[]"); } catch (e) {}
+  if (fallbacks.length) {
+    const next = fallbacks.shift();
+    img.setAttribute("data-fallbacks", JSON.stringify(fallbacks));
+    img.src = next;
+  } else if (img.parentElement) {
+    img.parentElement.textContent = img.getAttribute("data-initials") || "";
+  }
 }
 
 // Formats a stored birthday as "Aug 5" — month/day only, year intentionally omitted.
@@ -2058,9 +2109,7 @@ function renderHRModal() {
       <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
         ${former.length ? former.map(e => `
           <div onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer; display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
-            <div style="width:30px; height:30px; border-radius:50%; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:600; color:var(--text3); overflow:hidden;">
-              ${e.photo ? `<img src="${escapeAttr(e.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(e.name).toUpperCase())}
-            </div>
+            ${avatarHtml(e, 30, 11)}
             <div style="flex:1; min-width:0;">
               <div style="font-size:13px; color:var(--accent);">${escapeHtml(e.name)}</div>
               <div style="font-size:11px; color:var(--text2);">${escapeHtml(e.team)}${e.cluster ? ` · ${escapeHtml(e.cluster)}` : ""} — ${escapeHtml(e.position || "—")}</div>
@@ -2237,8 +2286,8 @@ function renderHRModal() {
       <div class="form-group"><label>Hire date</label><input id="hrAddHireDate" type="date" /></div>
       <div class="form-group"><label>Email</label><input id="hrAddEmail" type="email" /></div>
       <div class="form-group"><label>Birthday (optional)</label><input id="hrAddBirthday" type="date" /></div>
-      <div class="form-group"><label>Resume URL (optional)</label><input id="hrAddResumeUrl" type="text" /></div>
-      <div class="form-group"><label>Photo URL (optional)</label><input id="hrAddPhotoUrl" type="text" /></div>
+      <div class="form-group"><label>Resume URL (optional — auto-detected from email if left blank)</label><input id="hrAddResumeUrl" type="text" /></div>
+      <div class="form-group"><label>Photo URL (optional — auto-detected from email if left blank)</label><input id="hrAddPhotoUrl" type="text" /></div>
       <div id="hrAddSeparationFields"></div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
@@ -2383,9 +2432,7 @@ function rosterRow(e, clickable) {
   return `
     <div ${isClickable ? `onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer;"` : ""}
          style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
-      <div style="width:30px; height:30px; border-radius:50%; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:11px; font-weight:600; color:var(--accent); overflow:hidden;">
-        ${e.photo ? `<img src="${escapeAttr(e.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(e.name).toUpperCase())}
-      </div>
+      ${avatarHtml(e, 30, 11)}
       <div style="flex:1; min-width:0;">
         <div style="font-size:13px; color:${isClickable ? "var(--accent)" : "var(--text)"};">${escapeHtml(e.name)}</div>
         <div style="font-size:11px; color:var(--text2);">${escapeHtml(e.position || "—")}</div>
@@ -2446,16 +2493,14 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
     <div style="margin-top:14px; margin-bottom:20px;">
       ${sectionLabel(1, "Employee Overview")}
       <div style="display:flex; gap:16px; align-items:flex-start;">
-        <div style="width:56px; height:56px; border-radius:50%; background:var(--surface2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:16px; font-weight:600; color:var(--accent); overflow:hidden;">
-          ${emp.photo ? `<img src="${escapeAttr(emp.photo)}" style="width:100%; height:100%; object-fit:cover;" />` : escapeHtml(initials(emp.name).toUpperCase())}
-        </div>
+        ${avatarHtml(emp, 56, 16)}
         <div style="flex:1; min-width:0;">
           <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
           <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.team)}${emp.cluster ? ` <span style="color:var(--text3);">· ${escapeHtml(emp.cluster)}</span>` : ""}</div>
           <div style="font-size:13px; color:var(--text2); margin-top:1px;">${escapeHtml(emp.position || "—")}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; flex-shrink:0;">
-          ${emp.resumeUrl ? `<a href="${escapeAttr(emp.resumeUrl)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
+          ${(emp.resumeUrl || autoResumeUrl(emp)) ? `<a href="${escapeAttr(emp.resumeUrl || autoResumeUrl(emp))}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
           <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; text-align:right; white-space:nowrap; min-width:180px;">
             ${creditsBoxInner()}
             ${birthdayLine}
