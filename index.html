@@ -2370,7 +2370,7 @@ function renderTeamOrgChart(members) {
   const positions = [...ranked, ...unranked];
   const levels = positions.map(p => groups[p].slice().sort((a, b) => (a.hireDate || "9999-99-99").localeCompare(b.hireDate || "9999-99-99")));
 
-  const colW = 180, boxH = 76, rowGap = 56, topPad = 10;
+  const colW = 210, boxH = 76, rowGap = 56, topPad = 10;
   const maxWidth = Math.max(...levels.map(l => l.length), 1);
   const totalW = maxWidth * colW;
   const totalH = topPad + levels.length * boxH + (levels.length - 1) * rowGap + topPad;
@@ -2410,10 +2410,13 @@ function renderTeamOrgChart(members) {
     const onLeave = e.status === "Leave of Absence";
     return `
       <div ${canAccessHR ? `onclick="openEmployeeDetail('${e.id}')"` : ""}
-           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; justify-content:center; ${canAccessHR ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
-        <div style="font-size:14px; font-weight:600; color:${canAccessHR ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
-        <div style="font-size:11px; color:var(--text2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.position || "—")}</div>
-        ${onLeave ? `<div style="margin-top:3px;">${statusBadge(e.status)}</div>` : ""}
+           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; display:flex; align-items:center; gap:10px; ${canAccessHR ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
+        ${avatarHtml(e, 44, 14)}
+        <div style="min-width:0; flex:1;">
+          <div style="font-size:14px; font-weight:600; color:${canAccessHR ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
+          <div style="font-size:11px; color:var(--text2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.position || "—")}</div>
+          ${onLeave ? `<div style="margin-top:3px;">${statusBadge(e.status)}</div>` : ""}
+        </div>
       </div>`;
   }));
 
@@ -2492,8 +2495,8 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
     <!-- 1. Employee Overview -->
     <div style="margin-top:14px; margin-bottom:20px;">
       ${sectionLabel(1, "Employee Overview")}
-      <div style="display:flex; gap:16px; align-items:flex-start;">
-        ${avatarHtml(emp, 56, 16)}
+      <div style="display:flex; gap:16px; align-items:center;">
+        ${avatarHtml(emp, 96, 26)}
         <div style="flex:1; min-width:0;">
           <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
           <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.team)}${emp.cluster ? ` <span style="color:var(--text3);">· ${escapeHtml(emp.cluster)}</span>` : ""}</div>
