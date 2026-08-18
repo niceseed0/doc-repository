@@ -2258,6 +2258,7 @@ function renderHRModal() {
   }
 
   if (hrView.mode === "detail") {
+    box.style.width = "min(760px, 94vw)";
     const emp = employees.find(e => e.id === hrView.employeeId);
     if (!emp) { box.innerHTML = `<div style="font-size:13px;">Employee not found.</div>`; return; }
     if (!hrDetail) {
