@@ -738,6 +738,7 @@ let teamsListId = null;
 let hrTeams = []; // pre-declared teams: [{ itemId, cluster, team }] — lets a team exist with zero members yet
 let leaveUsageListId = null;
 let leaveUsage = []; // [{ itemId, employeeId, type: "Leave"|"Sick", date, days, notes }]
+let hrFilesListId = null; // the "HR Files" document library's list ID — used to reach its Graph "drive" for photos/resumes/bios
 let employees = []; // [{ id, name, photo, team, position, status, hireDate, resumeUrl, separationDate, separationReason }]
 let hrView = null; // { mode:'roster', team } | { mode:'detail', employeeId } | { mode:'logChange', employeeId } | null
 let hrShowFormer = false; // whether the "show former members" toggle is expanded in the current roster view
@@ -810,6 +811,8 @@ async function resolveSiteAndLists() {
   teamsListId = teamsMatch ? teamsMatch.id : null; // optional — pre-declared empty teams just won't show without it
   const leaveMatch = (lists.value || []).find(l => l.displayName === CONFIG.leaveUsageListDisplayName);
   leaveUsageListId = leaveMatch ? leaveMatch.id : null; // optional — usage tracking just won't show without it
+  const hrFilesMatch = (lists.value || []).find(l => l.displayName === CONFIG.hrFilesLibrary);
+  hrFilesListId = hrFilesMatch ? hrFilesMatch.id : null; // optional — photos/resumes/bios fall back to initials/no-link without it
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -1234,17 +1237,52 @@ function bioPdfUrl(name) {
 // an iframe) rather than downloading or opening a new tab. Open to everyone — this is public
 // introduction content, not gated like the HR module. File is auto-located the same way
 // photos/resumes are: HR Files/Bios/<slugified-name>.pdf — nothing to link manually.
-function openBioViewer(name, title) {
-  const url = bioPdfUrl(name);
+// SharePoint blocks framing its own pages (X-Frame-Options), so pointing an <iframe> straight
+// at a library URL gets a "refused to connect" wall — that's a page-embedding restriction, not
+// a permissions issue. The fix is to pull the raw file bytes via Graph (same auth this app
+// already uses everywhere else) and hand the iframe a local blob: URL instead, which isn't
+// subject to that restriction at all since it's not a cross-origin navigation.
+async function graphFetchBlob(pathOrUrl) {
+  const token = await getToken();
+  const url = pathOrUrl.startsWith("http") ? pathOrUrl : GRAPH_ROOT + pathOrUrl;
+  const res = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Graph API ${res.status}`);
+  return res.blob();
+}
+
+function hrFilesDriveContentPath(folder, filename) {
+  return `/sites/${siteId}/lists/${hrFilesListId}/drive/root:/${encodeURIComponent(folder)}/${encodeURIComponent(filename)}:/content`;
+}
+
+let currentBioBlobUrl = null;
+async function openBioViewer(name, title) {
   document.getElementById("bioViewerTitle").textContent = name;
   document.getElementById("bioViewerSubtitle").textContent = title || "";
-  document.getElementById("bioViewerFrame").src = url;
-  document.getElementById("bioViewerOpenLink").href = url;
   document.getElementById("bioModal").classList.add("open");
+  const frame = document.getElementById("bioViewerFrame");
+  const openLink = document.getElementById("bioViewerOpenLink");
+  frame.removeAttribute("srcdoc");
+  frame.src = "about:blank";
+  openLink.removeAttribute("href");
+  if (currentBioBlobUrl) { URL.revokeObjectURL(currentBioBlobUrl); currentBioBlobUrl = null; }
+  const slug = slugify(name);
+  if (!hrFilesListId || !slug) {
+    frame.srcdoc = `<div style="font-family:sans-serif; color:#888; padding:20px;">No bio on file yet for ${escapeHtml(name)}.</div>`;
+    return;
+  }
+  try {
+    const blob = await graphFetchBlob(hrFilesDriveContentPath(CONFIG.hrBiosFolder, `${slug}.pdf`));
+    currentBioBlobUrl = URL.createObjectURL(blob);
+    frame.src = currentBioBlobUrl;
+    openLink.href = currentBioBlobUrl;
+  } catch (err) {
+    frame.srcdoc = `<div style="font-family:sans-serif; color:#888; padding:20px;">No bio on file yet for ${escapeHtml(name)}.</div>`;
+  }
 }
 function closeBioViewer() {
   document.getElementById("bioModal").classList.remove("open");
   document.getElementById("bioViewerFrame").src = "about:blank";
+  if (currentBioBlobUrl) { URL.revokeObjectURL(currentBioBlobUrl); currentBioBlobUrl = null; }
 }
 
 function autoResumeUrl(emp) {
