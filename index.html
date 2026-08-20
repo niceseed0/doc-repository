@@ -447,7 +447,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-07-16-11";
+const BUILD_ID = "2026-08-20-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -555,6 +555,13 @@ const INCIDENTS_ACCESS_GROUP_ID = HR_ACCESS_GROUP_ID;
 const ALL_TEAMS_LABEL = "All Teams"; // special value meaning "this person can edit every team"
 const APPROVER_LABEL = "\u2705 Approver"; // special value granted via the Permissions tab meaning "this person can approve/reject documents"
 const TRASH_LABEL = "\ud83d\uddd1\ufe0f Trash Access"; // special value granted via the Permissions tab meaning "this person can see and use the Trash"
+// HR_MANAGER_PREFIX rows reuse the same "Document Repository Permissions" list/columns (UserEmail + Team)
+// so no new SharePoint list is needed. The Team field stores this prefix + an actual HR team name (the
+// Team value on HR Employees records, NOT a document-repo team tab) — e.g. "👔 HR Manager: Payments Team".
+// Granted via the 🔑 Permissions tab (admin-only). A manager with this grant can open employee detail
+// pages for members of that HR team ONLY, and read-only: no resume link, no salary amounts (only the
+// most recent salary change date), and no add/edit/delete controls anywhere in the detail view.
+const HR_MANAGER_PREFIX = "\ud83d\udc54 HR Manager: ";
 const REVISION_ENABLED_TEAMS = ["General", "John's Cluster", "Gary's Cluster", "QA"]; // must exactly match SharePoint Team choice values — Version History only shows on these tabs
 const CONTROL_NUMBER_TEAMS = ["QA", "General", "John's Cluster", "Gary's Cluster"]; // on these tabs, the Description column header shows "Control#" and the full description shows as a tooltip on the document title instead
 const TRASH_RETENTION_DAYS = 30; // trashed documents are permanently, automatically deleted after this many days
@@ -722,6 +729,7 @@ let canEdit = true; // whether the signed-in user has edit rights on the SharePo
 let canAccessHR = false; // whether the signed-in user is in the HR-Sensitive-Access group (checked at startup, fails closed)
 let canAccessSalary = false; // access to Salary history specifically — same group as canAccessHR today, can be split later
 let canAccessIncidents = false; // access to HR Records (incidents/recognition) specifically — same group as canAccessHR today, can be split later
+let managedTeams = new Set(); // HR team names (Employees.Team values) the signed-in user manages, per HR_MANAGER_PREFIX grants in the Permissions list — read-only, team-scoped HR access. Recomputed in refreshAccessFlags().
 let hrAccessOverage = false; // true if the ID token couldn't list all of this user's groups (too many groups) — set as a signal to fall back to a Graph check later if needed
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1782,9 +1790,9 @@ function openLeaveReport(year) {
 }
 
 async function openEmployeeDetail(employeeId) {
-  if (!canAccessHR && !canAccessSalary && !canAccessIncidents) return; // defense in depth — this should never be reachable from the UI otherwise
   const emp = employees.find(e => e.id === employeeId);
   if (!emp) return;
+  if (!canOpenEmployee(emp)) return; // defense in depth — this should never be reachable from the UI otherwise
   hrView = { mode: "detail", employeeId };
   hrDetail = null;
   document.getElementById("hrModal").classList.add("open");
@@ -2490,12 +2498,13 @@ function renderTeamOrgChart(members) {
   const boxesHtml = layout.flatMap(lvl => lvl.boxes.map(b => {
     const e = b.emp;
     const onLeave = e.status === "Leave of Absence";
+    const canOpen = canOpenEmployee(e);
     return `
-      <div ${canAccessHR ? `onclick="openEmployeeDetail('${e.id}')"` : ""}
-           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; display:flex; align-items:center; gap:10px; ${canAccessHR ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
+      <div ${canOpen ? `onclick="openEmployeeDetail('${e.id}')"` : ""}
+           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; display:flex; align-items:center; gap:10px; ${canOpen ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
         ${avatarHtml(e, 44, 14)}
         <div style="min-width:0; flex:1;">
-          <div style="font-size:14px; font-weight:600; color:${canAccessHR ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
+          <div style="font-size:14px; font-weight:600; color:${canOpen ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
           <div style="font-size:11px; color:var(--text2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.position || "—")}</div>
           ${onLeave ? `<div style="margin-top:3px;">${statusBadge(e.status)}</div>` : ""}
         </div>
@@ -2513,7 +2522,7 @@ function renderTeamOrgChart(members) {
 }
 
 function rosterRow(e, clickable) {
-  const isClickable = clickable && (canAccessHR || canAccessSalary || canAccessIncidents);
+  const isClickable = clickable && canOpenEmployee(e);
   return `
     <div ${isClickable ? `onclick="openEmployeeDetail('${e.id}')" style="cursor:pointer;"` : ""}
          style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
@@ -2529,8 +2538,11 @@ function rosterRow(e, clickable) {
 
 function renderEmployeeDetailHtml(emp, detail, selfView) {
   const isResigned = emp.status === "Resigned";
+  // Read-only, team-scoped HR access: can open this employee's page only because they manage this
+  // employee's HR team (not because of a real HR-Sensitive-Access/salary/incidents group grant).
+  const isTeamManagerView = !canAccessHR && !canAccessSalary && !canAccessIncidents && !selfView && managedTeams.has(emp.team);
   const canViewSalary = canAccessSalary || selfView;
-  const canViewIncidents = canAccessIncidents || selfView;
+  const canViewIncidents = canAccessIncidents || selfView || isTeamManagerView;
   const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
   const addBtn = (kind, label) => `<button class="btn btn-secondary" onclick="openAddSubRecordForm('${kind}','${emp.id}')" style="padding:3px 10px; font-size:11px;">${label}</button>`;
   const sectionLabel = (n, text) => `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px;">${n}. ${text}</div>`;
@@ -2585,7 +2597,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           <div style="font-size:13px; color:var(--text2); margin-top:1px;">${escapeHtml(emp.position || "—")}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; flex-shrink:0;">
-          ${(emp.resumeUrl || autoResumeUrl(emp)) ? `<a href="${escapeAttr(emp.resumeUrl || autoResumeUrl(emp))}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
+          ${(!isTeamManagerView && (emp.resumeUrl || autoResumeUrl(emp))) ? `<a href="${escapeAttr(emp.resumeUrl || autoResumeUrl(emp))}" target="_blank" rel="noopener" style="font-size:12px; color:var(--accent); white-space:nowrap;">Resume ↗</a>` : ""}
           <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; text-align:right; white-space:nowrap; min-width:180px;">
             ${creditsBoxInner()}
             ${birthdayLine}
@@ -2686,18 +2698,20 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
     </div>
     ` : ""}
 
-    ${canViewSalary ? `
+    ${(canViewSalary || isTeamManagerView) ? `
     <!-- 6. Salary history -->
     <div style="margin-bottom:20px; border-top:1px solid var(--border); padding-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
         ${sectionLabel(6, "Salary history")}
         ${canAccessSalary ? addBtn("salary", "+ Add") : ""}
       </div>
-      ${detail.salaries.length ? `
+      ${isTeamManagerView ? `
+        <div style="font-size:12px; color:var(--text2);">Last salary change: ${escapeHtml((detail.salaries.length ? dateOnly(detail.salaries[0].date) : null) || "—")}</div>
+      ` : (detail.salaries.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
           ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${canAccessSalary ? delBtn("salary", s.itemId) : ""}</td></tr>`).join("")}
         </table>
-      ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+      ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`)}
     </div>
     ` : ""}
 
@@ -2773,6 +2787,26 @@ function refreshAccessFlags() {
   const fromPermissionsList = !!email && permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team === APPROVER_LABEL);
   isApprover = fromConfig || fromPermissionsList;
   canAccessTrash = isPermissionAdmin || (!!email && permissionRows.some(r => r.userEmail.toLowerCase() === email && r.team === TRASH_LABEL));
+  managedTeams = new Set(
+    !email ? [] : permissionRows
+      .filter(r => r.userEmail.toLowerCase() === email && r.team.startsWith(HR_MANAGER_PREFIX))
+      .map(r => r.team.slice(HR_MANAGER_PREFIX.length))
+  );
+}
+
+// Whether the signed-in user is allowed to open this employee's detail page at all — full HR/salary/
+// incidents access, OR (read-only) because they manage the employee's HR team via an HR_MANAGER_PREFIX grant.
+function canOpenEmployee(e) {
+  return canAccessHR || canAccessSalary || canAccessIncidents || (!!e && managedTeams.has(e.team));
+}
+
+// All distinct HR team names known to the app (from pre-declared HR Teams plus any team actually
+// assigned to an employee) — used to populate the HR Manager grant dropdown on the Permissions tab.
+function hrTeamNameOptions() {
+  const set = new Set();
+  hrTeams.forEach(t => { if (t.team) set.add(t.team); });
+  employees.forEach(e => { if (e.team) set.add(e.team); });
+  return [...set].sort((a, b) => a.localeCompare(b));
 }
 
 async function isNewVersionAvailable() {
@@ -3218,7 +3252,10 @@ function renderPermissions() {
   const teamOptions = [...teamChoices, ALL_TEAMS_LABEL, APPROVER_LABEL, TRASH_LABEL]
     .map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("");
 
-  const sorted = [...permissionRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
+  const regularRows = permissionRows.filter(r => !r.team.startsWith(HR_MANAGER_PREFIX));
+  const hrManagerRows = permissionRows.filter(r => r.team.startsWith(HR_MANAGER_PREFIX));
+
+  const sorted = [...regularRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
 
   let rowsHtml = "";
   if (!permissionsListId) {
@@ -3229,6 +3266,25 @@ function renderPermissions() {
     rowsHtml = sorted.map(r => `<tr>
       <td>${escapeHtml(r.userEmail)}</td>
       <td>${escapeHtml(r.team)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="removePermission('${r.itemId}')">&#128465; Remove</button></td>
+    </tr>`).join("");
+  }
+
+  const hrTeamOptions = hrTeamNameOptions();
+  const hrTeamOptionsHtml = hrTeamOptions.length
+    ? hrTeamOptions.map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("")
+    : `<option value="" disabled>No HR teams found yet</option>`;
+
+  const sortedHrMgr = [...hrManagerRows].sort((a, b) => a.userEmail.localeCompare(b.userEmail) || a.team.localeCompare(b.team));
+  let hrMgrRowsHtml = "";
+  if (!permissionsListId) {
+    hrMgrRowsHtml = "";
+  } else if (sortedHrMgr.length === 0) {
+    hrMgrRowsHtml = `<tr><td colspan="3"><div class="empty"><div class="empty-icon">&#128100;</div><p>Nobody has HR Manager access yet.</p></div></td></tr>`;
+  } else {
+    hrMgrRowsHtml = sortedHrMgr.map(r => `<tr>
+      <td>${escapeHtml(r.userEmail)}</td>
+      <td>${escapeHtml(r.team.slice(HR_MANAGER_PREFIX.length))}</td>
       <td><button class="btn btn-danger btn-sm" onclick="removePermission('${r.itemId}')">&#128465; Remove</button></td>
     </tr>`).join("");
   }
@@ -3253,6 +3309,28 @@ function renderPermissions() {
       <table>
         <thead><tr><th>Email</th><th>Team</th><th style="width:140px">Action</th></tr></thead>
         <tbody>${rowsHtml}</tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="welcome-card-header" style="margin-top:32px;"><h2>&#128084; HR Manager Access</h2></div>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">
+      Lets a manager view (read-only) HR info for one HR team's members — Overview, Employment, Employee History,
+      Performance Evaluation, and HR Records. Resume is hidden, and Salary history shows only the most recent
+      change date (no amounts). No editing anywhere. Removing their row here immediately revokes it.
+    </p>
+
+    <div class="perm-add-form">
+      <input type="email" id="hrMgrEmailInput" class="cell-edit" placeholder="person@elitegsl.com" style="flex:1; min-width:220px;">
+      <select id="hrMgrTeamInput" class="cell-edit" style="max-width:220px;">${hrTeamOptionsHtml}</select>
+      <button class="btn btn-primary" onclick="addHRManagerPermission()">&#65291; Grant HR Manager Access</button>
+    </div>
+
+    <div class="table-container" style="margin-top:16px">
+      <div class="table-scroll">
+      <table>
+        <thead><tr><th>Email</th><th>HR Team</th><th style="width:140px">Action</th></tr></thead>
+        <tbody>${hrMgrRowsHtml}</tbody>
       </table>
       </div>
     </div>
@@ -3283,6 +3361,38 @@ async function addPermission() {
     renderContent();
     setSyncing(false, true);
     toast("Access granted ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Failed to grant access: " + err.message, "error");
+  }
+}
+
+async function addHRManagerPermission() {
+  if (!isPermissionAdmin) return;
+  if (!permissionsListId) { toast("The \"Document Repository Permissions\" list hasn't been created in SharePoint yet. See SETUP_PERMISSIONS.md.", "error"); return; }
+  const emailInput = document.getElementById("hrMgrEmailInput");
+  const teamInput = document.getElementById("hrMgrTeamInput");
+  const email = emailInput.value.trim();
+  const hrTeam = teamInput.value;
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast("Enter a valid email address.", "error"); return; }
+  if (!hrTeam) { toast("No HR teams available to grant yet.", "error"); return; }
+  const team = HR_MANAGER_PREFIX + hrTeam;
+  if (permissionRows.some(r => r.userEmail.toLowerCase() === email.toLowerCase() && r.team === team)) {
+    toast("That person already has HR Manager access to that team.", "error");
+    return;
+  }
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${permissionsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { UserEmail: email, Team: team } })
+    });
+    permissionRows.push({ itemId: created.id, userEmail: email, team });
+    emailInput.value = "";
+    refreshAccessFlags();
+    renderContent();
+    setSyncing(false, true);
+    toast("HR Manager access granted ✓", "success");
   } catch (err) {
     setSyncing(false, false);
     toast("Failed to grant access: " + err.message, "error");
