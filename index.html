@@ -447,7 +447,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-08-20-01";
+const BUILD_ID = "2026-08-20-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1153,7 +1153,12 @@ async function loadEmployees() {
           email: it.fields["Email"] || "",
           birthday: it.fields["Birthday"] || null,
           separationDate: it.fields["SeparationDate"] || null,
-          separationReason: it.fields["SeparationReason"] || ""
+          separationReason: it.fields["SeparationReason"] || "",
+          // Kept in sync by a Power Automate flow watching "HR Salary History" (see SETUP_HR.md) —
+          // lets HR-Manager-tier viewers (see managedTeams/isTeamManagerView) see the date without
+          // ever needing SharePoint read access to the Salary History list itself, so the amount
+          // stays unreachable to them even via a direct Graph API call outside this app.
+          lastSalaryChangeDate: it.fields["LastSalaryChangeDate"] || null
         });
       });
       url = data["@odata.nextLink"] || null;
@@ -1846,7 +1851,11 @@ async function loadEmployeeDetail(employeeId) {
       date: it.fields["EffectiveDate"] || "",
       description: it.fields["Description"] || ""
     })),
-    loadList(salaryHistoryListId, it => ({
+    // Only ever requested for full salary access (canAccessHR/canAccessSalary) — HR-Manager-tier
+    // viewers get their "last change" date from emp.lastSalaryChangeDate instead (synced by Power
+    // Automate onto HR Employees), so this Graph call never fires for them and a manager account
+    // never needs — and should never be granted — SharePoint read access to HR Salary History.
+    loadList((canAccessHR || canAccessSalary) ? salaryHistoryListId : null, it => ({
       itemId: it.id,
       date: it.fields["EffectiveDate"] || "",
       amount: it.fields["Amount"] != null ? Number(it.fields["Amount"]) : null
@@ -2706,7 +2715,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
         ${canAccessSalary ? addBtn("salary", "+ Add") : ""}
       </div>
       ${isTeamManagerView ? `
-        <div style="font-size:12px; color:var(--text2);">Last salary change: ${escapeHtml((detail.salaries.length ? dateOnly(detail.salaries[0].date) : null) || "—")}</div>
+        <div style="font-size:12px; color:var(--text2);">Last salary change: ${escapeHtml(dateOnly(emp.lastSalaryChangeDate) || "—")}</div>
       ` : (detail.salaries.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
           ${detail.salaries.map(s => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0; color:var(--text2);">${escapeHtml(dateOnly(s.date) || "—")}</td><td style="padding:5px 0; text-align:right;">${s.amount != null ? "₱" + s.amount.toLocaleString() : "—"}</td><td style="padding:5px 0; text-align:right; width:18px;">${canAccessSalary ? delBtn("salary", s.itemId) : ""}</td></tr>`).join("")}
