@@ -1931,6 +1931,17 @@ function openNewReportForm() {
   renderHRModal();
 }
 
+// Local-timezone-safe "YYYY-MM-DD" formatter. Date.toISOString() converts to UTC first,
+// which silently shifts the date back a day for any positive-offset timezone (e.g. UTC+8
+// Manila) whenever the local time-of-day is midnight — exactly what month/week boundaries
+// below are built from — so this is used everywhere those boundaries are formatted.
+function toLocalYMD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 // Monday–Sunday for Weekly, 1st–last day of the month for Monthly — just a starting
 // point in the date pickers; the person can still adjust either date by hand.
 function defaultPeriodRange(type) {
@@ -1940,11 +1951,11 @@ function defaultPeriodRange(type) {
     const mondayOffset = day === 0 ? -6 : 1 - day;
     const start = new Date(now); start.setDate(now.getDate() + mondayOffset);
     const end = new Date(start); end.setDate(start.getDate() + 6);
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    return { start: toLocalYMD(start), end: toLocalYMD(end) };
   }
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  return { start: toLocalYMD(start), end: toLocalYMD(end) };
 }
 
 function applyReportPeriodDefaults() {
@@ -2577,7 +2588,7 @@ function renderHRModal() {
 
   if (hrView.mode === "reportsNew") {
     box.style.width = "min(440px, 92vw)";
-    const today = new Date().toISOString().slice(0, 10);
+    const today = toLocalYMD(new Date());
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
         <div>
