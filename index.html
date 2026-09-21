@@ -1969,6 +1969,12 @@ function renderLeaveUsageSection(start, end) {
   if (!rows.length) {
     return reportSectionPlaceholder("&#128197;", "Team leave & sick usage", "No leave/sick usage logged in this period.");
   }
+  const activeCount = employees.filter(e => e.status !== "Resigned").length || 1;
+  const empById = new Map(employees.map(e => [e.id, e]));
+  const distinctEmployees = new Set(
+    leaveUsage.filter(u => inPeriod(u.date, start, end) && empById.has(u.employeeId)).map(u => u.employeeId)
+  ).size;
+  const pctOfHC = Math.round((distinctEmployees / activeCount) * 1000) / 10;
   const cell = v => `<td style="padding:4px 6px;">${v || 0}</td>`;
   const bodyRows = rows.map(r => `<tr>
       <td style="text-align:left; padding:4px 6px; color:var(--accent);">${escapeHtml(r.team)}</td>
@@ -1976,7 +1982,8 @@ function renderLeaveUsageSection(start, end) {
       <td style="padding:4px 6px; font-weight:600;">${r.total}</td>
     </tr>`).join("");
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128197; Team leave & sick usage</div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:2px;">&#128197; Team leave & sick usage</div>
+    <div style="font-size:12px; color:var(--text2); margin-bottom:10px;">${totals.total} day${totals.total === 1 ? "" : "s"} used across ${distinctEmployees} employee${distinctEmployees === 1 ? "" : "s"} (${pctOfHC}% of headcount)</div>
     <div style="overflow-x:auto;">
       <table style="width:100%; font-size:12px; border-collapse:collapse; text-align:center;">
         <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
@@ -2008,27 +2015,34 @@ function computeIncidentSummary(start, end) {
 
 function renderIncidentSummarySection(start, end) {
   const { entries, counts, total } = computeIncidentSummary(start, end);
-  if (!total) {
-    return reportSectionPlaceholder("&#9888;&#65039;", "HR Incident summary", "No incidents logged in this period.");
-  }
-  const chips = INCIDENT_TYPES.filter(t => counts[t] > 0)
-    .map(t => `<span class="chip ${getIncidentChipClass(t)}" style="margin-right:4px;">${escapeHtml(t)} ${counts[t]}</span>`).join("");
-  const rows = entries.map(i => `<tr>
+  const typeRows = INCIDENT_TYPES.map(t => `<tr>
+      <td style="text-align:left; padding:4px 6px;">${escapeHtml(t)}</td>
+      <td style="padding:4px 6px;">${counts[t]}</td>
+    </tr>`).join("");
+  const detailRows = entries.map(i => `<tr>
       <td style="text-align:left; padding:4px 6px;">${escapeHtml(i.employeeName || "—")}</td>
       <td style="padding:4px 6px;">${escapeHtml(dateOnly(i.date))}</td>
       <td style="padding:4px 6px;"><span class="chip ${getIncidentChipClass(i.type)}">${escapeHtml(i.type)}</span></td>
     </tr>`).join("");
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#9888;&#65039; HR Incident summary — ${total} total</div>
-    <div style="margin-bottom:10px;">${chips}</div>
-    <div style="overflow-x:auto;">
-      <table style="width:100%; font-size:12px; border-collapse:collapse;">
-        <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
-          <td style="text-align:left; padding:4px 6px;">Employee</td><td style="text-align:left; padding:4px 6px;">Date</td><td style="text-align:left; padding:4px 6px;">Type</td>
-        </tr>
-        ${rows}
-      </table>
-    </div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128203; HR Actions &amp; Cases — ${total} total</div>
+    <table style="width:100%; font-size:12px; border-collapse:collapse;">
+      <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+        <td style="text-align:left; padding:4px 6px;">Type</td><td style="padding:4px 6px;">Count</td>
+      </tr>
+      ${typeRows}
+    </table>
+    ${total ? `<details style="margin-top:10px;">
+      <summary style="cursor:pointer; font-size:12px; color:var(--accent);">View ${total} record${total === 1 ? "" : "s"} &rarr;</summary>
+      <div style="overflow-x:auto; margin-top:8px;">
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+            <td style="text-align:left; padding:4px 6px;">Employee</td><td style="text-align:left; padding:4px 6px;">Date</td><td style="text-align:left; padding:4px 6px;">Type</td>
+          </tr>
+          ${detailRows}
+        </table>
+      </div>
+    </details>` : ""}
   </div>`;
 }
 
@@ -2059,33 +2073,6 @@ function previousPeriod(start, end) {
   const prevEnd = addDaysToYMD(start, -1);
   const prevStart = addDaysToYMD(prevEnd, -(duration - 1));
   return { start: prevStart, end: prevEnd };
-}
-
-function changeStatCard(label, cur, prev, colorByDirection) {
-  const diff = cur - prev;
-  const sign = diff > 0 ? "+" : "";
-  let color = "var(--text)";
-  if (colorByDirection && diff !== 0) color = diff > 0 ? "var(--red)" : "var(--green)";
-  return `<div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
-    <div style="font-size:11px; color:var(--text3);">${escapeHtml(label)}</div>
-    <div style="font-size:18px; font-weight:600; margin-top:2px;">${cur} <span style="font-size:12px; font-weight:500; color:${color};">(${sign}${diff} vs. ${prev})</span></div>
-  </div>`;
-}
-
-function renderChangeSection(start, end) {
-  const prev = previousPeriod(start, end);
-  const curLeave = computeLeaveUsageSummary(start, end).totals.total;
-  const prevLeave = computeLeaveUsageSummary(prev.start, prev.end).totals.total;
-  const curInc = computeIncidentSummary(start, end).total;
-  const prevInc = computeIncidentSummary(prev.start, prev.end).total;
-  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-    <div style="font-size:13px; font-weight:600; margin-bottom:2px;">&#128202; Change vs. previous period</div>
-    <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">Previous period: ${escapeHtml(prev.start)} – ${escapeHtml(prev.end)}</div>
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
-      ${changeStatCard("Incident count", curInc, prevInc, true)}
-      ${changeStatCard("Leave/sick days used", curLeave, prevLeave, false)}
-    </div>
-  </div>`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2119,9 +2106,18 @@ function computePersonnelChanges(start, end) {
   return { newHires, resignations, transfers, positionChanges, promotions, salaryChanges };
 }
 
-function personnelListLine(label, items, nameFn) {
-  const names = items.map(nameFn).map(escapeHtml).join(", ");
-  return `<div style="font-size:12px; margin-bottom:4px;"><span style="color:var(--text2);">${escapeHtml(label)} (${items.length})</span>${items.length ? ": " + names : ""}</div>`;
+function personnelStatBlock(label, items, nameFn, opts) {
+  opts = opts || {};
+  if (!items.length) return ""; // hide the whole category when nobody's in it, per HR feedback
+  const names = items.map(nameFn).map(escapeHtml).join(" · ");
+  const namesHtml = opts.collapseNames
+    ? `<details style="margin-top:3px;"><summary style="cursor:pointer; font-size:11px; color:var(--accent);">Show names</summary><div style="font-size:12px; color:var(--text2); margin-top:4px;">${names}</div></details>`
+    : `<div style="font-size:12px; color:var(--text2); margin-top:3px;">${names}</div>`;
+  return `<div style="min-width:130px;">
+    <div style="font-size:20px; font-weight:600;">${items.length}</div>
+    <div style="font-size:11px; color:var(--text3);">${escapeHtml(label)}</div>
+    ${namesHtml}
+  </div>`;
 }
 
 function renderPersonnelChangesSection(start, end) {
@@ -2130,13 +2126,17 @@ function renderPersonnelChangesSection(start, end) {
   if (!total) {
     return reportSectionPlaceholder("&#128101;", "Personnel changes", "No personnel changes in this period.");
   }
+  const blocks = [
+    personnelStatBlock("New Hires", newHires, e => e.name),
+    personnelStatBlock("Resignations", resignations, e => e.name),
+    personnelStatBlock("Team Transfers", transfers, h => h.employeeName),
+    personnelStatBlock(`Position Changes${promotions.length ? ` (${promotions.length} promotion${promotions.length === 1 ? "" : "s"})` : ""}`, positionChanges, h => `${h.employeeName}${h.direction === "promoted" ? " ↑" : h.direction === "demoted" ? " ↓" : ""}`),
+    // Names collapsed by default even for authorized viewers — amount was already never fetched.
+    personnelStatBlock("Salary Changes", salaryChanges, s => s.employeeName, { collapseNames: true })
+  ].join("");
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128101; Personnel changes</div>
-    ${personnelListLine("New hires", newHires, e => e.name)}
-    ${personnelListLine("Resignations", resignations, e => e.name)}
-    ${personnelListLine("Team transfers", transfers, h => h.employeeName)}
-    ${personnelListLine(`Position changes — ${promotions.length} promotion${promotions.length === 1 ? "" : "s"}`, positionChanges, h => `${h.employeeName}${h.direction === "promoted" ? " ↑" : h.direction === "demoted" ? " ↓" : ""}`)}
-    ${personnelListLine("Salary changes (amount not shown)", salaryChanges, s => s.employeeName)}
+    <div style="font-size:13px; font-weight:600; margin-bottom:10px;">&#128101; Personnel changes</div>
+    <div style="display:flex; flex-wrap:wrap; gap:18px;">${blocks}</div>
   </div>`;
 }
 
@@ -2188,24 +2188,135 @@ function computeWatchlist(periodType) {
   return { sickExhausted, vacationExhausted, highUnpaid, recentDisciplinary, lookbackDays, unpaidThreshold };
 }
 
-function watchlistLine(label, items, nameFn) {
-  const names = items.map(nameFn).map(escapeHtml).join(", ");
-  return `<div style="font-size:12px; margin-bottom:4px;"><span style="color:var(--text2);">${escapeHtml(label)} (${items.length})</span>${items.length ? ": " + names : ""}</div>`;
+// Collapses the four raw watchlist buckets above into one row per flagged
+// employee (with all of that person's triggers listed together), which is
+// what actually renders as the Watchlist table.
+function computeWatchlistTable(periodType) {
+  const w = computeWatchlist(periodType);
+  const byEmp = new Map();
+  const addTrigger = (emp, label) => {
+    if (!byEmp.has(emp.id)) byEmp.set(emp.id, { emp, triggers: [] });
+    byEmp.get(emp.id).triggers.push(label);
+  };
+  w.sickExhausted.forEach(e => addTrigger(e, "Sick leave exhausted"));
+  w.vacationExhausted.forEach(e => addTrigger(e, "Vacation exhausted"));
+  w.highUnpaid.forEach(x => addTrigger(x.emp, `High unpaid absence (${x.days}d)`));
+  w.recentDisciplinary.forEach(e => addTrigger(e, "Recent disciplinary action"));
+  const rows = [...byEmp.values()].sort((a, b) => a.emp.name.localeCompare(b.emp.name));
+  const emptyCategories = [];
+  if (!w.sickExhausted.length) emptyCategories.push("Sick Leave Exhaustion");
+  if (!w.vacationExhausted.length) emptyCategories.push("Vacation Exhaustion");
+  if (!w.highUnpaid.length) emptyCategories.push("High Unpaid Absence");
+  if (!w.recentDisciplinary.length) emptyCategories.push("Recent Disciplinary Action");
+  return { rows, emptyCategories, lookbackDays: w.lookbackDays, unpaidThreshold: w.unpaidThreshold };
 }
 
 function renderWatchlistSection(periodType) {
-  const { sickExhausted, vacationExhausted, highUnpaid, recentDisciplinary, lookbackDays, unpaidThreshold } = computeWatchlist(periodType);
-  const total = sickExhausted.length + vacationExhausted.length + highUnpaid.length + recentDisciplinary.length;
-  if (!total) {
-    return reportSectionPlaceholder("&#128064;", "Watchlist", "Nobody meets a watchlist criterion right now.");
+  const { rows, emptyCategories, lookbackDays, unpaidThreshold } = computeWatchlistTable(periodType);
+  if (!rows.length) {
+    return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:4px;">&#128064; Watchlist</div>
+      <div style="font-size:12px; color:var(--text3);">No employees currently flagged for: ${escapeHtml(emptyCategories.join(" · "))}.</div>
+    </div>`;
   }
+  const body = rows.map(r => `<tr>
+      <td style="text-align:left; padding:4px 6px;">${escapeHtml(r.emp.name)}</td>
+      <td style="text-align:left; padding:4px 6px;">${escapeHtml(r.triggers.join(", "))}</td>
+      <td style="padding:4px 6px; white-space:nowrap; color:#f87171;">&#128308; Review required</td>
+    </tr>`).join("");
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
-    <div style="font-size:13px; font-weight:600; margin-bottom:2px;">&#128064; Watchlist</div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:2px;">&#128064; Watchlist — ${rows.length} employee${rows.length === 1 ? "" : "s"} flagged</div>
     <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">As of today · unpaid/disciplinary window: last ${lookbackDays} days · unpaid threshold: ${unpaidThreshold}+ days</div>
-    ${watchlistLine("Sick leave exhausted", sickExhausted, e => e.name)}
-    ${watchlistLine("Vacation exhausted", vacationExhausted, e => e.name)}
-    ${watchlistLine("High unpaid absence", highUnpaid, x => `${x.emp.name} (${x.days}d)`)}
-    ${watchlistLine("Recent disciplinary action", recentDisciplinary, e => e.name)}
+    <div style="overflow-x:auto;">
+      <table style="width:100%; font-size:12px; border-collapse:collapse;">
+        <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+          <td style="text-align:left; padding:4px 6px;">Employee</td><td style="text-align:left; padding:4px 6px;">Trigger</td><td style="text-align:left; padding:4px 6px;">Status</td>
+        </tr>
+        ${body}
+      </table>
+    </div>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — executive summary (KPI strip + auto-generated highlights)
+// Sits above the six detail sections; every number here is derived from the
+// same compute* functions the sections themselves use, so it can never drift
+// out of sync with what's shown below it.
+// ═══════════════════════════════════════════════════════════════════════════
+function kpiCard(label, value, delta, opts) {
+  opts = opts || {};
+  let deltaHtml = "";
+  if (delta !== undefined && delta !== null) {
+    const sign = delta > 0 ? "+" : "";
+    let color = "var(--text3)";
+    if (opts.colorByDirection && delta !== 0) color = delta > 0 ? "var(--red)" : "var(--green)";
+    deltaHtml = `<div style="font-size:11px; color:${color}; margin-top:1px;">${delta === 0 ? "No change" : sign + delta + " vs. prev."}</div>`;
+  }
+  return `<div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 12px; min-width:110px; flex:1;">
+    <div style="font-size:11px; color:var(--text3);">${escapeHtml(label)}</div>
+    <div style="font-size:18px; font-weight:600; margin-top:2px;">${value}</div>
+    ${deltaHtml}
+  </div>`;
+}
+
+function computeExecutiveSummary(r) {
+  const start = dateOnly(r.periodStart), end = dateOnly(r.periodEnd);
+  const prev = previousPeriod(start, end);
+  const activeNow = employees.filter(e => e.status !== "Resigned").length;
+  const leaveTotals = computeLeaveUsageSummary(start, end).totals;
+  const prevLeaveTotals = computeLeaveUsageSummary(prev.start, prev.end).totals;
+  const curInc = computeIncidentSummary(start, end);
+  const prevIncTotal = computeIncidentSummary(prev.start, prev.end).total;
+  const personnel = computePersonnelChanges(start, end);
+  const watchlist = computeWatchlistTable(r.periodType);
+  const leaveDelta = leaveTotals.total - prevLeaveTotals.total;
+
+  let topType = null, topCount = 0;
+  INCIDENT_TYPES.forEach(t => { if (curInc.counts[t] > topCount) { topCount = curInc.counts[t]; topType = t; } });
+
+  const highlights = [];
+  if (personnel.newHires.length) highlights.push(`${personnel.newHires.length} new employee${personnel.newHires.length === 1 ? "" : "s"} joined during this period.`);
+  if (curInc.total !== prevIncTotal) {
+    highlights.push(`HR cases ${curInc.total > prevIncTotal ? "increased" : "decreased"} from ${prevIncTotal} to ${curInc.total}${topType ? `, primarily ${topType.toLowerCase()} records` : ""}.`);
+  } else if (curInc.total) {
+    highlights.push(`${curInc.total} HR case${curInc.total === 1 ? "" : "s"} logged, unchanged from the previous period.`);
+  }
+  if (leaveTotals.total) highlights.push(`${leaveTotals.total} leave/sick day${leaveTotals.total === 1 ? "" : "s"} were used, ${Math.abs(leaveDelta)} ${leaveDelta >= 0 ? "more" : "fewer"} than the previous period.`);
+  if (watchlist.rows.length) highlights.push(`${watchlist.rows.length} employee${watchlist.rows.length === 1 ? " is" : "s are"} currently flagged for follow-up.`);
+  if (personnel.resignations.length) highlights.push(`${personnel.resignations.length} employee${personnel.resignations.length === 1 ? "" : "s"} resigned during this period.`);
+
+  return {
+    activeNow, headcountDelta: personnel.newHires.length - personnel.resignations.length,
+    leaveTotal: leaveTotals.total, leaveDelta,
+    incTotal: curInc.total, incDelta: curInc.total - prevIncTotal,
+    newHires: personnel.newHires.length,
+    watchlistCount: watchlist.rows.length,
+    highlights: highlights.slice(0, 5)
+  };
+}
+
+function renderExecutiveSummary(r) {
+  const s = computeExecutiveSummary(r);
+  const cards = [
+    kpiCard("Headcount", s.activeNow, s.headcountDelta),
+    kpiCard("Leave Used", `${s.leaveTotal}d`, s.leaveDelta),
+    kpiCard("HR Cases", s.incTotal, s.incDelta, { colorByDirection: true }),
+    kpiCard("New Hires", s.newHires),
+    kpiCard("Watchlist", s.watchlistCount, undefined, { colorByDirection: true })
+  ].join("");
+  const highlightsHtml = s.highlights.length
+    ? `<div style="margin-top:12px;">
+        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">Key Highlights</div>
+        <ul style="margin:0; padding-left:18px; font-size:12px; color:var(--text2); display:flex; flex-direction:column; gap:3px;">
+          ${s.highlights.map(h => `<li>${escapeHtml(h)}</li>`).join("")}
+        </ul>
+      </div>`
+    : "";
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-bottom:12px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:10px;">Monthly HR Overview</div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">${cards}</div>
+    ${highlightsHtml}
   </div>`;
 }
 
@@ -2943,7 +3054,7 @@ function renderHRModal() {
         <div>
           <div onclick="openReports()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; HR Reports</div>
           <h3 style="margin-bottom:2px;">${escapeHtml(r.title)}</h3>
-          <div style="font-size:12px; color:var(--text2);">${escapeHtml(r.periodType)} · ${escapeHtml(dateOnly(r.periodStart))} – ${escapeHtml(dateOnly(r.periodEnd))}</div>
+          <div style="font-size:12px; color:var(--text2);">${escapeHtml(r.periodType)} · ${escapeHtml(dateOnly(r.periodStart))} – ${escapeHtml(dateOnly(r.periodEnd))} · ${employees.filter(e => e.status !== "Resigned").length} Employees</div>
         </div>
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
@@ -2951,10 +3062,11 @@ function renderHRModal() {
         <span class="badge ${isConfirmed ? "active" : "pending"}"><span class="badge-dot"></span>${isConfirmed ? `Confirmed · ${escapeHtml(r.confirmedBy)} · ${escapeHtml(dateOnly(r.confirmedDate))}` : "Draft — awaiting review"}</span>
       </div>
 
+      ${renderExecutiveSummary(r)}
+
       <div style="display:flex; flex-direction:column; gap:10px;">
         ${renderLeaveUsageSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderIncidentSummarySection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
-        ${renderChangeSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderPersonnelChangesSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderWatchlistSection(r.periodType)}
         <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
