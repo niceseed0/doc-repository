@@ -1984,6 +1984,56 @@ function getIncidentChipClass(type) {
   return getCategoryChipClass("incident:" + type);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — section 3: change vs. previous period
+// "Previous period" = the immediately preceding stretch of the same length,
+// so this works the same way whether the report is Weekly, Monthly, or a
+// custom date range someone typed in by hand.
+// ═══════════════════════════════════════════════════════════════════════════
+function addDaysToYMD(ymd, days) {
+  const d = new Date(ymd + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return toLocalYMD(d);
+}
+function daysBetweenYMD(startYmd, endYmd) {
+  const s = new Date(startYmd + "T00:00:00");
+  const e = new Date(endYmd + "T00:00:00");
+  return Math.round((e - s) / 86400000) + 1;
+}
+function previousPeriod(start, end) {
+  const duration = daysBetweenYMD(start, end);
+  const prevEnd = addDaysToYMD(start, -1);
+  const prevStart = addDaysToYMD(prevEnd, -(duration - 1));
+  return { start: prevStart, end: prevEnd };
+}
+
+function changeStatCard(label, cur, prev, colorByDirection) {
+  const diff = cur - prev;
+  const sign = diff > 0 ? "+" : "";
+  let color = "var(--text)";
+  if (colorByDirection && diff !== 0) color = diff > 0 ? "var(--red)" : "var(--green)";
+  return `<div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+    <div style="font-size:11px; color:var(--text3);">${escapeHtml(label)}</div>
+    <div style="font-size:18px; font-weight:600; margin-top:2px;">${cur} <span style="font-size:12px; font-weight:500; color:${color};">(${sign}${diff} vs. ${prev})</span></div>
+  </div>`;
+}
+
+function renderChangeSection(start, end) {
+  const prev = previousPeriod(start, end);
+  const curLeave = computeLeaveUsageSummary(start, end).totals.total;
+  const prevLeave = computeLeaveUsageSummary(prev.start, prev.end).totals.total;
+  const curInc = computeIncidentSummary(start, end).total;
+  const prevInc = computeIncidentSummary(prev.start, prev.end).total;
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:2px;">&#128202; Change vs. previous period</div>
+    <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">Previous period: ${escapeHtml(prev.start)} – ${escapeHtml(prev.end)}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+      ${changeStatCard("Incident count", curInc, prevInc, true)}
+      ${changeStatCard("Leave/sick days used", curLeave, prevLeave, false)}
+    </div>
+  </div>`;
+}
+
 function reportSectionPlaceholder(icon, title, note) {
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
     <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${icon} ${escapeHtml(title)}</div>
@@ -2729,7 +2779,7 @@ function renderHRModal() {
       <div style="display:flex; flex-direction:column; gap:10px;">
         ${renderLeaveUsageSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderIncidentSummarySection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
-        ${reportSectionPlaceholder("&#128202;", "Change vs. previous period", "Data wiring comes in the next build step.")}
+        ${renderChangeSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${reportSectionPlaceholder("&#128101;", "Personnel changes", "Data wiring comes in the next build step.")}
         ${reportSectionPlaceholder("&#128064;", "Watchlist", "Data wiring comes in the next build step.")}
         <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
