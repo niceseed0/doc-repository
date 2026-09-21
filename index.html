@@ -1853,6 +1853,64 @@ function openLeaveReport(year) {
 // ═══════════════════════════════════════════════════════════════════════════
 // HR REPORTS — open/create/save/confirm
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — section 1: team leave & sick usage
+// Reuses LEAVE_USAGE_TYPES/USAGE_TYPE_LABEL from the leave/sick engine above.
+// ═══════════════════════════════════════════════════════════════════════════
+function inPeriod(dateValue, start, end) {
+  if (!dateValue) return false;
+  const d = dateOnly(dateValue);
+  return d >= start && d <= end;
+}
+
+function computeLeaveUsageSummary(start, end) {
+  const empById = new Map(employees.map(e => [e.id, e]));
+  const byTeam = new Map(); // team -> { Vacation, Sick, Birthday, Special, WithoutPay }
+  leaveUsage.forEach(u => {
+    if (!inPeriod(u.date, start, end)) return;
+    const type = normalizeUsageType(u.type);
+    const emp = empById.get(u.employeeId);
+    const team = (emp && emp.team) || "Unknown";
+    if (!byTeam.has(team)) byTeam.set(team, { Vacation: 0, Sick: 0, Birthday: 0, Special: 0, WithoutPay: 0 });
+    byTeam.get(team)[type] += Number(u.days) || 0;
+  });
+  const rows = [...byTeam.entries()]
+    .map(([team, vals]) => ({ team, ...vals, total: LEAVE_USAGE_TYPES.reduce((s, t) => s + vals[t], 0) }))
+    .sort((a, b) => a.team.localeCompare(b.team));
+  const totals = LEAVE_USAGE_TYPES.reduce((acc, t) => { acc[t] = rows.reduce((s, r) => s + r[t], 0); return acc; }, {});
+  totals.total = LEAVE_USAGE_TYPES.reduce((s, t) => s + totals[t], 0);
+  return { rows, totals };
+}
+
+function renderLeaveUsageSection(start, end) {
+  const { rows, totals } = computeLeaveUsageSummary(start, end);
+  if (!rows.length) {
+    return reportSectionPlaceholder("&#128197;", "Team leave & sick usage", "No leave/sick usage logged in this period.");
+  }
+  const cell = v => `<td style="padding:4px 6px;">${v || 0}</td>`;
+  const bodyRows = rows.map(r => `<tr>
+      <td style="text-align:left; padding:4px 6px; color:var(--accent);">${escapeHtml(r.team)}</td>
+      ${cell(r.Vacation)}${cell(r.Sick)}${cell(r.Birthday)}${cell(r.Special)}${cell(r.WithoutPay)}
+      <td style="padding:4px 6px; font-weight:600;">${r.total}</td>
+    </tr>`).join("");
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128197; Team leave & sick usage</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; font-size:12px; border-collapse:collapse; text-align:center;">
+        <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+          <td style="text-align:left; padding:4px 6px;">Team</td><td>Vacation</td><td>Sick</td><td>Birthday</td><td>Special</td><td>Unpaid</td><td>Total</td>
+        </tr>
+        ${bodyRows}
+        <tr style="border-top:1px solid var(--border); font-weight:600;">
+          <td style="text-align:left; padding:4px 6px;">Total</td>
+          ${cell(totals.Vacation)}${cell(totals.Sick)}${cell(totals.Birthday)}${cell(totals.Special)}${cell(totals.WithoutPay)}
+          <td style="padding:4px 6px;">${totals.total}</td>
+        </tr>
+      </table>
+    </div>
+  </div>`;
+}
+
 function reportSectionPlaceholder(icon, title, note) {
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
     <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${icon} ${escapeHtml(title)}</div>
@@ -2567,7 +2625,7 @@ function renderHRModal() {
       </div>
 
       <div style="display:flex; flex-direction:column; gap:10px;">
-        ${reportSectionPlaceholder("&#128197;", "Team leave & sick usage", "Data wiring comes in the next build step.")}
+        ${renderLeaveUsageSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${reportSectionPlaceholder("&#9888;&#65039;", "HR Incident summary", "Data wiring comes in the next build step.")}
         ${reportSectionPlaceholder("&#128202;", "Change vs. previous period", "Data wiring comes in the next build step.")}
         ${reportSectionPlaceholder("&#128101;", "Personnel changes", "Data wiring comes in the next build step.")}
