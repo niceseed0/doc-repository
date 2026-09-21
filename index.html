@@ -753,6 +753,8 @@ let hrTeams = []; // pre-declared teams: [{ itemId, cluster, team }] — lets a 
 let leaveUsageListId = null;
 let leaveUsage = []; // [{ itemId, employeeId, type: "Leave"|"Sick", date, days, notes }]
 let allIncidents = []; // [{ itemId, employeeId, employeeName, date, type, notes }] — org-wide, for HR Reports; the per-employee HR Records tab still queries incidentsListId live instead of reading this
+let allPositionHistory = []; // [{ itemId, employeeId, employeeName, date, description }] — org-wide, for HR Reports; "Description" is the free-text log line built in submitLogChange() ("Transferred: A → B", "Position: A → B", "Status: A → B", joined by " · ")
+let allSalaryChanges = []; // [{ itemId, employeeId, employeeName, date }] — org-wide, for HR Reports; Amount is deliberately NOT fetched here so a salary figure can never leak into a report, regardless of who's viewing it
 let hrFilesListId = null; // the "HR Files" document library's list ID — used to reach its Graph "drive" for photos/resumes/bios
 let employees = []; // [{ id, name, photo, team, position, status, hireDate, resumeUrl, separationDate, separationReason }]
 let hrView = null; // { mode:'roster', team } | { mode:'detail', employeeId } | { mode:'logChange', employeeId } | null
@@ -785,7 +787,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1260,6 +1262,58 @@ async function loadAllIncidents() {
   } catch (e) {
     console.warn("Could not load HR incidents (list may not exist yet, or no access):", e);
     allIncidents = [];
+  }
+}
+
+async function loadAllPositionHistory() {
+  allPositionHistory = [];
+  if (!positionHistoryListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${positionHistoryListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const employeeId = it.fields["EmployeeId"];
+        if (!employeeId) return;
+        allPositionHistory.push({
+          itemId: it.id,
+          employeeId: String(employeeId),
+          employeeName: it.fields["Title"] || "",
+          date: it.fields["EffectiveDate"] || null,
+          description: it.fields["Description"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR position history (list may not exist yet):", e);
+    allPositionHistory = [];
+  }
+}
+
+async function loadAllSalaryChanges() {
+  allSalaryChanges = [];
+  if (!salaryHistoryListId || !(canAccessHR || canAccessSalary)) return; // same access tier as Salary history itself
+  try {
+    let url = `/sites/${siteId}/lists/${salaryHistoryListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const employeeId = it.fields["EmployeeId"];
+        if (!employeeId) return;
+        // Amount is deliberately not read — Reports never shows salary figures.
+        allSalaryChanges.push({
+          itemId: it.id,
+          employeeId: String(employeeId),
+          employeeName: it.fields["Title"] || "",
+          date: it.fields["EffectiveDate"] || null
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR salary history (list may not exist yet, or no access):", e);
+    allSalaryChanges = [];
   }
 }
 
@@ -2034,6 +2088,58 @@ function renderChangeSection(start, end) {
   </div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — section 4: personnel changes
+// New hires/resignations read straight off the HR Employees record (hireDate /
+// status+separationDate) since those are already authoritative there. Transfers
+// and position changes are parsed out of HR Position History's free-text
+// Description line (see submitLogChange()); promotion vs. demotion is inferred
+// by comparing the old/new position against CONFIG.positionRank.
+// ═══════════════════════════════════════════════════════════════════════════
+function classifyPositionChange(oldPos, newPos) {
+  const oldIdx = CONFIG.positionRank.indexOf(oldPos);
+  const newIdx = CONFIG.positionRank.indexOf(newPos);
+  if (oldIdx === -1 || newIdx === -1 || oldIdx === newIdx) return "changed";
+  return newIdx < oldIdx ? "promoted" : "demoted";
+}
+
+function computePersonnelChanges(start, end) {
+  const newHires = employees.filter(e => inPeriod(e.hireDate, start, end));
+  const resignations = employees.filter(e => e.status === "Resigned" && inPeriod(e.separationDate, start, end));
+  const periodHistory = allPositionHistory.filter(h => inPeriod(h.date, start, end));
+  const transfers = periodHistory.filter(h => h.description.includes("Transferred:"));
+  const positionChanges = periodHistory.filter(h => h.description.includes("Position:")).map(h => {
+    const m = h.description.match(/Position:\s*(.+?)\s*→\s*([^·(]+)/);
+    const oldPos = m ? m[1].trim() : "";
+    const newPos = m ? m[2].trim() : "";
+    return Object.assign({}, h, { oldPos, newPos, direction: classifyPositionChange(oldPos, newPos) });
+  });
+  const promotions = positionChanges.filter(p => p.direction === "promoted");
+  const salaryChanges = allSalaryChanges.filter(s => inPeriod(s.date, start, end));
+  return { newHires, resignations, transfers, positionChanges, promotions, salaryChanges };
+}
+
+function personnelListLine(label, items, nameFn) {
+  const names = items.map(nameFn).map(escapeHtml).join(", ");
+  return `<div style="font-size:12px; margin-bottom:4px;"><span style="color:var(--text2);">${escapeHtml(label)} (${items.length})</span>${items.length ? ": " + names : ""}</div>`;
+}
+
+function renderPersonnelChangesSection(start, end) {
+  const { newHires, resignations, transfers, positionChanges, promotions, salaryChanges } = computePersonnelChanges(start, end);
+  const total = newHires.length + resignations.length + transfers.length + positionChanges.length + salaryChanges.length;
+  if (!total) {
+    return reportSectionPlaceholder("&#128101;", "Personnel changes", "No personnel changes in this period.");
+  }
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128101; Personnel changes</div>
+    ${personnelListLine("New hires", newHires, e => e.name)}
+    ${personnelListLine("Resignations", resignations, e => e.name)}
+    ${personnelListLine("Team transfers", transfers, h => h.employeeName)}
+    ${personnelListLine(`Position changes — ${promotions.length} promotion${promotions.length === 1 ? "" : "s"}`, positionChanges, h => `${h.employeeName}${h.direction === "promoted" ? " ↑" : h.direction === "demoted" ? " ↓" : ""}`)}
+    ${personnelListLine("Salary changes (amount not shown)", salaryChanges, s => s.employeeName)}
+  </div>`;
+}
+
 function reportSectionPlaceholder(icon, title, note) {
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
     <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${icon} ${escapeHtml(title)}</div>
@@ -2780,7 +2886,7 @@ function renderHRModal() {
         ${renderLeaveUsageSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderIncidentSummarySection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${renderChangeSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
-        ${reportSectionPlaceholder("&#128101;", "Personnel changes", "Data wiring comes in the next build step.")}
+        ${renderPersonnelChangesSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${reportSectionPlaceholder("&#128064;", "Watchlist", "Data wiring comes in the next build step.")}
         <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
           <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128221; Other notes</div>
@@ -3368,7 +3474,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
