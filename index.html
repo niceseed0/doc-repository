@@ -2016,6 +2016,23 @@ function openReportDetail(itemId) {
   renderHRModal();
 }
 
+async function deleteReport(itemId) {
+  if (!canConfirmReports()) return; // same tier as confirm/revert — deleting is just as consequential
+  if (!confirm("Delete this report? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${reportsListId}/items/${itemId}`, { method: "DELETE" });
+    hrReports = hrReports.filter(r => r.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Report deleted", "success");
+    if (hrView && hrView.mode === "reportsDetail" && hrView.reportId === itemId) hrView = { mode: "reportsList" };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete report: " + err.message, "error");
+  }
+}
+
 async function saveReportNotes(itemId) {
   const r = hrReports.find(x => x.itemId === itemId);
   if (!r) return;
@@ -2573,12 +2590,13 @@ function renderHRModal() {
       <button class="btn btn-primary" onclick="openNewReportForm()" style="margin:14px 0;">&#65291; New report</button>
       <div style="display:flex; flex-direction:column; gap:6px;">
         ${sorted.length ? sorted.map(r => `
-          <div onclick="openReportDetail('${r.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
-            <div style="min-width:0;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+            <div onclick="openReportDetail('${r.itemId}')" style="cursor:pointer; flex:1; min-width:0;">
               <div style="font-size:13px; color:var(--accent);">${escapeHtml(r.title)}</div>
               <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(r.periodType)} · ${escapeHtml(dateOnly(r.periodStart))} – ${escapeHtml(dateOnly(r.periodEnd))}</div>
             </div>
             <span class="badge ${r.status === "Confirmed" ? "active" : "pending"}"><span class="badge-dot"></span>${escapeHtml(r.status)}</span>
+            ${canConfirmReports() ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteReport('${r.itemId}')" title="Delete report">&#128465;</button>` : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No reports yet — create the first one above.</div>`}
       </div>
