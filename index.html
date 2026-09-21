@@ -351,6 +351,9 @@
         <button class="trash-icon-btn" onclick="openLeaveReport()" id="leaveReportBtn" style="display:none" title="Leave & Sick Report">
           &#128202;
         </button>
+        <button class="trash-icon-btn" onclick="openReports()" id="reportsBtn" style="display:none" title="HR Reports">
+          &#128203;
+        </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
@@ -447,7 +450,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-08-30-01";
+const BUILD_ID = "2026-09-21-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -467,6 +470,7 @@ const CONFIG = {
   incidentsListDisplayName: "HR Incidents",
   teamsListDisplayName: "HR Teams",
   leaveUsageListDisplayName: "HR Leave Usage",
+  reportsListDisplayName: "HR Reports",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -755,6 +759,17 @@ let hrShowFormer = false; // whether the "show former members" toggle is expande
 let hrDetail = null; // { positions:[], salaries:[], evaluations:[], incidents:[] } for the currently open detail employee
 
 // ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS MODULE STATE
+// The 6 report sections are always computed live from the HR lists above, filtered
+// to the open report's period — only Notes/Status/ConfirmedBy/ConfirmedDate are
+// actually stored, in the "HR Reports" list. reportsListId stays null (feature
+// quietly hides itself) until that list is created.
+// ═══════════════════════════════════════════════════════════════════════════
+let reportsListId = null;
+let hrReports = []; // [{ itemId, title, periodType, periodStart, periodEnd, status, confirmedBy, confirmedDate, notes }]
+let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', reportId }
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════════════════
 async function startApp() {
@@ -769,7 +784,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadReports(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -823,6 +838,8 @@ async function resolveSiteAndLists() {
   leaveUsageListId = leaveMatch ? leaveMatch.id : null; // optional — usage tracking just won't show without it
   const hrFilesMatch = (lists.value || []).find(l => l.displayName === CONFIG.hrFilesLibrary);
   hrFilesListId = hrFilesMatch ? hrFilesMatch.id : null; // optional — photos/resumes/bios fall back to initials/no-link without it
+  const reportsMatch = (lists.value || []).find(l => l.displayName === CONFIG.reportsListDisplayName);
+  reportsListId = reportsMatch ? reportsMatch.id : null; // optional — Reports tab stays hidden entirely if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -1216,6 +1233,43 @@ async function loadLeaveUsage() {
     console.warn("Could not load leave usage (list may not exist yet):", e);
     leaveUsage = [];
   }
+}
+
+async function loadReports() {
+  hrReports = [];
+  if (!reportsListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${reportsListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        hrReports.push({
+          itemId: it.id,
+          title: it.fields["Title"] || "Untitled report",
+          periodType: it.fields["PeriodType"] || "Monthly",
+          periodStart: it.fields["PeriodStart"] || null,
+          periodEnd: it.fields["PeriodEnd"] || null,
+          status: it.fields["Status"] || "Draft",
+          confirmedBy: it.fields["ConfirmedBy"] || "",
+          confirmedDate: it.fields["ConfirmedDate"] || null,
+          notes: it.fields["Notes"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+    hrReports.sort((a, b) => (b.periodStart || "").localeCompare(a.periodStart || ""));
+  } catch (e) {
+    console.warn("Could not load HR reports (list may not exist yet):", e);
+    hrReports = [];
+  }
+}
+
+// Who is allowed to press "Confirm" on a report — HR-Sensitive-Access members
+// (the org's HR managers/admins) plus the top-level admins in ADMIN_EMAILS.
+// Anyone else can open and read reports (if canAccessHR — see reportsBtn visibility)
+// but the Confirm button itself stays hidden for them.
+function canConfirmReports() {
+  return canAccessHR || isPermissionAdmin;
 }
 
 function employeesForTeam(team, includeFormer, cluster) {
@@ -1796,6 +1850,166 @@ function openLeaveReport(year) {
   renderHRModal();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — open/create/save/confirm
+// ═══════════════════════════════════════════════════════════════════════════
+function reportSectionPlaceholder(icon, title, note) {
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${icon} ${escapeHtml(title)}</div>
+    <div style="font-size:12px; color:var(--text3);">${escapeHtml(note)}</div>
+  </div>`;
+}
+
+function openReports() {
+  if (!canAccessHR || !reportsListId) return; // defense in depth — button is already hidden otherwise
+  hrView = { mode: "reportsList" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+function openNewReportForm() {
+  if (!canAccessHR) return;
+  hrView = { mode: "reportsNew" };
+  renderHRModal();
+}
+
+// Monday–Sunday for Weekly, 1st–last day of the month for Monthly — just a starting
+// point in the date pickers; the person can still adjust either date by hand.
+function defaultPeriodRange(type) {
+  const now = new Date();
+  if (type === "Weekly") {
+    const day = now.getDay(); // 0=Sun..6=Sat
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const start = new Date(now); start.setDate(now.getDate() + mondayOffset);
+    const end = new Date(start); end.setDate(start.getDate() + 6);
+    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  }
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+
+function applyReportPeriodDefaults() {
+  const type = document.getElementById("reportNewType").value;
+  const range = defaultPeriodRange(type);
+  document.getElementById("reportNewStart").value = range.start;
+  document.getElementById("reportNewEnd").value = range.end;
+  applyReportTitleDefault();
+}
+
+function applyReportTitleDefault() {
+  const type = document.getElementById("reportNewType").value;
+  const start = document.getElementById("reportNewStart").value;
+  const end = document.getElementById("reportNewEnd").value;
+  const titleInput = document.getElementById("reportNewTitle");
+  if (!start || !end) return;
+  const s = new Date(start + "T00:00:00");
+  const e = new Date(end + "T00:00:00");
+  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const suggested = type === "Weekly"
+    ? `Week of ${monthNames[s.getMonth()].slice(0,3)} ${s.getDate()}–${e.getDate()}, ${e.getFullYear()}`
+    : `${monthNames[s.getMonth()]} ${s.getFullYear()} Monthly Report`;
+  // Only overwrite if the person hasn't typed a custom title yet, so re-picking dates
+  // doesn't clobber something they already wrote.
+  if (!titleInput.dataset.customized) titleInput.value = suggested;
+  titleInput.oninput = () => { titleInput.dataset.customized = "1"; };
+}
+
+async function createReport() {
+  if (!canAccessHR || !reportsListId) return;
+  const type = document.getElementById("reportNewType").value;
+  const start = document.getElementById("reportNewStart").value;
+  const end = document.getElementById("reportNewEnd").value;
+  const title = document.getElementById("reportNewTitle").value.trim();
+  if (!start || !end) { toast("Pick a start and end date.", "error"); return; }
+  if (end < start) { toast("End date can't be before the start date.", "error"); return; }
+  if (!title) { toast("Enter a title.", "error"); return; }
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${reportsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { Title: title, PeriodType: type, PeriodStart: start, PeriodEnd: end, Status: "Draft" } })
+    });
+    const record = { itemId: created.id, title, periodType: type, periodStart: start, periodEnd: end, status: "Draft", confirmedBy: "", confirmedDate: null, notes: "" };
+    hrReports.unshift(record);
+    setSyncing(false, true);
+    toast("Report created ✓", "success");
+    hrView = { mode: "reportsDetail", reportId: created.id };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not create report: " + err.message, "error");
+  }
+}
+
+function openReportDetail(itemId) {
+  hrView = { mode: "reportsDetail", reportId: itemId };
+  renderHRModal();
+}
+
+async function saveReportNotes(itemId) {
+  const r = hrReports.find(x => x.itemId === itemId);
+  if (!r) return;
+  const notes = document.getElementById("reportNotesInput").value;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${reportsListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Notes: notes })
+    });
+    r.notes = notes;
+    setSyncing(false, true);
+    toast("Notes saved ✓", "success");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save notes: " + err.message, "error");
+  }
+}
+
+async function confirmReportItem(itemId) {
+  if (!canConfirmReports()) return; // defense in depth
+  const r = hrReports.find(x => x.itemId === itemId);
+  if (!r) return;
+  if (!confirm("Confirm this report? It'll be marked reviewed and kept in the list as-is.")) return;
+  const confirmedBy = (currentAccount && currentAccount.username) || "";
+  const confirmedDate = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${reportsListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Status: "Confirmed", ConfirmedBy: confirmedBy, ConfirmedDate: confirmedDate })
+    });
+    r.status = "Confirmed"; r.confirmedBy = confirmedBy; r.confirmedDate = confirmedDate;
+    setSyncing(false, true);
+    toast("Report confirmed ✓", "success");
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not confirm report: " + err.message, "error");
+  }
+}
+
+async function unconfirmReportItem(itemId) {
+  if (!canConfirmReports()) return;
+  const r = hrReports.find(x => x.itemId === itemId);
+  if (!r) return;
+  if (!confirm("Revert this report back to Draft?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${reportsListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Status: "Draft", ConfirmedBy: "", ConfirmedDate: null })
+    });
+    r.status = "Draft"; r.confirmedBy = ""; r.confirmedDate = null;
+    setSyncing(false, true);
+    toast("Reverted to draft", "success");
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not revert report: " + err.message, "error");
+  }
+}
+
 async function openEmployeeDetail(employeeId) {
   const emp = employees.find(e => e.id === employeeId);
   if (!emp) return;
@@ -2271,6 +2485,104 @@ function renderHRModal() {
           </tr>
           ${rows}
         </table>
+      </div>
+    `;
+    return;
+  }
+
+  if (hrView.mode === "reportsList") {
+    box.style.width = "min(720px, 95vw)";
+    const sorted = hrReports; // already sorted newest-first by loadReports()
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <h3 style="margin-bottom:2px;">HR Reports</h3>
+          <div style="font-size:12px; color:var(--text2);">${sorted.length} report${sorted.length === 1 ? "" : "s"}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <button class="btn btn-primary" onclick="openNewReportForm()" style="margin:14px 0;">&#65291; New report</button>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${sorted.length ? sorted.map(r => `
+          <div onclick="openReportDetail('${r.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+            <div style="min-width:0;">
+              <div style="font-size:13px; color:var(--accent);">${escapeHtml(r.title)}</div>
+              <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(r.periodType)} · ${escapeHtml(dateOnly(r.periodStart))} – ${escapeHtml(dateOnly(r.periodEnd))}</div>
+            </div>
+            <span class="badge ${r.status === "Confirmed" ? "active" : "pending"}"><span class="badge-dot"></span>${escapeHtml(r.status)}</span>
+          </div>
+        `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No reports yet — create the first one above.</div>`}
+      </div>
+    `;
+    return;
+  }
+
+  if (hrView.mode === "reportsNew") {
+    box.style.width = "min(440px, 92vw)";
+    const today = new Date().toISOString().slice(0, 10);
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <div onclick="openReports()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; HR Reports</div>
+          <h3 style="margin-bottom:2px;">New report</h3>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div class="form-group" style="margin-top:14px;">
+        <label>Period type</label>
+        <select id="reportNewType" onchange="applyReportPeriodDefaults()">
+          <option value="Monthly">Monthly</option>
+          <option value="Weekly">Weekly</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Period start</label><input id="reportNewStart" type="date" value="${today}" onchange="applyReportTitleDefault()" /></div>
+      <div class="form-group"><label>Period end</label><input id="reportNewEnd" type="date" value="${today}" onchange="applyReportTitleDefault()" /></div>
+      <div class="form-group"><label>Title</label><input id="reportNewTitle" type="text" placeholder="Auto-filled from the period, or type your own" /></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="openReports()">Cancel</button>
+        <button class="btn btn-primary" onclick="createReport()">Create</button>
+      </div>
+    `;
+    applyReportPeriodDefaults();
+    return;
+  }
+
+  if (hrView.mode === "reportsDetail") {
+    box.style.width = "min(760px, 95vw)";
+    const r = hrReports.find(x => x.itemId === hrView.reportId);
+    if (!r) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Report not found.</div>`; return; }
+    const canConfirm = canConfirmReports();
+    const isConfirmed = r.status === "Confirmed";
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <div onclick="openReports()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; HR Reports</div>
+          <h3 style="margin-bottom:2px;">${escapeHtml(r.title)}</h3>
+          <div style="font-size:12px; color:var(--text2);">${escapeHtml(r.periodType)} · ${escapeHtml(dateOnly(r.periodStart))} – ${escapeHtml(dateOnly(r.periodEnd))}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="margin:12px 0 18px;">
+        <span class="badge ${isConfirmed ? "active" : "pending"}"><span class="badge-dot"></span>${isConfirmed ? `Confirmed · ${escapeHtml(r.confirmedBy)} · ${escapeHtml(dateOnly(r.confirmedDate))}` : "Draft — awaiting review"}</span>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        ${reportSectionPlaceholder("&#128197;", "Team leave & sick usage", "Data wiring comes in the next build step.")}
+        ${reportSectionPlaceholder("&#9888;&#65039;", "HR Incident summary", "Data wiring comes in the next build step.")}
+        ${reportSectionPlaceholder("&#128202;", "Change vs. previous period", "Data wiring comes in the next build step.")}
+        ${reportSectionPlaceholder("&#128101;", "Personnel changes", "Data wiring comes in the next build step.")}
+        ${reportSectionPlaceholder("&#128064;", "Watchlist", "Data wiring comes in the next build step.")}
+        <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+          <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#128221; Other notes</div>
+          <textarea id="reportNotesInput" placeholder="Anything the automated sections don't catch." style="width:100%; min-height:70px; resize:vertical;">${escapeHtml(r.notes || "")}</textarea>
+          <button class="btn btn-secondary btn-sm" onclick="saveReportNotes('${r.itemId}')" style="margin-top:8px;">Save notes</button>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:18px;">
+        ${isConfirmed
+          ? (canConfirm ? `<button class="btn btn-secondary" onclick="unconfirmReportItem('${r.itemId}')">Revert to draft</button>` : "")
+          : (canConfirm ? `<button class="btn btn-primary" onclick="confirmReportItem('${r.itemId}')">Confirm this report</button>` : `<span style="font-size:12px; color:var(--text3);">Only HR-Sensitive-Access members or admins can confirm.</span>`)}
       </div>
     `;
     return;
@@ -2846,7 +3158,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadReports(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -2963,6 +3275,8 @@ function renderTabs() {
   formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
   const leaveReportBtn = document.getElementById("leaveReportBtn");
   leaveReportBtn.style.display = canAccessSalary ? "" : "none";
+  const reportsBtn = document.getElementById("reportsBtn");
+  reportsBtn.style.display = (canAccessHR && reportsListId) ? "" : "none";
   const myProfileBtn = document.getElementById("myProfileBtn");
   myProfileBtn.style.display = employeesListId ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
