@@ -752,6 +752,7 @@ let teamsListId = null;
 let hrTeams = []; // pre-declared teams: [{ itemId, cluster, team }] — lets a team exist with zero members yet
 let leaveUsageListId = null;
 let leaveUsage = []; // [{ itemId, employeeId, type: "Leave"|"Sick", date, days, notes }]
+let allIncidents = []; // [{ itemId, employeeId, employeeName, date, type, notes }] — org-wide, for HR Reports; the per-employee HR Records tab still queries incidentsListId live instead of reading this
 let hrFilesListId = null; // the "HR Files" document library's list ID — used to reach its Graph "drive" for photos/resumes/bios
 let employees = []; // [{ id, name, photo, team, position, status, hireDate, resumeUrl, separationDate, separationReason }]
 let hrView = null; // { mode:'roster', team } | { mode:'detail', employeeId } | { mode:'logChange', employeeId } | null
@@ -784,7 +785,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadReports(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1232,6 +1233,33 @@ async function loadLeaveUsage() {
   } catch (e) {
     console.warn("Could not load leave usage (list may not exist yet):", e);
     leaveUsage = [];
+  }
+}
+
+async function loadAllIncidents() {
+  allIncidents = [];
+  if (!incidentsListId || !(canAccessHR || canAccessIncidents)) return; // same access tier as HR Records itself
+  try {
+    let url = `/sites/${siteId}/lists/${incidentsListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const employeeId = it.fields["EmployeeId"];
+        if (!employeeId) return;
+        allIncidents.push({
+          itemId: it.id,
+          employeeId: String(employeeId),
+          employeeName: it.fields["Title"] || "",
+          date: it.fields["Date"] || null,
+          type: it.fields["IncidentType"] || "Other",
+          notes: it.fields["IncidentNotes"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR incidents (list may not exist yet, or no access):", e);
+    allIncidents = [];
   }
 }
 
@@ -1909,6 +1937,51 @@ function renderLeaveUsageSection(start, end) {
       </table>
     </div>
   </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HR REPORTS — section 2: HR Incident summary
+// ═══════════════════════════════════════════════════════════════════════════
+const INCIDENT_TYPES = ["Recognition", "NTE", "Coaching", "Sanction", "Personal Issue", "Other"];
+
+function computeIncidentSummary(start, end) {
+  const entries = allIncidents.filter(i => inPeriod(i.date, start, end));
+  const counts = INCIDENT_TYPES.reduce((acc, t) => { acc[t] = 0; return acc; }, {});
+  entries.forEach(i => { counts[INCIDENT_TYPES.includes(i.type) ? i.type : "Other"]++; });
+  entries.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  return { entries, counts, total: entries.length };
+}
+
+function renderIncidentSummarySection(start, end) {
+  const { entries, counts, total } = computeIncidentSummary(start, end);
+  if (!total) {
+    return reportSectionPlaceholder("&#9888;&#65039;", "HR Incident summary", "No incidents logged in this period.");
+  }
+  const chips = INCIDENT_TYPES.filter(t => counts[t] > 0)
+    .map(t => `<span class="chip ${getIncidentChipClass(t)}" style="margin-right:4px;">${escapeHtml(t)} ${counts[t]}</span>`).join("");
+  const rows = entries.map(i => `<tr>
+      <td style="text-align:left; padding:4px 6px;">${escapeHtml(i.employeeName || "—")}</td>
+      <td style="padding:4px 6px;">${escapeHtml(dateOnly(i.date))}</td>
+      <td style="padding:4px 6px;"><span class="chip ${getIncidentChipClass(i.type)}">${escapeHtml(i.type)}</span></td>
+    </tr>`).join("");
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">&#9888;&#65039; HR Incident summary — ${total} total</div>
+    <div style="margin-bottom:10px;">${chips}</div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; font-size:12px; border-collapse:collapse;">
+        <tr style="color:var(--text2); border-bottom:1px solid var(--border);">
+          <td style="text-align:left; padding:4px 6px;">Employee</td><td style="text-align:left; padding:4px 6px;">Date</td><td style="text-align:left; padding:4px 6px;">Type</td>
+        </tr>
+        ${rows}
+      </table>
+    </div>
+  </div>`;
+}
+
+// Reuses the same rotating chip palette as document categories, just keyed off incident
+// type instead — Recognition/NTE/Coaching/etc. each land on a distinct, stable color.
+function getIncidentChipClass(type) {
+  return getCategoryChipClass("incident:" + type);
 }
 
 function reportSectionPlaceholder(icon, title, note) {
@@ -2655,7 +2728,7 @@ function renderHRModal() {
 
       <div style="display:flex; flex-direction:column; gap:10px;">
         ${renderLeaveUsageSection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
-        ${reportSectionPlaceholder("&#9888;&#65039;", "HR Incident summary", "Data wiring comes in the next build step.")}
+        ${renderIncidentSummarySection(dateOnly(r.periodStart), dateOnly(r.periodEnd))}
         ${reportSectionPlaceholder("&#128202;", "Change vs. previous period", "Data wiring comes in the next build step.")}
         ${reportSectionPlaceholder("&#128101;", "Personnel changes", "Data wiring comes in the next build step.")}
         ${reportSectionPlaceholder("&#128064;", "Watchlist", "Data wiring comes in the next build step.")}
@@ -3245,7 +3318,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadReports(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
