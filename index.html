@@ -357,6 +357,10 @@
         <button class="trash-icon-btn" onclick="openReports()" id="reportsBtn" style="display:none" title="HR Reports">
           &#128203;
         </button>
+        <button class="trash-icon-btn" onclick="openNteCases()" id="nteBtn" style="display:none" title="NTE Cases">
+          &#128221;
+          <span class="tab-count" id="nteCount" style="display:none"></span>
+        </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
@@ -453,7 +457,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-21-02";
+const BUILD_ID = "2026-09-22-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -474,6 +478,7 @@ const CONFIG = {
   teamsListDisplayName: "HR Teams",
   leaveUsageListDisplayName: "HR Leave Usage",
   reportsListDisplayName: "HR Reports",
+  nteCasesListDisplayName: "HR NTE Cases",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -516,6 +521,153 @@ const CONFIG = {
   // Any column whose display name matches one of these is always treated as a hyperlink field.
   hyperlinkColumnNames: ["Link"]
 };
+
+// Full disciplinary violation matrix from the Employee Handbook (Part VII), used for
+// NTE type-ahead lookup: c=code (e.g. "1.1.12"), s=section (Misconduct/Serious Misconduct/
+// Grave Misconduct), g=category group, d=description text, p=accountability points (null
+// for Grave Misconduct, which has no points system).
+const HANDBOOK_VIOLATIONS = [
+{c:"1.1.1",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Habitual Tardiness. Incurring habitual and unexcused tardiness from work - arriving later than the designated start of work schedule exceeding 100 minutes or more than ten (10) times per for a month",p:"1"},
+{c:"1.1.2",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Habitual/Excessive/Unauthorized under time. Leaving the place of work not on official business exceeding 60 minutes for a month shall be considered as incurring under time",p:"1"},
+{c:"1.1.3",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Non-Compliance with Leave Application policies and procedures",p:"1"},
+{c:"1.1.4",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Not providing Employer of personal information or informing the change within 30 days",p:"1"},
+{c:"1.1.5",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Disrespectful Behavior to co-workers and superiors",p:"1"},
+{c:"1.1.6",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Conduct unbecoming of a professional such as minor vandalism, scribbling on the wall, Spitting indiscriminately, improper garbage disposal",p:"1"},
+{c:"1.1.7",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unscheduled/extended allowable time for break or lunch periods without authorization from the Department Manager.",p:"1"},
+{c:"1.1.8",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Engaging in lengthy or prolonged personal call and continuous texting without justification.",p:"1"},
+{c:"1.1.9",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Neglecting personal hygiene resulting in decrease of company morale and disruption of work environment",p:"1"},
+{c:"1.1.10",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Failure to notify superior of whereabouts during working hours.",p:"1"},
+{c:"1.1.11",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Disruptive behavior such as horseplay, noise, singing, shouting, etc.",p:"1"},
+{c:"1.1.12",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Engaging in other business which are not related to one's duties for the Company during working hours.",p:"1"},
+{c:"1.1.13",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Holding of unofficial and non-business meetings within Company premises without previous verbal/written permission coming from the Department Manager and/or Management.",p:"1"},
+{c:"1.1.14",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Failure of employees to log-in and log-out on the Biometrics.",p:"1"},
+{c:"1.1.15",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unauthorized use of company letterheads for purposes not related to the company's business.",p:"1"},
+{c:"1.1.16",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unauthorized access and/or usage of restricted areas, workspaces, materiel, assets, etc",p:"1"},
+{c:"1.1.17",s:"MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Other analogous violations of Employer regulations within a slight degree",p:"1"},
+{c:"1.1.18",s:"MISCONDUCT",g:"PROPERTY & SECURITY",d:"Reporting to work without visible ID card.",p:"1"},
+{c:"1.1.19",s:"MISCONDUCT",g:"PROPERTY & SECURITY",d:"Failure to comply and refused to submit with security measures of the company such as inspection, investigation, searching of personal belonging, etc.",p:"1"},
+{c:"1.1.20",s:"MISCONDUCT",g:"PROPERTY & SECURITY",d:"Unauthorized alteration, removal or deformation of officially posted notices, announcements or similar matters without specific authority from Management.",p:"1"},
+{c:"1.1.21",s:"MISCONDUCT",g:"PROPERTY & SECURITY",d:"Operating using or processing machines, tools, equipment, computers, vehicle, etc. to which the employee has not been assigned unless authorized by the company.",p:"1"},
+{c:"1.1.22",s:"MISCONDUCT",g:"HEALTH AND SAFETY",d:"Failure to undergo Annual Physical/Dental Examination when required to do so, or failure to submit specimen for physical examination purposes, despite repeated requests, thereby delaying completion of the physical examination.",p:"1"},
+{c:"1.1.23",s:"MISCONDUCT",g:"HEALTH AND SAFETY",d:"Abuse or misuse of uniforms, footwear or other company-provided personal equipment.",p:"1"},
+{c:"1.1.24",s:"MISCONDUCT",g:"HEALTH AND SAFETY",d:"Improper or abusive use of toilets and other company sanitary facilities.",p:"1"},
+{c:"1.1.25",s:"MISCONDUCT",g:"HEALTH AND SAFETY",d:"Contributing to unsanitary conditions or poor housekeeping.",p:"1"},
+{c:"1.1.26",s:"MISCONDUCT",g:"HEALTH AND SAFETY",d:"Other acts similar to the above that maybe determined as unhealthy and unsafe by the Management from time to time.",p:"1"},
+{c:"1.1.27",s:"MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Non-observance of prescribed telephone etiquette.",p:"1"},
+{c:"1.1.28",s:"MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Inviting or purchasing any type of food and/or service during office hours from unauthorized seller in the company premise",p:"1"},
+{c:"1.2.1",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Multiple Habitual Tardiness. Incurring habitual and unexcused tardiness from work - arriving later than the designated start of work schedule exceeding 100 minutes or more than ten (10) times for a month for a duration of 365 days from first violation.",p:"3"},
+{c:"1.2.2",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Habitual/Excessive Tardiness. Incurring habitual and excessive unexcused tardiness from work - arriving later than the designated start of work schedule exceeding 100 minutes AND more than ten (10) times for a month",p:"3"},
+{c:"1.2.3",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Absences without Official Leave (AWOL) or No Call No Show (NCNS) for one (1) or up to two (2) days, being away from work without due notice to and permission from Department Manager and/or Management or failure to notify of the cause thereof for at least two (2) hours before the scheduled shift.",p:"3"},
+{c:"1.2.4",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Excessive Absences/Pretentious excuses to be absent from work (malingering): Authorized or excused absences even with notice but repeated and/or habitual in nature and if in the assessment of the company the excuse is not justified and proven to be disruptive in workflows",p:"3"},
+{c:"1.2.5",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Loitering, wasting time, roaming around, or leaving place of work during hours without permission from his/her immediate Superior or Department Manager at any time before the end of the employee's work shift.",p:"3"},
+{c:"1.2.6",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Deviation from the normal duties and responsibilities, systems and procedures, standards, or flow of operation without authorization from the Immediate Superior and/or Management.",p:"3"},
+{c:"1.2.7",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Willful refusal without any valid reason to accept legitimate work, shift, or specific instructions given by an Immediate Superior resulting in damage to Company welfare.",p:"3"},
+{c:"1.2.8",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unjust refusal or failure to report for overtime work at agreement and commitment.",p:"3"},
+{c:"1.2.9",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Furnishing of incorrect or misleading data of employees or persons duly authorized to ask, receive or secure such information as a consequence of the employee's neglect or failure to conduct the proper research, investigation or verification of facts.",p:"3"},
+{c:"1.2.10",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unjustified failure to attend/complete internal or external training, seminars or workshops.",p:"3"},
+{c:"1.2.11",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Failure to inform Employer regarding contagious disease or illness, which may harm co-workers and may cause serious loss to employer",p:"3"},
+{c:"1.2.12",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Disorderly conduct engaging in verbal quarrel or other non-physical forms of aggression against co-worker within the workplace",p:"3"},
+{c:"1.2.13",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Arbitrarily posting unauthorized information on the bulletin boards, tearing off, modifying or covering any posted material with malicious intent",p:"3"},
+{c:"1.2.14",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Ignoring clients as required by the Employer’s etiquette rules, neglecting, prevaricating, or prattling clients",p:"3"},
+{c:"1.2.15",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Frequently failing in attending work meetings or other working activities on time without reasonable cause",p:"3"},
+{c:"1.2.16",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Insubordination and disrespect to management and co-workers",p:"3"},
+{c:"1.2.17",s:"SERIOUS MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Irresponsible handling or storage of company property resulting in minor damages to Employer.",p:"3"},
+{c:"1.2.18",s:"SERIOUS MISCONDUCT",g:"PROPERTY & SECURITY",d:"Entering or allowing unauthorized entry into restricted area within Company premises without permission.",p:"3"},
+{c:"1.2.19",s:"SERIOUS MISCONDUCT",g:"PROPERTY & SECURITY",d:"Permitting or allowing unauthorized person/s to operate tools, machines and equipment without authorization from the Immediate Superior and/or Management.",p:"3"},
+{c:"1.2.20",s:"SERIOUS MISCONDUCT",g:"PROPERTY & SECURITY",d:"Failure of an employee to inform and/or make a written report to his/her immediate Superior within twenty-four (24) hours of any loss or damage involving company or equipment or property",p:"3"},
+{c:"1.2.21",s:"SERIOUS MISCONDUCT",g:"PROPERTY & SECURITY",d:"Abusive use of Company materials, property and supplies.",p:"3"},
+{c:"1.2.22",s:"SERIOUS MISCONDUCT",g:"PROPERTY & SECURITY",d:"Damaging or losing Company property due to negligence, carelessness, improper or incorrect use",p:"3"},
+{c:"1.2.23",s:"SERIOUS MISCONDUCT",g:"HEALTH AND SAFETY",d:"Failure to take care of the Company property using the prescribed procedures in the safety, care and handling of Company tools and equipment.",p:"3"},
+{c:"1.2.24",s:"SERIOUS MISCONDUCT",g:"HEALTH AND SAFETY",d:"Smoking inside the Company premises, littering, throwing cigarette butts and ashes, and other acts, which are fire-hazard and contributor to poor housekeeping.",p:"3"},
+{c:"1.2.25",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Promoting or practicing usury, as defined by law, and jurisprudence within the Company premises.",p:"3"},
+{c:"1.2.26",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Engaging in scandalous or malicious acts. This includes unruly conduct like shouting, and unnecessary noise that tends to cause disorder, create scandal and disturbance within the Company premises.",p:"3"},
+{c:"1.2.27",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Committing indecent acts or willful exhibition or using profane or obscene language in addressing another person within Company premises amounting to serious misconduct.",p:"3"},
+{c:"1.2.28",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Slandering the character of a fellow employee by words or by deeds; this includes rumor-mongering or creating intrigues among co-employees.",p:"3"},
+{c:"1.2.29",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"On the part of a Superior, clear abuse of status, power or discretion.",p:"3"},
+{c:"1.2.30",s:"SERIOUS MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Taking part in any gambling activity or any other game of chance within the Company premises",p:"3"},
+{c:"1.3.1",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Habitual/Excessive Tardiness. Incurring habitual and excessive unexcused tardiness from work - arriving later than the designated start of work schedule exceeding 100 minutes AND more than ten (10) times for a month and last (2) consecutive months",p:null},
+{c:"1.3.2",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Absences without Official Leave (AWOL) or No Call No Show (NCNS) for three (3) days or more, being away from work without due notice to and permission from Department Manager and/or of the cause thereof for at least two (2) hours before the scheduled shift. Management or failure to notify",p:null},
+{c:"1.3.3",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Serious defects in quality of work that may result in client's loss of confidence or analogous to potential loss of business by Employer.",p:null},
+{c:"1.3.4",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Gross unprofessionalism resulting in serious damage to company reputation and/or damaged morale of co-workers. This includes viewing pornographic and/or illegal content in any form",p:null},
+{c:"1.3.5",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Theft or appropriation of the Employer’s assets, properties of other employees or other people related to the Employer regardless of value",p:null},
+{c:"1.3.6",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Dereliction of duty which causes loss to the Employer of above Php 10,000",p:null},
+{c:"1.3.7",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Any activity of dishonesty designed to mislead, defraud and exploit the Employer and/or co-workers for personal gain",p:null},
+{c:"1.3.8",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Concealment of working lapses, arbitrarily modifying the Employer’s records such as technical data, forging certificates, documents including medical information and clearances, reimbursement sheets, checking attendance for others and leaves",p:null},
+{c:"1.3.9",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Filing of false information in employment forms and other documents",p:null},
+{c:"1.3.10",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Losing or misplacing Company records which causes prejudice to the Company.",p:null},
+{c:"1.3.11",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"On the part of the Superior or someone with authoritative position, deliberately condoning, tolerating or participating in any type of Misconduct committed by a subordinate or co-workers",p:null},
+{c:"1.3.12",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Insubordination or deliberate refusal to follow a lawful order by a Superior",p:null},
+{c:"1.3.13",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Engaging in a sabotage (i.e. restricting output, slowdown work, work stoppage, deliberately downgrading of the Company's materials and products.)",p:null},
+{c:"1.3.14",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Destruction, damage or waste of company property, materials or products through gross negligence.",p:null},
+{c:"1.3.15",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Falsification of company records, data, documents, reports, misappropriation of Company funds and directing others to commit any of the foregoing.",p:null},
+{c:"1.3.16",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Unauthorized possession of confidential information giving of, supplying and disclosing to unauthorized persons or competitors classified trade secrets and other confidential materials, information, data or documents relating to the company's operations, programs, formulae, processes, market studies and other classified information or other documents similar to those enumerated above.",p:null},
+{c:"1.3.17",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Submitting fictitious, padded, or tampered documents in support of claims for reimbursement or liquidation of expenses.",p:null},
+{c:"1.3.18",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Gross inefficiency or continuous unsatisfactory performance (3 consecutive below an average or A2 rating) not attributing to factors beyond employee's control.",p:null},
+{c:"1.3.19",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Sleeping while on duty in the premise or in their workstation.",p:null},
+{c:"1.3.20",s:"GRAVE MISCONDUCT",g:"PRODUCTIVITY & MAJOR JOB RESPONSIBILITY",d:"Any activity analogous to Just Cause for Termination of employee",p:null},
+{c:"1.3.21",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Using Company property, materials, or equipment to do unauthorized work for personal gain",p:null},
+{c:"1.3.22",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Making false or malicious statements about the Company or its product or services.",p:null},
+{c:"1.3.23",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Discourtesy towards customers, suppliers and other business contacts.",p:null},
+{c:"1.3.24",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Mishandling properties or irresponsible actions causing damage to the Employer’s products or assets resulting in damages more than Php 10,000",p:null},
+{c:"1.3.25",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Giving false testimony or willful withholding of information during company investigation or inquiry, whether under oath or not.",p:null},
+{c:"1.3.26",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Unauthorized access of company network, hardware, software and files with malicious intent in order disrupt the Employer's business and/or personal gain.",p:null},
+{c:"1.3.27",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Distributing written or printed matter unfavorable or detrimental to the interest of the Company",p:null},
+{c:"1.3.28",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Concealment of defective work which directly results in loss of prejudice to the interest of the Company.",p:null},
+{c:"1.3.29",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Forced entry into company premises beyond office hours without authorization.",p:null},
+{c:"1.3.30",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Knowingly giving false or misleading information in application for employment as a result of which employment is secured, or if already employed giving false or to seek or qualify for any promotion or benefit from the company. Misleading information",p:null},
+{c:"1.3.31",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Forgery or falsification of timecards, vouchers, receipts, and the like for the purpose of drawing salary, overtime pay or allowances.",p:null},
+{c:"1.3.32",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Falsification of Company records or documents and tampering with Company equipment of facilities for the purpose of defrauding the Company or to commit a dishonest act",p:null},
+{c:"1.3.33",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Any form of collusion with fellow employees in falsifying company records and/or documents for financial or other form of gain.",p:null},
+{c:"1.3.34",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Obtaining/accepting money or anything of value by entering into unauthorized arrangement(s) with supplier(s), client(s), or outsider(s).",p:null},
+{c:"1.3.35",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Unauthorized acceptance, direct or indirect, of money or anything of value as consideration for an act, a decision or a service, which the employee is duly-bound to perform.",p:null},
+{c:"1.3.36",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Planting evidence against another employee for the purpose of unduly imputing crime or the commission of an offense under this Code against the latter or of evading responsibility for the commission of the crime/offense under this Code.",p:null},
+{c:"1.3.37",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Forging the signatures of an official employees, officers, management of the Company.",p:null},
+{c:"1.3.38",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Unauthorized possession of firearms or anything designed or used as deadly weapon/s and/or explosives that can endanger life, inflict injuries or cause damage to property while inside the Company premises.",p:null},
+{c:"1.3.39",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Vandalism of any form, acts of sabotage, intentional destruction of Company property.",p:null},
+{c:"1.3.40",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Installing unauthorized software and/or responsible for virus intrusion in company network, hardware, devices, etc.…",p:null},
+{c:"1.3.41",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Fraud, solicitation of money, gifts, benefits or favors for personal interest.",p:null},
+{c:"1.3.42",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Theft or stealing or attempting to steal or conniving to steal Company property or an employee's or another person's property inside the Company premises.",p:null},
+{c:"1.3.43",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Swindling (estafa) of funds or property of the Company, a fellow employee, of a client or a customer of the Company.",p:null},
+{c:"1.3.44",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Engaging in any activity, which is directly in competition with the Company's business or any part of its operations.",p:null},
+{c:"1.3.45",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Participating in concerned illegal or unauthorized strikers, work stoppage, slow down, mass leave, sit- down strike, which violate the Labor Code.",p:null},
+{c:"1.3.46",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Any other acts of dishonesty not covered by other provision herein.",p:null},
+{c:"1.3.47",s:"GRAVE MISCONDUCT",g:"PROPERTY & SECURITY",d:"Any activity analogous to Just Cause for Termination of employee",p:null},
+{c:"1.3.48",s:"GRAVE MISCONDUCT",g:"HEALTH AND SAFETY",d:"Loaning out ID to enter the company premises.",p:null},
+{c:"1.3.49",s:"GRAVE MISCONDUCT",g:"HEALTH AND SAFETY",d:"Refusal or failure to follow prescribe procedures in cases of sickness or personal injuries sustained at work or in cases of accidents.",p:null},
+{c:"1.3.50",s:"GRAVE MISCONDUCT",g:"HEALTH AND SAFETY",d:"Having a serious/contagious disease which may endanger the health of other employees, knowing about it, yet, failing to report willfully, withholding information thereof to company authorities or failure to subject himself to medical examination when required by the Management.",p:null},
+{c:"1.3.51",s:"GRAVE MISCONDUCT",g:"HEALTH AND SAFETY",d:"Any activity analogous to Just Cause for Termination of employee",p:null},
+{c:"1.3.52",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Uttering words, or doing acts making gestures to a superior, which are manifestly insulting or grossly disrespectful to the latter.",p:null},
+{c:"1.3.53",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Other acts committed by a subordinate for a reason directly connected with his superior's discharge of official duties, which acts clearly prejudice said superior's interest.",p:null},
+{c:"1.3.54",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Drinking liquor within the Company premises, at any time except when allowed during Company occasions.",p:null},
+{c:"1.3.55",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Participating, provoking or instigating a fight, using physical violence, giving or writing threat against a fellow employee whether during office hours or outside Company premises.",p:null},
+{c:"1.3.56",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Reporting to work under influence of liquor or any intoxicating beverage or drug. (An employee is considered under the influence of liquor when his mouth smells of liquor.)",p:null},
+{c:"1.3.57",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"or verbal and physical acts, innuendoes and gestures involving sex against another, including telling of smutty jokes, taunting another with talk of sex, leering, obscene phone calls, pinching and brushing against another.",p:null},
+{c:"1.3.58",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Failure to observe e-mail/internet decorum and etiquette, including discourteous and disrespectful use of e-mail/internet.",p:null},
+{c:"1.3.59",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Immoral conduct or conduct grossly indecent in nature within company premises whether or not committed during office hours. Immorality shall include extra marital affairs (between two married individuals or between married individual and married one.)",p:null},
+{c:"1.3.60",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Willful infliction of serious/fatal physical injuries or assaulting another employee except in self-defense in Company premises at any time.",p:null},
+{c:"1.3.61",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Conviction of any crime punishable by imprisonment under the Revised Penal Code of the Philippines",p:null},
+{c:"1.3.62",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Attempt to commit any form of rape, or crime against chastity while in Company premises or while outside Company premises in official business, or committing any act constituting immorality (A crime against chastity includes acts of lasciviousness, seduction, corruption of minors, white slave trade, abduction, etc.)",p:null},
+{c:"1.3.63",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Use, possession, or assistance in the distribution of illegal items such as narcotics, prohibited drugs and other items considered illegal in accordance with law, including the Dangerous Act of 2002 (Republic Act No. 9165)",p:null},
+{c:"1.3.64",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Using the Company or its property for illegal activities.",p:null},
+{c:"1.3.65",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Sharing of Company's intellectual property with another person/party for personal gain.",p:null},
+{c:"1.3.66",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Threatening, intimidating, coercing, provoking to fight, assaulting or attacking a superior for reasons directly connected with the superior's discharge of his official duties.",p:null},
+{c:"1.3.67",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Refusal to use Company product or use of competing brands as identified by the Company.",p:null},
+{c:"1.3.68",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Entering into or practicing illicit affair with co-employees which would cause trouble and complaints, and which effects the reputation of the Company.",p:null},
+{c:"1.3.69",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Violation of the Anti-Sexual Harassment Act of 1995 (Republic Act No. 7877)",p:null},
+{c:"1.3.70",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Bribing, accepting bribe or demanding any illegal remuneration for promotion or better work condition",p:null},
+{c:"1.3.71",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Breach of trust and confidence of Employer by failing to comply with rules on confidentiality, disclosing the Employer’s internal materials",p:null},
+{c:"1.3.72",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Disclosing the Employer’s business secrets, operation status and has caused or may cause serious damages to the Employer",p:null},
+{c:"1.3.73",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Actions which seriously destroy the Employer’s image or reputation",p:null},
+{c:"1.3.74",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Deliberately concealing mistakes and unlawful affairs which may lead to harm on the employee &/or co-workers, damaged assets of the Employer or others to escape accountability",p:null},
+{c:"1.3.75",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Helping vendors, customers or other Employee forge Employer files or documents for economic or other improper purposes, accepting customers’ gifts, service or other benefits without authorization from the Employer and accepting commissions which violate the Employer’s rules and regulations",p:null},
+{c:"1.3.76",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Distributing unprofessional and/or malicious literature, brochures, posting posters or propagandize in written form or any other media without the department head’s approval",p:null},
+{c:"1.3.77",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Disseminating rumors, or rumor mongering that may harm the Employer’s reputation and negatively affect employee moral or disclose the Employer’s unpublished information",p:null},
+{c:"1.3.78",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Alcoholic intemperance, rioting, threatening, forcing or interfering other employees’ work",p:null},
+{c:"1.3.79",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Gambling in company premises",p:null},
+{c:"1.3.80",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Approving, allowing or authorizing any of the employee including himself or herself for matters, acts, omissions, etc. ., regardless of its legitimacy, , outside of his or her prescribed powers granted by the employer",p:null},
+{c:"1.3.81",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Violation of laws and regulations of The Republic of he Philippines",p:null},
+{c:"1.3.82",s:"GRAVE MISCONDUCT",g:"CODE OF CONDUCTS & DECORUM",d:"Any activity analogous to Just Cause for Termination of employee",p:null}
+];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // APPROVAL WORKFLOW CONFIG
@@ -776,6 +928,15 @@ let hrReports = []; // [{ itemId, title, periodType, periodStart, periodEnd, sta
 let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', reportId }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// NTE (NOTICE TO EXPLAIN) WORKFLOW STATE
+// Draft (APM+) -> Pending Approval -> Issued (HR/Cluster Lead approves; starts 5-day
+// clock) -> Responded (employee Acknowledges+explains or Declines) -> Closed (HR/Cluster
+// Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
+// ═══════════════════════════════════════════════════════════════════════════
+let nteCasesListId = null;
+let nteCases = []; // [{ itemId, title, employeeId, position, department, refNo, requestedBy, requestedDate, statementOfFacts, violationCodes:[...], status, approvedBy, approvedDate, issuedDate, responseDueDate, acknowledgement, acknowledgedDate, employeeResponse, responseDate, reviewedBy, reviewedDate, outcome, suspensionStart, suspensionEnd, rejectionReason }]
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ═══════════════════════════════════════════════════════════════════════════
 async function startApp() {
@@ -790,7 +951,7 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -846,6 +1007,8 @@ async function resolveSiteAndLists() {
   hrFilesListId = hrFilesMatch ? hrFilesMatch.id : null; // optional — photos/resumes/bios fall back to initials/no-link without it
   const reportsMatch = (lists.value || []).find(l => l.displayName === CONFIG.reportsListDisplayName);
   reportsListId = reportsMatch ? reportsMatch.id : null; // optional — Reports tab stays hidden entirely if missing
+  const nteMatch = (lists.value || []).find(l => l.displayName === CONFIG.nteCasesListDisplayName);
+  nteCasesListId = nteMatch ? nteMatch.id : null; // optional — NTE tab stays hidden entirely if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -1349,12 +1512,91 @@ async function loadReports() {
   }
 }
 
+async function loadNteCases() {
+  nteCases = [];
+  if (!nteCasesListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${nteCasesListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields;
+        nteCases.push({
+          itemId: it.id,
+          title: f["Title"] || "",
+          employeeId: f["EmployeeId"] || "",
+          position: f["Position"] || "",
+          department: f["Department"] || "",
+          refNo: f["NTERefNo"] || "",
+          requestedBy: f["RequestedBy"] || "",
+          requestedDate: f["RequestedDate"] || null,
+          statementOfFacts: f["StatementOfFacts"] || "",
+          violationCodes: (f["ViolationCodes"] || "").split(",").map(s => s.trim()).filter(Boolean),
+          status: f["Status"] || "Draft",
+          approvedBy: f["ApprovedBy"] || "",
+          approvedDate: f["ApprovedDate"] || null,
+          issuedDate: f["IssuedDate"] || null,
+          responseDueDate: f["ResponseDueDate"] || null,
+          acknowledgement: f["Acknowledgement"] || "",
+          acknowledgedDate: f["AcknowledgedDate"] || null,
+          employeeResponse: f["EmployeeResponse"] || "",
+          responseDate: f["ResponseDate"] || null,
+          reviewedBy: f["ReviewedBy"] || "",
+          reviewedDate: f["ReviewedDate"] || null,
+          outcome: f["Outcome"] || "",
+          suspensionStart: f["SuspensionStart"] || null,
+          suspensionEnd: f["SuspensionEnd"] || null,
+          rejectionReason: f["RejectionReason"] || ""
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+    nteCases.sort((a, b) => (b.requestedDate || "").localeCompare(a.requestedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR NTE cases (list may not exist yet):", e);
+    nteCases = [];
+  }
+}
+
 // Who is allowed to press "Confirm" on a report — HR-Sensitive-Access members
 // (the org's HR managers/admins) plus the top-level admins in ADMIN_EMAILS.
 // Anyone else can open and read reports (if canAccessHR — see reportsBtn visibility)
 // but the Confirm button itself stays hidden for them.
 function canConfirmReports() {
   return canAccessHR || isPermissionAdmin;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NTE permission helpers
+// Rank comparison uses CONFIG.positionRank — index 0 is most senior. A position not
+// found in the list sorts after every ranked position (i.e. treated as junior to all
+// of them), so an unranked title never accidentally qualifies as "APM or higher".
+// ═══════════════════════════════════════════════════════════════════════════
+function myEmployeeRecord() {
+  const myEmail = currentAccount && currentAccount.username ? currentAccount.username.toLowerCase() : "";
+  if (!myEmail) return null;
+  return employees.find(e => e.email && e.email.toLowerCase() === myEmail) || null;
+}
+function positionRankIndex(position) {
+  const idx = CONFIG.positionRank.indexOf(position);
+  return idx === -1 ? CONFIG.positionRank.length : idx;
+}
+function canDraftNte() {
+  const me = myEmployeeRecord();
+  return !!me && positionRankIndex(me.position) <= positionRankIndex("Assistant Product Manager");
+}
+function canApproveNte() {
+  if (canAccessHR) return true;
+  const me = myEmployeeRecord();
+  return !!me && positionRankIndex(me.position) <= positionRankIndex("Cluster Lead");
+}
+function myPendingNteCases() {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  return nteCases.filter(c => String(c.employeeId) === String(me.id) && c.status === "Issued");
+}
+function canSeeNteTab() {
+  return canDraftNte() || canApproveNte() || myPendingNteCases().length > 0;
 }
 
 function employeesForTeam(team, includeFormer, cluster) {
@@ -2377,6 +2619,463 @@ function openNewReportForm() {
   renderHRModal();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NTE (Notice to Explain) — open/create/submit/approve/respond/close
+// ═══════════════════════════════════════════════════════════════════════════
+const NTE_BOILERPLATE_1 = "This may result in a slowdown in business operations, impacting deliverables and productivity, and serious financial loss for the company due to our client's loss of trust and confidence. It also negatively affects co-employees. Such serious misconduct and grave misconduct have a corresponding sanction of suspension and termination, as the case may be. Please take note that such acts may lead to termination, considering that you have committed a grave misconduct offense in the past.";
+const NTE_BOILERPLATE_2 = "In this light, you are required to explain in writing within five (5) days from receipt of this notice why you should not be sanctioned for your acts of negligence.";
+const NTE_BOILERPLATE_3 = "Please attach the letter to this document upon submission.";
+
+let nteSelectedViolationCodes = [];
+
+function nteStatusLabel(status) {
+  const map = {
+    "Draft": { text: "Draft", color: "var(--text3)" },
+    "Pending Approval": { text: "Pending Approval", color: "var(--yellow)" },
+    "Issued": { text: "Issued — awaiting response", color: "var(--accent)" },
+    "Responded": { text: "Responded — needs review", color: "var(--yellow)" },
+    "Closed": { text: "Closed", color: "var(--green)" }
+  };
+  return map[status] || { text: status, color: "var(--text3)" };
+}
+
+function openNteCases() {
+  if (!nteCasesListId) return; // defense in depth — button is already hidden otherwise
+  hrView = { mode: "nteList" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+function openNteNewForm() {
+  if (!canDraftNte()) return;
+  nteSelectedViolationCodes = [];
+  hrView = { mode: "nteNew" };
+  renderHRModal();
+}
+
+function openNteDetailView(caseId) {
+  hrView = { mode: "nteDetail", caseId };
+  renderHRModal();
+}
+
+function openNteAckForm(caseId, isAck) {
+  hrView = { mode: "nteAck", caseId, isAck };
+  renderHRModal();
+}
+
+// ── employee search (new-case form) ─────────────────────────────────────────
+function filterNteEmployeeOptions() {
+  const q = document.getElementById("nteEmployeeSearch").value.trim().toLowerCase();
+  const box = document.getElementById("nteEmployeeOptions");
+  document.getElementById("nteEmployeeId").value = "";
+  document.getElementById("ntePosition").value = "";
+  document.getElementById("nteDepartment").value = "";
+  if (!q) { box.style.display = "none"; return; }
+  const matches = employees.filter(e => e.status !== "Resigned" && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="selectNteEmployee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function selectNteEmployee(id) {
+  const emp = employees.find(e => e.id === id);
+  if (!emp) return;
+  document.getElementById("nteEmployeeId").value = id;
+  document.getElementById("nteEmployeeSearch").value = emp.name;
+  document.getElementById("nteEmployeeOptions").style.display = "none";
+  document.getElementById("ntePosition").value = emp.position || "";
+  document.getElementById("nteDepartment").value = emp.team || "";
+}
+
+// ── handbook violation search (new-case form) ───────────────────────────────
+function filterNteViolationOptions() {
+  const q = document.getElementById("nteViolationSearch").value.trim().toLowerCase();
+  const box = document.getElementById("nteViolationOptions");
+  if (!q) { box.style.display = "none"; return; }
+  const matches = HANDBOOK_VIOLATIONS.filter(v =>
+    !nteSelectedViolationCodes.includes(v.c) &&
+    (v.c.toLowerCase().startsWith(q) || v.d.toLowerCase().includes(q) || (v.g || "").toLowerCase().includes(q))
+  ).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(v => `<div onclick="addNteViolation('${v.c}')" style="padding:7px 10px; cursor:pointer; font-size:12px; border-bottom:1px solid var(--border);">
+      <span style="color:var(--accent); font-weight:600;">${v.c}</span> <span style="color:var(--text3);">(${escapeHtml(v.s)})</span><br/>
+      <span style="color:var(--text2);">${escapeHtml(v.d.length > 100 ? v.d.slice(0, 100) + "…" : v.d)}</span>
+    </div>`).join("");
+  box.style.display = "";
+}
+function addNteViolation(code) {
+  if (!nteSelectedViolationCodes.includes(code)) nteSelectedViolationCodes.push(code);
+  document.getElementById("nteViolationSearch").value = "";
+  document.getElementById("nteViolationOptions").style.display = "none";
+  renderNteSelectedViolations();
+}
+function removeNteViolation(code) {
+  nteSelectedViolationCodes = nteSelectedViolationCodes.filter(c => c !== code);
+  renderNteSelectedViolations();
+}
+function renderNteSelectedViolations() {
+  const box = document.getElementById("nteSelectedViolations");
+  if (!box) return;
+  box.innerHTML = nteSelectedViolationCodes.map(code => {
+    const v = HANDBOOK_VIOLATIONS.find(x => x.c === code);
+    if (!v) return "";
+    return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:7px 10px; font-size:12px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+        <div><span style="color:var(--accent); font-weight:600;">${v.c}</span> <span style="color:var(--text3);">(${escapeHtml(v.s)})</span></div>
+        <span onclick="removeNteViolation('${v.c}')" style="cursor:pointer; color:var(--text3); flex-shrink:0;">&times;</span>
+      </div>
+      <div style="color:var(--text2); margin-top:2px;">${escapeHtml(v.d)}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderNteViolationBlock(codes) {
+  if (!codes || !codes.length) return "";
+  const list = codes.map(c => HANDBOOK_VIOLATIONS.find(v => v.c === c)).filter(Boolean);
+  const codesText = codes.join(", and/or ");
+  return `
+    <p style="margin:14px 0 6px;">This act may be a violation of <strong>${escapeHtml(codesText)}</strong> of our New Employee's Handbook.</p>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">
+      ${list.map(v => `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:12px;">
+        <span style="color:var(--accent); font-weight:600;">${v.c}</span> <span style="color:var(--text3);">(${escapeHtml(v.s)})</span> — ${escapeHtml(v.d)}
+      </div>`).join("")}
+    </div>`;
+}
+
+async function createNteCase() {
+  if (!canDraftNte()) return;
+  const employeeId = document.getElementById("nteEmployeeId").value;
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp) { toast("Search and select an employee.", "error"); return; }
+  const statementOfFacts = document.getElementById("nteStatementOfFacts").value.trim();
+  if (!statementOfFacts) { toast("Enter the statement of facts.", "error"); return; }
+  if (!nteSelectedViolationCodes.length) { toast("Select at least one handbook violation.", "error"); return; }
+  const requestedBy = (currentAccount && currentAccount.username) || "";
+  const requestedDate = toLocalYMD(new Date());
+  const refNo = "NTE-" + requestedDate.replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${nteCasesListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: {
+        Title: emp.name, EmployeeId: String(emp.id), Position: emp.position || "", Department: emp.team || "",
+        NTERefNo: refNo, RequestedBy: requestedBy, RequestedDate: requestedDate,
+        StatementOfFacts: statementOfFacts, ViolationCodes: nteSelectedViolationCodes.join(", "), Status: "Draft"
+      } })
+    });
+    const record = {
+      itemId: created.id, title: emp.name, employeeId: String(emp.id), position: emp.position || "", department: emp.team || "",
+      refNo, requestedBy, requestedDate, statementOfFacts, violationCodes: [...nteSelectedViolationCodes], status: "Draft",
+      approvedBy: "", approvedDate: null, issuedDate: null, responseDueDate: null,
+      acknowledgement: "", acknowledgedDate: null, employeeResponse: "", responseDate: null,
+      reviewedBy: "", reviewedDate: null, outcome: "", suspensionStart: null, suspensionEnd: null, rejectionReason: ""
+    };
+    nteCases.unshift(record);
+    setSyncing(false, true);
+    toast("NTE draft saved ✓", "success");
+    openNteDetailView(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save draft: " + err.message, "error");
+  }
+}
+
+async function submitNteForApproval(itemId) {
+  const c = nteCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${nteCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Pending Approval" })
+    });
+    c.status = "Pending Approval";
+    setSyncing(false, true);
+    toast("Submitted for approval ✓", "success");
+    openNteDetailView(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+async function approveNteCase(itemId) {
+  if (!canApproveNte()) return;
+  const c = nteCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  if (!confirm("Approve and issue this NTE to the employee? This starts their 5-day response clock.")) return;
+  const issuedDate = toLocalYMD(new Date());
+  const dueDate = addDaysToYMD(issuedDate, 5);
+  const approvedBy = (currentAccount && currentAccount.username) || "";
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${nteCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Status: "Issued", ApprovedBy: approvedBy, ApprovedDate: issuedDate, IssuedDate: issuedDate, ResponseDueDate: dueDate })
+    });
+    Object.assign(c, { status: "Issued", approvedBy, approvedDate: issuedDate, issuedDate, responseDueDate: dueDate });
+    setSyncing(false, true);
+    toast("NTE issued ✓", "success");
+    openNteDetailView(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not approve: " + err.message, "error");
+  }
+}
+
+async function submitNteAck(itemId, isAck) {
+  const c = nteCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  const text = document.getElementById("nteAckText").value.trim();
+  if (!text) { toast(isAck ? "Enter your written explanation." : "Enter your reason.", "error"); return; }
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${nteCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ Status: "Responded", Acknowledgement: isAck ? "Acknowledged" : "Declined", AcknowledgedDate: now, EmployeeResponse: text, ResponseDate: now })
+    });
+    Object.assign(c, { status: "Responded", acknowledgement: isAck ? "Acknowledged" : "Declined", acknowledgedDate: now, employeeResponse: text, responseDate: now });
+    setSyncing(false, true);
+    toast("Submitted ✓", "success");
+    openNteDetailView(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+function toggleNteSuspensionFields() {
+  const el = document.getElementById("nteOutcomeSelect");
+  const fields = document.getElementById("nteSuspensionFields");
+  if (!el || !fields) return;
+  fields.style.display = el.value === "Suspension" ? "flex" : "none";
+}
+
+async function closeNteCase(itemId) {
+  if (!canApproveNte()) return;
+  const c = nteCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  const outcome = document.getElementById("nteOutcomeSelect").value;
+  let suspensionStart = null, suspensionEnd = null;
+  if (outcome === "Suspension") {
+    suspensionStart = document.getElementById("nteSuspensionStart").value;
+    suspensionEnd = document.getElementById("nteSuspensionEnd").value;
+    if (!suspensionStart || !suspensionEnd) { toast("Enter the suspension start and end dates.", "error"); return; }
+  }
+  if (!confirm(`Close this case with outcome: ${outcome}? This can't be undone and will log an HR Incidents record.`)) return;
+  const reviewedBy = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${nteCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        Status: "Closed", ReviewedBy: reviewedBy, ReviewedDate: now, Outcome: outcome,
+        SuspensionStart: suspensionStart || null, SuspensionEnd: suspensionEnd || null
+      })
+    });
+    Object.assign(c, { status: "Closed", reviewedBy, reviewedDate: now, outcome, suspensionStart, suspensionEnd });
+
+    if (incidentsListId) {
+      const incidentType = outcome === "No Sanction" ? "NTE" : "Sanction";
+      const notesParts = [`NTE ${c.refNo}: ${outcome}`];
+      if (outcome === "Suspension") notesParts.push(`(${suspensionStart} – ${suspensionEnd})`);
+      const incidentDate = toLocalYMD(new Date());
+      const notes = notesParts.join(" ");
+      const createdIncident = await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: incidentType, IncidentNotes: notes, NTECaseId: itemId } })
+      });
+      allIncidents.push({ itemId: createdIncident.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: incidentType, notes });
+    }
+
+    setSyncing(false, true);
+    toast("Case closed ✓", "success");
+    openNteDetailView(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not close case: " + err.message, "error");
+  }
+}
+
+function renderNteOutcomeForm(c) {
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:10px;">Decide outcome</div>
+    <div class="form-group">
+      <label>Outcome</label>
+      <select id="nteOutcomeSelect" onchange="toggleNteSuspensionFields()">
+        <option value="No Sanction">No Sanction</option>
+        <option value="Written Warning">Written Warning</option>
+        <option value="Final Written Warning">Final Written Warning</option>
+        <option value="Suspension">Suspension</option>
+        <option value="Termination">Termination</option>
+      </select>
+    </div>
+    <div id="nteSuspensionFields" style="display:none; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Suspension start</label><input id="nteSuspensionStart" type="date" /></div>
+      <div class="form-group" style="flex:1;"><label>Suspension end</label><input id="nteSuspensionEnd" type="date" /></div>
+    </div>
+    <button class="btn btn-primary" onclick="closeNteCase('${c.itemId}')">Close Case</button>
+  </div>`;
+}
+
+function renderNteList(box) {
+  box.style.width = "min(760px, 95vw)";
+  const canApprove = canApproveNte();
+  const me = myEmployeeRecord();
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const visible = canApprove
+    ? nteCases
+    : nteCases.filter(c => (me && String(c.employeeId) === String(me.id)) || (c.requestedBy && c.requestedBy.toLowerCase() === myEmail));
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">NTE Cases</h3>
+        <div style="font-size:12px; color:var(--text2);">${visible.length} case${visible.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${canDraftNte() ? `<button class="btn btn-primary" onclick="openNteNewForm()" style="margin:14px 0;">&#65291; New NTE</button>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${visible.length ? visible.map(c => {
+        const s = nteStatusLabel(c.status);
+        return `<div onclick="openNteDetailView('${c.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div style="min-width:0;">
+            <div style="font-size:13px; color:var(--accent);">${escapeHtml(c.title)}</div>
+            <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(c.refNo)} · ${escapeHtml(dateOnly(c.requestedDate))}</div>
+          </div>
+          <span style="font-size:12px; font-weight:600; color:${s.color}; white-space:nowrap;">${escapeHtml(s.text)}</span>
+        </div>`;
+      }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No NTE cases yet.</div>`}
+    </div>
+  `;
+}
+
+function renderNteNewForm(box) {
+  box.style.width = "min(620px, 94vw)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="openNteCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; NTE Cases</div>
+        <h3 style="margin-bottom:2px;">New Notice to Explain</h3>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="position:relative; margin-top:14px;">
+      <label>Employee *</label>
+      <input id="nteEmployeeSearch" type="text" placeholder="Type a name…" oninput="filterNteEmployeeOptions()" autocomplete="off" />
+      <div id="nteEmployeeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+      <input type="hidden" id="nteEmployeeId" />
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Position</label><input id="ntePosition" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Department</label><input id="nteDepartment" type="text" readonly style="opacity:.7;" /></div>
+    </div>
+    <div class="form-group"><label>Date Form Filled Out</label><input type="text" readonly value="${escapeHtml(dateOnly(toLocalYMD(new Date())))}" style="opacity:.7;" /></div>
+    <div class="form-group"><label>Statement of Facts *</label><textarea id="nteStatementOfFacts" style="min-height:110px;" placeholder="Describe what happened…"></textarea></div>
+    <div class="form-group" style="position:relative;">
+      <label>Handbook Violation(s) *</label>
+      <input id="nteViolationSearch" type="text" placeholder="Type a code (e.g. 1.1.12) or keyword…" oninput="filterNteViolationOptions()" autocomplete="off" />
+      <div id="nteViolationOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:240px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+      <div id="nteSelectedViolations" style="margin-top:8px; display:flex; flex-direction:column; gap:6px;"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openNteCases()">Cancel</button>
+      <button class="btn btn-primary" onclick="createNteCase()">Save as Draft</button>
+    </div>
+  `;
+}
+
+function renderNteDetail(box) {
+  box.style.width = "min(760px, 95vw)";
+  const c = nteCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Case not found.</div>`; return; }
+  const me = myEmployeeRecord();
+  const isTarget = !!(me && String(c.employeeId) === String(me.id));
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const isDrafter = !!(c.requestedBy && c.requestedBy.toLowerCase() === myEmail);
+  const canApprove = canApproveNte();
+  const statusInfo = nteStatusLabel(c.status);
+  const dueDateDisplay = c.responseDueDate ? dateOnly(c.responseDueDate) : "[to be set upon issuance]";
+
+  let actionPanel = "";
+  if (c.status === "Draft" && (isDrafter || canApprove)) {
+    actionPanel = `<div class="modal-actions"><button class="btn btn-primary" onclick="submitNteForApproval('${c.itemId}')">Submit for Approval</button></div>`;
+  } else if (c.status === "Pending Approval" && canApprove) {
+    actionPanel = `<div class="modal-actions"><button class="btn btn-primary" onclick="approveNteCase('${c.itemId}')">Approve &amp; Issue</button></div>`;
+  } else if (c.status === "Issued" && isTarget) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+        <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Your response is due by ${escapeHtml(dueDateDisplay)}</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-primary" onclick="openNteAckForm('${c.itemId}', true)">Acknowledge &amp; Explain</button>
+          <button class="btn btn-secondary" onclick="openNteAckForm('${c.itemId}', false)">Decline</button>
+        </div>
+      </div>`;
+  } else if (c.status === "Issued") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting on the employee's response (due ${escapeHtml(dueDateDisplay)}).</div>`;
+  } else if (c.status === "Responded" && canApprove) {
+    actionPanel = renderNteOutcomeForm(c);
+  } else if (c.status === "Closed") {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600;">Outcome: ${escapeHtml(c.outcome)}</div>
+      ${c.outcome === "Suspension" ? `<div style="font-size:12px; color:var(--text2); margin-top:4px;">Suspension: ${escapeHtml(dateOnly(c.suspensionStart))} – ${escapeHtml(dateOnly(c.suspensionEnd))}</div>` : ""}
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Reviewed by ${escapeHtml(c.reviewedBy)} on ${escapeHtml(dateOnly(c.reviewedDate))}</div>
+    </div>`;
+  }
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="openNteCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; NTE Cases</div>
+        <h3 style="margin-bottom:2px;">Notice to Explain — ${escapeHtml(c.title)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${statusInfo.color};">${escapeHtml(statusInfo.text)}</span></div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
+        <div><span style="color:var(--text3);">Employee:</span> ${escapeHtml(c.title)}</div>
+        <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(c.position)}</div>
+        <div><span style="color:var(--text3);">Department:</span> ${escapeHtml(c.department)}</div>
+        <div><span style="color:var(--text3);">Date Filed:</span> ${escapeHtml(dateOnly(c.requestedDate))}</div>
+      </div>
+      <div style="font-weight:600; margin-bottom:4px;">Statement of Facts</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.statementOfFacts)}</p>
+      ${renderNteViolationBlock(c.violationCodes)}
+      <p style="color:var(--text2); margin-top:14px;">${escapeHtml(NTE_BOILERPLATE_1)}</p>
+      <p style="color:var(--text2); margin-top:10px;">${escapeHtml(NTE_BOILERPLATE_2)}</p>
+      <p style="color:var(--text2); margin-top:10px;">${escapeHtml(NTE_BOILERPLATE_3)}</p>
+      <p style="margin-top:14px;"><strong>You are expected to provide your written explanation on or before: ${escapeHtml(dueDateDisplay)}</strong></p>
+    </div>
+
+    ${c.employeeResponse ? `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:14px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:6px;">${c.acknowledgement === "Declined" ? "Decline Reason" : "Employee's Explanation"} — ${escapeHtml(c.acknowledgement)} on ${escapeHtml(dateOnly(c.acknowledgedDate))}</div>
+      <p style="white-space:pre-wrap; color:var(--text2); font-size:13px;">${escapeHtml(c.employeeResponse)}</p>
+    </div>` : ""}
+
+    ${actionPanel}
+  `;
+}
+
+function renderNteAckForm(box) {
+  box.style.width = "min(560px, 92vw)";
+  const c = nteCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Case not found.</div>`; return; }
+  const isAck = hrView.isAck;
+  box.innerHTML = `
+    <div onclick="openNteDetailView('${c.itemId}')" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:8px;">&larr; Back</div>
+    <h3>${isAck ? "Acknowledge &amp; Explain" : "Decline"}</h3>
+    <div class="form-group" style="margin-top:10px;">
+      <label>${isAck ? "I have read and understood the above, confirm it to be true, and will explain my side:" : "Reason for declining:"}</label>
+      <textarea id="nteAckText" style="min-height:140px;" placeholder="${isAck ? "Type your written explanation…" : "Type your reason…"}"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openNteDetailView('${c.itemId}')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitNteAck('${c.itemId}', ${isAck})">Submit</button>
+    </div>
+  `;
+}
+
 // Local-timezone-safe "YYYY-MM-DD" formatter. Date.toISOString() converts to UTC first,
 // which silently shifts the date back a day for any positive-offset timezone (e.g. UTC+8
 // Manila) whenever the local time-of-day is midnight — exactly what month/week boundaries
@@ -3122,6 +3821,11 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "nteList") { renderNteList(box); return; }
+  if (hrView.mode === "nteNew") { renderNteNewForm(box); return; }
+  if (hrView.mode === "nteDetail") { renderNteDetail(box); return; }
+  if (hrView.mode === "nteAck") { renderNteAckForm(box); return; }
+
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
     const emp = employees.find(e => e.id === hrView.employeeId);
@@ -3692,7 +4396,7 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -3811,6 +4515,12 @@ function renderTabs() {
   leaveReportBtn.style.display = canAccessSalary ? "" : "none";
   const reportsBtn = document.getElementById("reportsBtn");
   reportsBtn.style.display = (canAccessHR && reportsListId) ? "" : "none";
+  const nteBtn = document.getElementById("nteBtn");
+  nteBtn.style.display = (nteCasesListId && canSeeNteTab()) ? "" : "none";
+  const nteCount = document.getElementById("nteCount");
+  const myPending = myPendingNteCases().length;
+  if (myPending > 0) { nteCount.textContent = myPending; nteCount.style.display = ""; }
+  else { nteCount.style.display = "none"; }
   const myProfileBtn = document.getElementById("myProfileBtn");
   myProfileBtn.style.display = employeesListId ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
