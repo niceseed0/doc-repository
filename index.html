@@ -457,7 +457,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-22-01";
+const BUILD_ID = "2026-09-22-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -951,7 +951,8 @@ async function startApp() {
   try {
     await resolveSiteAndLists();
     await loadColumns();
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
+    await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1515,41 +1516,55 @@ async function loadReports() {
 async function loadNteCases() {
   nteCases = [];
   if (!nteCasesListId) return;
+  const mapItem = it => {
+    const f = it.fields;
+    return {
+      itemId: it.id,
+      title: f["Title"] || "",
+      employeeId: f["EmployeeId"] || "",
+      position: f["Position"] || "",
+      department: f["Department"] || "",
+      refNo: f["NTERefNo"] || "",
+      requestedBy: f["RequestedBy"] || "",
+      requestedDate: f["RequestedDate"] || null,
+      statementOfFacts: f["StatementOfFacts"] || "",
+      violationCodes: (f["ViolationCodes"] || "").split(",").map(s => s.trim()).filter(Boolean),
+      status: f["Status"] || "Draft",
+      approvedBy: f["ApprovedBy"] || "",
+      approvedDate: f["ApprovedDate"] || null,
+      issuedDate: f["IssuedDate"] || null,
+      responseDueDate: f["ResponseDueDate"] || null,
+      acknowledgement: f["Acknowledgement"] || "",
+      acknowledgedDate: f["AcknowledgedDate"] || null,
+      employeeResponse: f["EmployeeResponse"] || "",
+      responseDate: f["ResponseDate"] || null,
+      reviewedBy: f["ReviewedBy"] || "",
+      reviewedDate: f["ReviewedDate"] || null,
+      outcome: f["Outcome"] || "",
+      suspensionStart: f["SuspensionStart"] || null,
+      suspensionEnd: f["SuspensionEnd"] || null,
+      rejectionReason: f["RejectionReason"] || ""
+    };
+  };
   try {
-    let url = `/sites/${siteId}/lists/${nteCasesListId}/items?$expand=fields&$top=500`;
-    while (url) {
-      const data = await graphFetch(url);
-      (data.value || []).forEach(it => {
-        const f = it.fields;
-        nteCases.push({
-          itemId: it.id,
-          title: f["Title"] || "",
-          employeeId: f["EmployeeId"] || "",
-          position: f["Position"] || "",
-          department: f["Department"] || "",
-          refNo: f["NTERefNo"] || "",
-          requestedBy: f["RequestedBy"] || "",
-          requestedDate: f["RequestedDate"] || null,
-          statementOfFacts: f["StatementOfFacts"] || "",
-          violationCodes: (f["ViolationCodes"] || "").split(",").map(s => s.trim()).filter(Boolean),
-          status: f["Status"] || "Draft",
-          approvedBy: f["ApprovedBy"] || "",
-          approvedDate: f["ApprovedDate"] || null,
-          issuedDate: f["IssuedDate"] || null,
-          responseDueDate: f["ResponseDueDate"] || null,
-          acknowledgement: f["Acknowledgement"] || "",
-          acknowledgedDate: f["AcknowledgedDate"] || null,
-          employeeResponse: f["EmployeeResponse"] || "",
-          responseDate: f["ResponseDate"] || null,
-          reviewedBy: f["ReviewedBy"] || "",
-          reviewedDate: f["ReviewedDate"] || null,
-          outcome: f["Outcome"] || "",
-          suspensionStart: f["SuspensionStart"] || null,
-          suspensionEnd: f["SuspensionEnd"] || null,
-          rejectionReason: f["RejectionReason"] || ""
-        });
-      });
-      url = data["@odata.nextLink"] || null;
+    if (canDraftNte() || canApproveNte()) {
+      // Managers/approvers see every case — needed for the approval and review queues.
+      let url = `/sites/${siteId}/lists/${nteCasesListId}/items?$expand=fields&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => nteCases.push(mapItem(it)));
+        url = data["@odata.nextLink"] || null;
+      }
+    } else {
+      // Everyone else only ever gets their own case(s) sent down, via a server-side
+      // filter — this is a privacy boundary, not just a UI hide, so a case's Statement
+      // of Facts/explanation never reaches a browser that shouldn't see it at all.
+      const me = myEmployeeRecord();
+      if (me) {
+        const url = `/sites/${siteId}/lists/${nteCasesListId}/items?$expand=fields&$filter=fields/EmployeeId eq '${me.id}'&$top=100`;
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => nteCases.push(mapItem(it)));
+      }
     }
     nteCases.sort((a, b) => (b.requestedDate || "").localeCompare(a.requestedDate || ""));
   } catch (e) {
@@ -2625,8 +2640,15 @@ function openNewReportForm() {
 const NTE_BOILERPLATE_1 = "This may result in a slowdown in business operations, impacting deliverables and productivity, and serious financial loss for the company due to our client's loss of trust and confidence. It also negatively affects co-employees. Such serious misconduct and grave misconduct have a corresponding sanction of suspension and termination, as the case may be. Please take note that such acts may lead to termination, considering that you have committed a grave misconduct offense in the past.";
 const NTE_BOILERPLATE_2 = "In this light, you are required to explain in writing within five (5) days from receipt of this notice why you should not be sanctioned for your acts of negligence.";
 const NTE_BOILERPLATE_3 = "Please attach the letter to this document upon submission.";
+const NTE_ACK_STATEMENT = "I have read and understood the contents of this Notice to Explain. I confirm that I understand the above and will provide my written explanation for the cited act(s).";
 
 let nteSelectedViolationCodes = [];
+
+function confirmNteAcknowledge(itemId) {
+  const ok = confirm(NTE_ACK_STATEMENT + "\n\nDo you confirm the above and wish to proceed?");
+  if (!ok) return;
+  openNteAckForm(itemId, true);
+}
 
 function nteStatusLabel(status) {
   const map = {
@@ -2661,6 +2683,12 @@ function openNteDetailView(caseId) {
 function openNteAckForm(caseId, isAck) {
   hrView = { mode: "nteAck", caseId, isAck };
   renderHRModal();
+}
+
+// Jumps here from an HR Records "View NTE" link — the modal's already open (we're
+// inside the employee detail view), just swap what it's showing.
+function openNteFromIncident(caseId) {
+  openNteDetailView(caseId);
 }
 
 // ── employee search (new-case form) ─────────────────────────────────────────
@@ -3006,7 +3034,7 @@ function renderNteDetail(box) {
     actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
         <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Your response is due by ${escapeHtml(dueDateDisplay)}</div>
         <div style="display:flex; gap:8px;">
-          <button class="btn btn-primary" onclick="openNteAckForm('${c.itemId}', true)">Acknowledge &amp; Explain</button>
+          <button class="btn btn-primary" onclick="confirmNteAcknowledge('${c.itemId}')">Acknowledge &amp; Explain</button>
           <button class="btn btn-secondary" onclick="openNteAckForm('${c.itemId}', false)">Decline</button>
         </div>
       </div>`;
@@ -3029,7 +3057,10 @@ function renderNteDetail(box) {
         <h3 style="margin-bottom:2px;">Notice to Explain — ${escapeHtml(c.title)}</h3>
         <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${statusInfo.color};">${escapeHtml(statusInfo.text)}</span></div>
       </div>
-      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${["Issued", "Responded", "Closed"].includes(c.status) ? `<button class="btn btn-secondary" onclick="downloadNteCasePdf('${c.itemId}')" style="padding:4px 10px; font-size:12px;">&#128196; PDF</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
     </div>
 
     <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; margin-top:14px; font-size:13px; line-height:1.6;">
@@ -3055,6 +3086,62 @@ function renderNteDetail(box) {
 
     ${actionPanel}
   `;
+}
+
+// Opens a clean, print-ready copy of the NTE in a new tab and triggers the browser's
+// print dialog — "Save as PDF" from there is how it gets archived outside the app.
+function downloadNteCasePdf(itemId) {
+  const c = nteCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  const dueDateDisplay = c.responseDueDate ? dateOnly(c.responseDueDate) : "—";
+  const violationsHtml = renderNteViolationBlock(c.violationCodes)
+    .replace(/var\(--surface2\)/g, "#f1f3f9").replace(/var\(--border\)/g, "#e1e4ec")
+    .replace(/var\(--accent\)/g, "#4f7cff").replace(/var\(--text3\)/g, "#8891a3").replace(/var\(--text2\)/g, "#333");
+  const responseHtml = c.employeeResponse ? `
+    <h3>${c.acknowledgement === "Declined" ? "Decline Reason" : "Employee's Explanation"}</h3>
+    <p style="color:#525a6e;">${escapeHtml(c.acknowledgement)} on ${escapeHtml(dateOnly(c.acknowledgedDate))}</p>
+    <p style="white-space:pre-wrap;">${escapeHtml(c.employeeResponse)}</p>` : "";
+  const outcomeHtml = c.status === "Closed" ? `
+    <h3>Outcome</h3>
+    <p><strong>${escapeHtml(c.outcome)}</strong>${c.outcome === "Suspension" ? ` (${escapeHtml(dateOnly(c.suspensionStart))} – ${escapeHtml(dateOnly(c.suspensionEnd))})` : ""}</p>
+    <p style="color:#8891a3; font-size:12px;">Reviewed by ${escapeHtml(c.reviewedBy)} on ${escapeHtml(dateOnly(c.reviewedDate))}</p>` : "";
+
+  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8" />
+    <title>${escapeHtml(c.refNo)} — Notice to Explain</title>
+    <style>
+      body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color: #1a1f2b; max-width: 720px; margin: 40px auto; line-height: 1.6; font-size: 13px; }
+      h1 { font-size: 18px; margin-bottom: 2px; }
+      h3 { font-size: 13px; margin: 20px 0 4px; }
+      .meta { color: #8891a3; font-size: 12px; margin-bottom: 18px; }
+      .info { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 12px; margin-bottom: 16px; border-top: 1px solid #e1e4ec; border-bottom: 1px solid #e1e4ec; padding: 10px 0; }
+      .info span { color: #8891a3; }
+      @media print { body { margin: 0; } }
+    </style></head><body>
+    <h1>Notice to Explain</h1>
+    <div class="meta">${escapeHtml(c.refNo)} · ${escapeHtml(nteStatusLabel(c.status).text)}</div>
+    <div class="info">
+      <div><span>Employee:</span> ${escapeHtml(c.title)}</div>
+      <div><span>Position:</span> ${escapeHtml(c.position)}</div>
+      <div><span>Department:</span> ${escapeHtml(c.department)}</div>
+      <div><span>Date Filed:</span> ${escapeHtml(dateOnly(c.requestedDate))}</div>
+    </div>
+    <h3>Statement of Facts</h3>
+    <p style="white-space:pre-wrap;">${escapeHtml(c.statementOfFacts)}</p>
+    ${violationsHtml}
+    <p>${escapeHtml(NTE_BOILERPLATE_1)}</p>
+    <p>${escapeHtml(NTE_BOILERPLATE_2)}</p>
+    <p>${escapeHtml(NTE_BOILERPLATE_3)}</p>
+    <p><strong>You are expected to provide your written explanation on or before: ${escapeHtml(dueDateDisplay)}</strong></p>
+    ${responseHtml}
+    ${outcomeHtml}
+    <script>window.onload = () => setTimeout(() => window.print(), 200);<\/script>
+    </body></html>`;
+
+  const win = window.open("", "_blank");
+  if (!win) { toast("Please allow pop-ups to download the PDF.", "error"); return; }
+  win.document.open();
+  win.document.write(doc);
+  win.document.close();
 }
 
 function renderNteAckForm(box) {
@@ -3318,7 +3405,8 @@ async function loadEmployeeDetail(employeeId) {
       itemId: it.id,
       date: it.fields["Date"] || "",
       type: it.fields["IncidentType"] || "Other", // NTE | Coaching | Sanction | Personal Issue | Other
-      description: it.fields["IncidentNotes"] || ""
+      description: it.fields["IncidentNotes"] || "",
+      nteCaseId: it.fields["NTECaseId"] || null
     }))
   ]);
   result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -4252,6 +4340,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           <div style="display:flex; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
             ${incidentTypeBadge(i.type)}
             <span style="font-size:12px; flex:1;">${escapeHtml(dateOnly(i.date))} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
+            ${i.nteCaseId ? `<span onclick="openNteFromIncident('${i.nteCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View NTE</span>` : ""}
             ${canAccessIncidents ? delBtn("incident", i.itemId) : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
@@ -4396,7 +4485,8 @@ async function reloadData() {
       setTimeout(hardReload, 600);
       return;
     }
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadEmployees(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
+    await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
