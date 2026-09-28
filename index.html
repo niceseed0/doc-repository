@@ -120,6 +120,9 @@
   .req-card .req-desc { font-size: 12px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
   .req-card .req-tag { font-size: 10px; font-weight: 600; color: var(--text3); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; margin-left: auto; white-space: nowrap; }
   .req-card .req-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .rec-chip { display:inline-flex; align-items:center; gap:4px; background:var(--surface2); border:1px solid var(--border); border-radius:14px; padding:3px 6px 3px 10px; font-size:12px; font-weight:600; }
+  .rec-chip-x { cursor:pointer; color:var(--text3); font-size:15px; line-height:1; padding:0 4px; }
+  .rec-chip-x:hover { color:var(--red, #ef4444); }
   .req-badge { background: var(--red, #ef4444); color: #fff; border-radius: 10px; font-size: 10px; font-weight: 700; padding: 1px 7px; margin-left: 6px; }
   .req-todo { border-color: var(--accent); }
   .req-todo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
@@ -464,7 +467,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-04";
+const BUILD_ID = "2026-09-28-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -487,6 +490,7 @@ const CONFIG = {
   reportsListDisplayName: "HR Reports",
   nteCasesListDisplayName: "HR NTE Cases",
   coachingCasesListDisplayName: "HR Coaching Cases",
+  recognitionCasesListDisplayName: "HR Recognition Requests",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -947,6 +951,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // clock) -> Responded (employee Acknowledges+explains or Declines) -> Closed (HR/Cluster
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
+let recognitionCasesListId = null;
+let recognitionCases = []; // see Recognition Request module below
 let coachingCasesListId = null;
 let coachingCases = []; // see Coaching Form module below
 let nteCasesListId = null;
@@ -968,7 +974,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1028,6 +1034,8 @@ async function resolveSiteAndLists() {
   nteCasesListId = nteMatch ? nteMatch.id : null; // optional — NTE tab stays hidden entirely if missing
   const coachingMatch = (lists.value || []).find(l => l.displayName === CONFIG.coachingCasesListDisplayName);
   coachingCasesListId = coachingMatch ? coachingMatch.id : null; // optional — Coaching button stays hidden if missing
+  const recognitionMatch = (lists.value || []).find(l => l.displayName === CONFIG.recognitionCasesListDisplayName);
+  recognitionCasesListId = recognitionMatch ? recognitionMatch.id : null; // optional — Recognition card stays "Coming soon" if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -1441,7 +1449,8 @@ async function loadAllIncidents() {
           type: it.fields["IncidentType"] || "Other",
           notes: it.fields["IncidentNotes"] || "",
           nteCaseId: it.fields["NTECaseId"] || null,
-          coachingCaseId: it.fields["CoachingCaseId"] || null
+          coachingCaseId: it.fields["CoachingCaseId"] || null,
+          recognitionCaseId: it.fields["RecognitionCaseId"] || null
         });
       });
       url = data["@odata.nextLink"] || null;
@@ -4322,6 +4331,583 @@ function downloadCoachingPdf(itemId) {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Recognition Request module
+// Flow: Pending (APM+ submits, no signature) → reviewer (HOC / HR-Admin) either
+//   Recognized (reviewer signs → official record: one HR Incidents "Recognition" entry per recipient)
+//   or Returned (rejected with a reason).
+// Screenshots are compressed in the browser and stored in list text columns (Screenshot1-3);
+// the list view never downloads them — they load only when a case is opened.
+// ═══════════════════════════════════════════════════════════════════════════
+const RECOGNITION_MAX_SHOTS = 3;
+const RECOGNITION_SHOT_MAX_CHARS = 60000; // SharePoint multi-line text limit is ~63,999 characters
+const RECOGNITION_RETURNED_NOTICE_DAYS = 14;
+let recNewRecipients = [];
+let recNewShots = [];
+
+async function loadRecognitionCases() {
+  recognitionCases = [];
+  if (!recognitionCasesListId) return;
+  const select = "Title,Recipients,RecognitionRefNo,RequestedBy,RequesterName,RequestedDate,OccurrenceDate,Details,SourceLink,Status,ReviewedBy,ReviewedDate,ReturnReason,ReviewerSignature";
+  const mapItem = it => {
+    const f = it.fields;
+    return {
+      itemId: it.id,
+      title: f["Title"] || "",
+      recipients: coaParseJson(f["Recipients"], []),
+      refNo: f["RecognitionRefNo"] || "",
+      requestedBy: f["RequestedBy"] || "",
+      requesterName: f["RequesterName"] || "",
+      requestedDate: f["RequestedDate"] || null,
+      occurrenceDate: f["OccurrenceDate"] || null,
+      details: f["Details"] || "",
+      sourceLink: f["SourceLink"] || "",
+      status: f["Status"] || "Pending",
+      reviewedBy: f["ReviewedBy"] || "",
+      reviewedDate: f["ReviewedDate"] || null,
+      returnReason: f["ReturnReason"] || "",
+      reviewerSignature: f["ReviewerSignature"] || null,
+      screenshots: null,     // loaded lazily when the case is opened
+      shotsLoaded: false
+    };
+  };
+  try {
+    if (canApproveNte()) {
+      let url = `/sites/${siteId}/lists/${recognitionCasesListId}/items?$expand=fields($select=${select})&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => recognitionCases.push(mapItem(it)));
+        url = data["@odata.nextLink"] || null;
+      }
+    } else {
+      // Requesters only ever receive their own requests.
+      const myEmail = ((currentAccount && currentAccount.username) || "").replace(/'/g, "''");
+      if (myEmail) {
+        const url = `/sites/${siteId}/lists/${recognitionCasesListId}/items?$expand=fields($select=${select})&$filter=fields/RequestedBy eq '${myEmail}'&$top=200`;
+        const data = await graphFetch(url, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+        (data.value || []).forEach(it => recognitionCases.push(mapItem(it)));
+      }
+    }
+    recognitionCases.sort((a, b) => (b.requestedDate || "").localeCompare(a.requestedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR Recognition requests (list may not exist yet):", e);
+    recognitionCases = [];
+  }
+}
+
+// ── permissions / queues ────────────────────────────────────────────────────
+function canRequestRecognition() { return canDraftNte(); }        // APM or higher
+function canReviewRecognition() { return canApproveNte(); }        // HOC (Cluster Lead+) or HR/Admin
+function isRecognitionRequester(c) {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return !!(c.requestedBy && c.requestedBy.toLowerCase() === myEmail);
+}
+function canReviewThisRecognition(c) { return canReviewRecognition() && !isRecognitionRequester(c); }
+function recognitionReviewQueue() {
+  return canReviewRecognition() ? recognitionCases.filter(c => c.status === "Pending" && !isRecognitionRequester(c)) : [];
+}
+function myReturnedRecognition() {
+  const cutoff = Date.now() - RECOGNITION_RETURNED_NOTICE_DAYS * 86400000;
+  return recognitionCases.filter(c => c.status === "Returned" && isRecognitionRequester(c) && c.reviewedDate && new Date(c.reviewedDate).getTime() >= cutoff);
+}
+function recognitionStatusLabel(status) {
+  if (status === "Pending") return { text: "Pending review", color: "var(--yellow)" };
+  if (status === "Recognized") return { text: "Recognized", color: "var(--green)" };
+  if (status === "Returned") return { text: "Returned", color: "var(--red)" };
+  return { text: status, color: "var(--text3)" };
+}
+function recRecipientNames(c) {
+  return (c.recipients && c.recipients.length) ? c.recipients.map(r => r.name).join(", ") : c.title;
+}
+function recSafeUrl(u) {
+  try {
+    const x = new URL(/^[a-z]+:\/\//i.test(u) ? u : "https://" + u);
+    return (x.protocol === "https:" || x.protocol === "http:") ? x.href : "";
+  } catch (e) { return ""; }
+}
+
+// ── navigation ──────────────────────────────────────────────────────────────
+function openRecognitionList(mine) {
+  if (!recognitionCasesListId) return;
+  if (!mine && !canViewCaseLists()) mine = true;
+  hrView = { mode: "recList", mine: !!mine };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openRecognitionNewForm() {
+  if (!canRequestRecognition()) return;
+  recNewRecipients = [];
+  recNewShots = [];
+  hrView = { mode: "recNew" };
+  renderHRModal();
+}
+function openRecognitionNewFromRequests() {
+  if (!canRequestRecognition() || !recognitionCasesListId) return;
+  document.getElementById("hrModal").classList.add("open");
+  openRecognitionNewForm();
+}
+function openRecognitionDetail(caseId, back) {
+  hrView = { mode: "recDetail", caseId, back: back || "close" };
+  renderHRModal();
+}
+function openRecognitionFromRequests(caseId) {
+  document.getElementById("hrModal").classList.add("open");
+  openRecognitionDetail(caseId, "close");
+}
+function openRecognitionFromIncident(caseId) { openRecognitionDetail(caseId, "close"); }
+function recBack() {
+  const b = hrView && hrView.back;
+  if (b === "all") openRecognitionList(false);
+  else if (b === "mine") openRecognitionList(true);
+  else closeHRModal();
+}
+function recBackLabel() {
+  const b = hrView && hrView.back;
+  return b === "all" ? "&larr; Recognition Requests" : b === "mine" ? "&larr; My Requests" : "&larr; Back to Requests";
+}
+
+// ── new request: recipients (multi-select) ──────────────────────────────────
+function renderRecRecipients() {
+  const el = document.getElementById("recRecipients");
+  if (!el) return;
+  el.innerHTML = recNewRecipients.length
+    ? recNewRecipients.map((r, i) => `<span class="rec-chip">${escapeHtml(r.name)}<span style="color:var(--text3); font-weight:400;"> · ${escapeHtml(r.position || r.team || "")}</span><span class="rec-chip-x" onclick="removeRecRecipient(${i})" title="Remove">&times;</span></span>`).join("")
+    : `<span style="font-size:12px; color:var(--text3);">No one selected yet.</span>`;
+}
+function filterRecEmployees() {
+  const q = document.getElementById("recSearch").value.trim().toLowerCase();
+  const box = document.getElementById("recOptions");
+  if (!q) { box.style.display = "none"; return; }
+  const me = myEmployeeRecord();
+  const chosen = new Set(recNewRecipients.map(r => String(r.id)));
+  const matches = employees.filter(e => e.status !== "Resigned" && !chosen.has(String(e.id)) && !(me && String(me.id) === String(e.id)) && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="addRecRecipient('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function addRecRecipient(id) {
+  const e = employees.find(x => String(x.id) === String(id));
+  if (!e || recNewRecipients.some(r => String(r.id) === String(id))) return;
+  recNewRecipients.push({ id: String(e.id), name: e.name, position: e.position || "", team: e.team || "" });
+  document.getElementById("recSearch").value = "";
+  document.getElementById("recOptions").style.display = "none";
+  renderRecRecipients();
+}
+function removeRecRecipient(i) { recNewRecipients.splice(i, 1); renderRecRecipients(); }
+
+// ── new request: screenshots ────────────────────────────────────────────────
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not read that image.")); };
+    img.src = url;
+  });
+}
+async function compressScreenshot(file) {
+  if (file.size > 20 * 1024 * 1024) throw new Error("Image is over 20 MB.");
+  const img = await loadImageFromFile(file);
+  let maxW = Math.min(1200, img.naturalWidth || 1200);
+  const qualities = [0.75, 0.6, 0.5, 0.4];
+  while (maxW >= 400) {
+    const scale = Math.min(1, maxW / img.naturalWidth);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    for (const q of qualities) {
+      const d = canvas.toDataURL("image/jpeg", q);
+      if (d.length <= RECOGNITION_SHOT_MAX_CHARS) return d;
+    }
+    maxW = Math.floor(maxW * 0.8);
+  }
+  throw new Error("That screenshot is too detailed to store. Crop it or attach the original link instead.");
+}
+async function addRecognitionShots(fileList) {
+  const files = Array.from(fileList || []).filter(f => f && f.type && f.type.startsWith("image/"));
+  if (!files.length) { toast("Choose an image file.", "error"); return; }
+  for (const f of files) {
+    if (recNewShots.length >= RECOGNITION_MAX_SHOTS) { toast(`You can attach up to ${RECOGNITION_MAX_SHOTS} screenshots.`, "error"); break; }
+    try {
+      recNewShots.push(await compressScreenshot(f));
+      renderRecShots();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  const input = document.getElementById("recFileInput");
+  if (input) input.value = "";
+}
+function onRecognitionPaste(e) {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const files = [];
+  for (const it of items) { if (it.kind === "file" && it.type.startsWith("image/")) { const f = it.getAsFile(); if (f) files.push(f); } }
+  if (files.length) { e.preventDefault(); addRecognitionShots(files); }
+}
+function renderRecShots() {
+  const el = document.getElementById("recShots");
+  if (!el) return;
+  el.innerHTML = recNewShots.map((d, i) => `<div style="position:relative; display:inline-block; margin:0 8px 8px 0;">
+    <img src="${d}" style="height:90px; border:1px solid var(--border); border-radius:6px; background:#fff; display:block;" />
+    <span class="rec-chip-x" onclick="removeRecognitionShot(${i})" title="Remove" style="position:absolute; top:-6px; right:-6px; background:var(--surface); border:1px solid var(--border); border-radius:50%; width:18px; height:18px; display:flex; align-items:center; justify-content:center;">&times;</span>
+  </div>`).join("");
+  const count = document.getElementById("recShotCount");
+  if (count) count.textContent = `${recNewShots.length}/${RECOGNITION_MAX_SHOTS}`;
+}
+function removeRecognitionShot(i) { recNewShots.splice(i, 1); renderRecShots(); }
+
+// ── submit ──────────────────────────────────────────────────────────────────
+async function submitRecognitionRequest() {
+  if (!canRequestRecognition()) return;
+  if (!recNewRecipients.length) { toast("Select at least one person to recognize.", "error"); return; }
+  const occurrenceDate = document.getElementById("recDate").value;
+  if (!occurrenceDate) { toast("Enter the date it happened.", "error"); return; }
+  if (occurrenceDate > toLocalYMD(new Date())) { toast("The date can't be in the future.", "error"); return; }
+  const details = document.getElementById("recDetails").value.trim();
+  if (!details) { toast("Describe what happened.", "error"); return; }
+  const rawLink = document.getElementById("recLink").value.trim();
+  let sourceLink = "";
+  if (rawLink) {
+    sourceLink = recSafeUrl(rawLink);
+    if (!sourceLink) { toast("That link doesn't look valid. Use a full http(s) address.", "error"); return; }
+  }
+  if (!sourceLink && !recNewShots.length) { toast("Attach the original message link or at least one screenshot as evidence.", "error"); return; }
+  if (!confirm(`Send this recognition request for ${recNewRecipients.map(r => r.name).join(", ")}?`)) return;
+
+  const me = myEmployeeRecord();
+  const requestedBy = (currentAccount && currentAccount.username) || "";
+  const requesterName = (me && me.name) || requestedBy;
+  const requestedDate = toLocalYMD(new Date());
+  const refNo = "REC-" + requestedDate.replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  const title = recNewRecipients.map(r => r.name).join(", ").slice(0, 250);
+  const fields = {
+    Title: title, Recipients: JSON.stringify(recNewRecipients), RecognitionRefNo: refNo,
+    RequestedBy: requestedBy, RequesterName: requesterName, RequestedDate: requestedDate, OccurrenceDate: occurrenceDate,
+    Details: details, SourceLink: sourceLink, Status: "Pending"
+  };
+  recNewShots.forEach((d, i) => { fields["Screenshot" + (i + 1)] = d; });
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    recognitionCases.unshift({
+      itemId: created.id, title, recipients: recNewRecipients.slice(), refNo, requestedBy, requesterName, requestedDate, occurrenceDate,
+      details, sourceLink, status: "Pending", reviewedBy: "", reviewedDate: null, returnReason: "", reviewerSignature: null,
+      screenshots: recNewShots.slice(), shotsLoaded: true
+    });
+    setSyncing(false, true);
+    toast("Recognition request sent ✓", "success");
+    openRecognitionDetail(created.id, "mine");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not send request: " + err.message, "error");
+  }
+}
+
+// ── lazy screenshot load ────────────────────────────────────────────────────
+async function ensureRecognitionShots(c) {
+  if (c.shotsLoaded || c._loadingShots) return;
+  c._loadingShots = true;
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${c.itemId}?$expand=fields($select=Screenshot1,Screenshot2,Screenshot3)`);
+    const f = data.fields || {};
+    c.screenshots = [f["Screenshot1"], f["Screenshot2"], f["Screenshot3"]].filter(Boolean);
+    c.shotsLoaded = true;
+  } catch (e) {
+    console.warn("Could not load screenshots:", e);
+    c.screenshots = [];
+    c.shotsLoaded = true;
+  }
+  c._loadingShots = false;
+  if (hrView && hrView.mode === "recDetail" && hrView.caseId === c.itemId) renderHRModal();
+}
+
+// ── review ──────────────────────────────────────────────────────────────────
+async function logRecognitionIncidents(c) {
+  if (!incidentsListId) return;
+  const notes = `Recognition ${c.refNo}: ` + (c.details.length > 1000 ? c.details.slice(0, 1000) + " …" : c.details);
+  const date = dateOnly(c.occurrenceDate) || toLocalYMD(new Date());
+  let failed = 0;
+  for (const r of c.recipients) {
+    try {
+      const created = await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ fields: { Title: r.name, EmployeeId: String(r.id), Date: date, IncidentType: "Recognition", IncidentNotes: notes, RecognitionCaseId: c.itemId } })
+      });
+      allIncidents.push({ itemId: created.id, employeeId: String(r.id), employeeName: r.name, date, type: "Recognition", notes, recognitionCaseId: c.itemId });
+    } catch (e) {
+      failed++;
+      console.warn("Could not log recognition incident:", e);
+    }
+  }
+  if (failed) toast(`Recognized, but ${failed} HR Records entr${failed === 1 ? "y" : "ies"} could not be created.`, "error");
+}
+
+async function recognizeRequest(itemId) {
+  const c = recognitionCases.find(x => x.itemId === itemId);
+  if (!c || c.status !== "Pending" || !canReviewThisRecognition(c)) return;
+  const sig = signatureDataUrl("recSigReviewer");
+  if (!sig) { toast("Please sign to recognize.", "error"); return; }
+  if (!confirm(`Recognize ${recRecipientNames(c)} and add this to their HR Records?`)) return;
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, (me && me.name) || by, me && me.position, now);
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Recognized", ReviewedBy: by, ReviewedDate: now, ReviewerSignature: sigPayload })
+    });
+    Object.assign(c, { status: "Recognized", reviewedBy: by, reviewedDate: now, reviewerSignature: sigPayload });
+    await logRecognitionIncidents(c);
+    setSyncing(false, true);
+    toast("Recognized ✓ — added to HR Records", "success");
+    openRecognitionDetail(itemId, hrView && hrView.back);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
+async function returnRecognitionRequest(itemId) {
+  const c = recognitionCases.find(x => x.itemId === itemId);
+  if (!c || c.status !== "Pending" || !canReviewThisRecognition(c)) return;
+  const reason = document.getElementById("recReturnReason").value.trim();
+  if (!reason) { toast("Enter the reason for returning this request.", "error"); return; }
+  if (!confirm("Return this request to the requester with the reason above?")) return;
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Returned", ReviewedBy: by, ReviewedDate: now, ReturnReason: reason })
+    });
+    Object.assign(c, { status: "Returned", reviewedBy: by, reviewedDate: now, returnReason: reason });
+    setSyncing(false, true);
+    toast("Request returned", "success");
+    openRecognitionDetail(itemId, hrView && hrView.back);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not return request: " + err.message, "error");
+  }
+}
+
+async function deleteRecognitionCase(itemId) {
+  if (!canViewCaseLists()) return;
+  const c = recognitionCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  if (!confirm("Delete this recognition request? This also removes its HR Records entries. This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    if (incidentsListId) {
+      try {
+        let url = `/sites/${siteId}/lists/${incidentsListId}/items?$expand=fields&$top=2000`;
+        const linked = [];
+        while (url) {
+          const data = await graphFetch(url);
+          (data.value || []).forEach(it => { if (String(it.fields["RecognitionCaseId"] || "") === String(itemId)) linked.push(it.id); });
+          url = data["@odata.nextLink"] || null;
+        }
+        for (const incId of linked) await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items/${incId}`, { method: "DELETE" });
+        allIncidents = allIncidents.filter(i => !linked.includes(i.itemId));
+      } catch (e) { console.warn("Could not check/delete linked recognition incidents:", e); }
+    }
+    await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${itemId}`, { method: "DELETE" });
+    recognitionCases = recognitionCases.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Recognition request deleted", "success");
+    if (hrView && hrView.mode === "recDetail" && hrView.caseId === itemId) hrView = { mode: "recList", mine: false };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────
+function recognitionBodyHtml(c, forPrint) {
+  const border = forPrint ? "#e1e4ec" : "var(--border)";
+  const muted = forPrint ? "#8891a3" : "var(--text3)";
+  const body = forPrint ? "#1a1f2b" : "var(--text2)";
+  const link = c.sourceLink ? recSafeUrl(c.sourceLink) : "";
+  const shots = c.screenshots || [];
+  const sig = parseSignatureField(c.reviewerSignature);
+  return `
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
+      <div><span style="color:${muted};">Reference:</span> ${escapeHtml(c.refNo)}</div>
+      <div><span style="color:${muted};">Date it happened:</span> ${escapeHtml(dateOnly(c.occurrenceDate) || "—")}</div>
+      <div><span style="color:${muted};">Requested by:</span> ${escapeHtml(c.requesterName || c.requestedBy)}</div>
+      <div><span style="color:${muted};">Requested on:</span> ${escapeHtml(dateOnly(c.requestedDate) || "—")}</div>
+    </div>
+    <div style="font-weight:600; margin-bottom:6px;">Recognized</div>
+    <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px;">
+      ${(c.recipients || []).map(r => `<span style="border:1px solid ${border}; border-radius:14px; padding:3px 10px; font-size:12px;">${escapeHtml(r.name)}<span style="color:${muted};"> · ${escapeHtml(r.position || r.team || "")}${r.team && r.position ? " · " + escapeHtml(r.team) : ""}</span></span>`).join("")}
+    </div>
+    <div style="font-weight:600; margin-bottom:4px;">What happened</div>
+    <p style="white-space:pre-wrap; color:${body}; margin-bottom:14px;">${escapeHtml(c.details)}</p>
+    ${link ? `<div style="font-weight:600; margin-bottom:4px;">Original message link</div><p style="margin-bottom:14px; word-break:break-all;"><a href="${escapeAttr(link)}" target="_blank" rel="noopener noreferrer" style="color:${forPrint ? "#1a56db" : "var(--accent)"};">${escapeHtml(link)}</a></p>` : ""}
+    ${shots.length ? `<div style="font-weight:600; margin-bottom:6px;">Screenshots</div><div style="margin-bottom:14px;">${shots.map(d => forPrint
+        ? `<img src="${d}" style="max-width:100%; max-height:420px; border:1px solid ${border}; margin:0 8px 8px 0; page-break-inside:avoid;" />`
+        : `<img src="${d}" onclick="this.style.maxHeight = this.style.maxHeight ? '' : 'none'; this.style.height = this.style.height ? '' : 'auto'; this.style.maxWidth='100%';" title="Click to enlarge" style="height:120px; border:1px solid ${border}; border-radius:6px; background:#fff; margin:0 8px 8px 0; cursor:zoom-in;" />`).join("")}</div>` : ""}
+    ${c.status === "Recognized" && sig ? `<div style="padding-top:14px; border-top:1px solid ${border};">
+      <div style="font-size:12px; color:${muted}; margin-bottom:6px;">Recognized and confirmed by</div>
+      <img src="${sig.dataUrl}" style="height:${forPrint ? 50 : 55}px; background:#fff; border:1px solid ${border}; border-radius:4px; display:block;" />
+      <div style="font-size:11px; color:${body}; margin-top:3px;">${escapeHtml(sig.name)}${sig.position ? " · " + escapeHtml(sig.position) : ""}</div>
+      <div style="font-size:10px; color:${muted};">${escapeHtml(dateOnly(sig.date))}</div>
+    </div>` : ""}`;
+}
+
+function renderRecognitionList(box) {
+  box.style.width = "min(760px, 95vw)";
+  const mine = !!hrView.mine;
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const visible = mine ? recognitionCases.filter(c => c.requestedBy && c.requestedBy.toLowerCase() === myEmail) : recognitionCases;
+  const canDelete = canViewCaseLists();
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${mine ? "My Recognition Requests" : "Recognition Requests"}</h3>
+        <div style="font-size:12px; color:var(--text2);">${visible.length} request${visible.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${canRequestRecognition() ? `<button class="btn btn-primary" onclick="openRecognitionNewForm()" style="margin:14px 0;">&#65291; New Request</button>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${visible.length ? visible.map(c => {
+        const s = recognitionStatusLabel(c.status);
+        return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div onclick="openRecognitionDetail('${c.itemId}', '${mine ? "mine" : "all"}')" style="cursor:pointer; flex:1; min-width:0;">
+            <div style="font-size:13px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(recRecipientNames(c))}</div>
+            <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(c.refNo)} · ${escapeHtml(dateOnly(c.occurrenceDate))}${mine ? "" : " · by " + escapeHtml(c.requesterName || c.requestedBy)}</div>
+          </div>
+          <span style="font-size:12px; font-weight:600; color:${s.color}; white-space:nowrap;">${escapeHtml(s.text)}</span>
+          ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteRecognitionCase('${c.itemId}')" title="Delete request">&#128465;</button>` : ""}
+        </div>`;
+      }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No recognition requests yet.</div>`}
+    </div>`;
+}
+
+function renderRecognitionNewForm(box) {
+  box.style.width = "min(640px, 94vw)";
+  const back = canViewCaseLists() ? "openRecognitionList(false)" : "openRecognitionList(true)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Request Recognition</h3>
+        <div style="font-size:12px; color:var(--text2);">No signature needed. A Head of Cluster or HR/Admin will review, sign to make it an official record, or return it with a reason.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="position:relative; margin-top:14px;">
+      <label>Who is being recognized? * <span style="font-weight:400; color:var(--text3);">(pick one or more)</span></label>
+      <div id="recRecipients" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
+      <input id="recSearch" type="text" placeholder="Type a name to add…" oninput="filterRecEmployees()" autocomplete="off" />
+      <div id="recOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+    </div>
+    <div class="form-group"><label>Date it happened *</label><input id="recDate" type="date" value="${escapeHtml(toLocalYMD(new Date()))}" max="${escapeHtml(toLocalYMD(new Date()))}" /></div>
+    <div class="form-group"><label>What happened *</label><textarea id="recDetails" style="min-height:110px;" placeholder="Describe the contribution and its impact…"></textarea></div>
+    <div class="form-group"><label>Original message link <span style="font-weight:400; color:var(--text3);">(Teams / email / chat link)</span></label><input id="recLink" type="text" placeholder="https://…" /></div>
+    <div class="form-group">
+      <label>Screenshots <span style="font-weight:400; color:var(--text3);">(<span id="recShotCount">0/${RECOGNITION_MAX_SHOTS}</span>)</span></label>
+      <div id="recPasteZone" tabindex="0" style="border:1px dashed var(--border); border-radius:8px; padding:12px; font-size:12px; color:var(--text2); outline:none;">
+        <div style="margin-bottom:8px;">Click here and press <strong>Ctrl+V</strong> to paste a screenshot, or choose files.</div>
+        <input id="recFileInput" type="file" accept="image/*" multiple onchange="addRecognitionShots(this.files)" />
+        <div id="recShots" style="margin-top:10px;"></div>
+      </div>
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Attach the link, at least one screenshot, or both. Images are shrunk automatically.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitRecognitionRequest()">Send Request</button>
+    </div>`;
+  renderRecRecipients();
+  renderRecShots();
+  const zone = document.getElementById("recPasteZone");
+  if (zone) zone.addEventListener("paste", onRecognitionPaste);
+}
+
+function renderRecognitionDetail(box) {
+  box.style.width = "min(760px, 95vw)";
+  const c = recognitionCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Request not found.</div>`; return; }
+  if (!c.shotsLoaded) ensureRecognitionShots(c);
+  const st = recognitionStatusLabel(c.status);
+  const padToInit = [];
+  let panel = "";
+  if (c.status === "Pending" && canReviewThisRecognition(c)) {
+    panel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Review this request</div>
+      <div class="form-group"><label>Your signature (confirms the recognition)</label>${signaturePadHtml("recSigReviewer")}</div>
+      <button class="btn btn-primary" onclick="recognizeRequest('${c.itemId}')">Recognize &amp; Sign</button>
+      <div style="border-top:1px solid var(--border); margin:16px 0 12px;"></div>
+      <div class="form-group"><label>Or return it — reason *</label><textarea id="recReturnReason" style="min-height:70px;" placeholder="Why is this request being returned?"></textarea></div>
+      <button class="btn btn-secondary" onclick="returnRecognitionRequest('${c.itemId}')">Return with Reason</button>
+    </div>`;
+    padToInit.push("recSigReviewer");
+  } else if (c.status === "Pending") {
+    panel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for review by a Head of Cluster or HR/Admin.</div>`;
+  } else if (c.status === "Returned") {
+    panel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; color:var(--red);">Returned</div>
+      <p style="white-space:pre-wrap; font-size:13px; color:var(--text2); margin:6px 0;">${escapeHtml(c.returnReason)}</p>
+      <div style="font-size:11px; color:var(--text3);">${escapeHtml(c.reviewedBy)} · ${escapeHtml(dateOnly(c.reviewedDate))}</div>
+    </div>`;
+  } else if (c.status === "Recognized") {
+    panel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Official record — added to each recipient's HR Records on ${escapeHtml(dateOnly(c.reviewedDate))}.</div>`;
+  }
+  const shotsPlaceholder = !c.shotsLoaded ? `<div style="font-size:12px; color:var(--text3); margin-bottom:14px;">Loading screenshots…</div>` : "";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="recBack()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${recBackLabel()}</div>
+        <h3 style="margin-bottom:2px;">Recognition — ${escapeHtml(recRecipientNames(c))}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${st.color};">${escapeHtml(st.text)}</span></div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${c.status === "Recognized" ? `<button class="btn btn-secondary" onclick="downloadRecognitionPdf('${c.itemId}')" style="padding:4px 10px; font-size:12px;">&#128196; PDF</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:6px;" />
+      <div style="font-size:11px; color:var(--text3); margin-bottom:14px;">${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
+      ${recognitionBodyHtml(c, false)}
+      ${shotsPlaceholder}
+    </div>
+    ${panel}`;
+  padToInit.forEach(initSignaturePad);
+}
+
+function downloadRecognitionPdf(itemId) {
+  const c = recognitionCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8" />
+    <title>${escapeHtml(c.refNo)} — Recognition</title>
+    <style>
+      body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color: #1a1f2b; max-width: 720px; margin: 40px auto; line-height: 1.6; font-size: 13px; }
+      h1 { font-size: 18px; margin: 10px 0 2px; }
+      .addr { color: #525a6e; font-size: 11px; }
+      .meta { color: #8891a3; font-size: 12px; margin-bottom: 18px; }
+      @media print { body { margin: 0; } }
+    </style></head><body>
+    <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:6px;" />
+    <div class="addr">ELITE GLOBAL SOURCING PHIL. INC.<br>${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
+    <h1>Recognition Record</h1>
+    <div class="meta">${escapeHtml(c.refNo)} · ${escapeHtml(recognitionStatusLabel(c.status).text)}</div>
+    ${recognitionBodyHtml(c, true)}
+    <script>window.onload = () => setTimeout(() => window.print(), 300);<\/script>
+    </body></html>`;
+  const win = window.open("", "_blank");
+  if (!win) { toast("Please allow pop-ups to download the PDF.", "error"); return; }
+  win.document.open();
+  win.document.write(doc);
+  win.document.close();
+}
+
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -4562,7 +5148,8 @@ async function loadEmployeeDetail(employeeId) {
       type: it.fields["IncidentType"] || "Other", // NTE | Coaching | Sanction | Personal Issue | Other
       description: it.fields["IncidentNotes"] || "",
       nteCaseId: it.fields["NTECaseId"] || null,
-      coachingCaseId: it.fields["CoachingCaseId"] || null
+      coachingCaseId: it.fields["CoachingCaseId"] || null,
+      recognitionCaseId: it.fields["RecognitionCaseId"] || null
     }))
   ]);
   result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -5076,6 +5663,9 @@ function renderHRModal() {
   if (hrView.mode === "coachingNew") { renderCoachingNewForm(box); return; }
   if (hrView.mode === "coachingDetail") { renderCoachingDetail(box); return; }
   if (hrView.mode === "coachingAck") { renderCoachingAckForm(box); return; }
+  if (hrView.mode === "recList") { renderRecognitionList(box); return; }
+  if (hrView.mode === "recNew") { renderRecognitionNewForm(box); return; }
+  if (hrView.mode === "recDetail") { renderRecognitionDetail(box); return; }
 
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
@@ -5505,6 +6095,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
             <span style="font-size:12px; flex:1;">${escapeHtml(dateOnly(i.date))} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
             ${i.nteCaseId ? `<span onclick="openNteFromIncident('${i.nteCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View NTE</span>` : ""}
             ${i.coachingCaseId ? `<span onclick="openCoachingFromIncident('${i.coachingCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View Coaching</span>` : ""}
+            ${i.recognitionCaseId && recognitionCases.some(r => r.itemId === i.recognitionCaseId) ? `<span onclick="openRecognitionFromIncident('${i.recognitionCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View Recognition</span>` : ""}
             ${canAccessIncidents ? delBtn("incident", i.itemId) : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
@@ -5650,7 +6241,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -5935,7 +6526,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -5983,6 +6574,8 @@ function renderRequestsTodo() {
   myPendingCoachingCases().forEach(c => rows.push({ label: "Coaching form — please review and acknowledge", sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myCoachingTodo().forEach(c => rows.push({ label: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
+  recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
+  myReturnedRecognition().forEach(c => rows.push({ label: `Recognition request returned — ${recRecipientNames(c)}`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   nteApprovalQueue().forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   if (!rows.length) return "";
   return `<div class="req-card req-todo" style="margin-bottom:26px;">
@@ -6005,7 +6598,8 @@ function renderRequests() {
     { icon: "&#129309;", title: "Create Coaching Form", desc: "Issue a coaching form to an employee.", onclick: coachingCasesListId ? "openCoachingNewFromRequests()" : "" },
     { icon: "&#128200;", title: "Create PIP", desc: "Performance Improvement Plan." },
     { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteNewFromRequests()" : "" },
-    { icon: "&#127942;", title: "Request Recognition", desc: "Recommend an employee for recognition." },
+    { icon: "&#127942;", title: "Request Recognition", desc: "Recommend teammates or managers for recognition.",
+      actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }] : undefined },
     { icon: "&#128101;", title: "Manpower Request", desc: "Addition · Removal · Transfer" },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }
@@ -6014,6 +6608,7 @@ function renderRequests() {
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     { icon: "&#128202;", title: "Manpower Status", desc: "" },
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
+    ...(recognitionCasesListId ? [{ icon: "&#127942;", title: "Recognition Requests", desc: "Review, recognize or return recognition requests.", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : []),
     { icon: "&#128193;", title: "NTE / Coaching / PIP Cases", desc: "All disciplinary and coaching cases.",
       actions: [
         ...(nteCasesListId ? [{ label: "NTE Cases", onclick: "openNteCases()", badge: nteQueue }] : []),
