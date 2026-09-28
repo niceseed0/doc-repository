@@ -461,7 +461,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-01";
+const BUILD_ID = "2026-09-28-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1437,7 +1437,8 @@ async function loadAllIncidents() {
           date: it.fields["Date"] || null,
           type: it.fields["IncidentType"] || "Other",
           notes: it.fields["IncidentNotes"] || "",
-          nteCaseId: it.fields["NTECaseId"] || null
+          nteCaseId: it.fields["NTECaseId"] || null,
+          coachingCaseId: it.fields["CoachingCaseId"] || null
         });
       });
       url = data["@odata.nextLink"] || null;
@@ -3586,7 +3587,6 @@ async function loadCoachingCases() {
       position: f["Position"] || "",
       department: f["Department"] || "",
       refNo: f["CoachingRefNo"] || "",
-      ncrNo: f["NCRNo"] || "",
       issuedBy: f["IssuedBy"] || "",
       supervisorName: f["SupervisorName"] || "",
       issuedDate: f["IssuedDate"] || null,
@@ -3685,6 +3685,8 @@ function openCoachingDetail(caseId) {
   hrView = { mode: "coachingDetail", caseId };
   renderHRModal();
 }
+// Jumps here from an HR Records "View Coaching" link (modal already open).
+function openCoachingFromIncident(caseId) { openCoachingDetail(caseId); }
 function openCoachingAckForm(caseId, isAck) {
   hrView = { mode: "coachingAck", caseId, isAck };
   renderHRModal();
@@ -3761,7 +3763,6 @@ async function createCoachingCase() {
   const me = myEmployeeRecord();
   const issuedBy = (currentAccount && currentAccount.username) || "";
   const supervisorName = (me && me.name) || issuedBy;
-  const ncrNo = document.getElementById("coaNcrNo").value.trim();
   const issuedDate = toLocalYMD(new Date());
   const refNo = "COA-" + issuedDate.replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
   const sigPayload = buildSignaturePayload(sig, supervisorName, me && me.position, new Date().toISOString());
@@ -3771,14 +3772,14 @@ async function createCoachingCase() {
       method: "POST",
       body: JSON.stringify({ fields: {
         Title: emp.name, EmployeeId: String(emp.id), Position: emp.position || "", Department: emp.team || "",
-        CoachingRefNo: refNo, NCRNo: ncrNo, IssuedBy: issuedBy, SupervisorName: supervisorName, IssuedDate: issuedDate,
+        CoachingRefNo: refNo, IssuedBy: issuedBy, SupervisorName: supervisorName, IssuedDate: issuedDate,
         CoachingTopic: topic, ActionPlan: JSON.stringify(actionPlan), ExpectedOutcome: expectedOutcome,
         DurationDays: durationDays, Status: "Issued", IssuerSignature: sigPayload
       } })
     });
     coachingCases.unshift({
       itemId: created.id, title: emp.name, employeeId: String(emp.id), position: emp.position || "", department: emp.team || "",
-      refNo, ncrNo, issuedBy, supervisorName, issuedDate, topic, actionPlan, expectedOutcome, durationDays, followUpDate: null,
+      refNo, issuedBy, supervisorName, issuedDate, topic, actionPlan, expectedOutcome, durationDays, followUpDate: null,
       status: "Issued", acknowledgement: "", acknowledgedDate: null, declineReason: "", followUps: [], finalOutcome: "",
       closedBy: "", closedDate: null, issuerSignature: sigPayload, recipientSignature: null, closerSignature: null
     });
@@ -3833,9 +3834,9 @@ async function logCoachingIncident(c, outcomeText) {
     const notes = `Coaching ${c.refNo}: ${outcomeText}`;
     const created = await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items`, {
       method: "POST",
-      body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: "Coaching", IncidentNotes: notes } })
+      body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: "Coaching", IncidentNotes: notes, CoachingCaseId: c.itemId } })
     });
-    allIncidents.push({ itemId: created.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: "Coaching", notes });
+    allIncidents.push({ itemId: created.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: "Coaching", notes, coachingCaseId: c.itemId });
   } catch (e) {
     console.warn("Could not log coaching incident:", e);
     toast("Case closed, but the HR Records entry could not be created.", "error");
@@ -3950,11 +3951,10 @@ async function deleteCoachingCase(itemId) {
       try {
         let url = `/sites/${siteId}/lists/${incidentsListId}/items?$expand=fields&$top=2000`;
         const linked = [];
-        const marker = `Coaching ${c.refNo}:`;
         while (url) {
           const data = await graphFetch(url);
           (data.value || []).forEach(it => {
-            if (String(it.fields["IncidentType"] || "") === "Coaching" && String(it.fields["IncidentNotes"] || "").includes(marker)) linked.push(it.id);
+            if (String(it.fields["CoachingCaseId"] || "") === String(itemId)) linked.push(it.id);
           });
           url = data["@odata.nextLink"] || null;
         }
@@ -4066,8 +4066,6 @@ function renderCoachingList(box) {
 
 function renderCoachingNewForm(box) {
   box.style.width = "min(640px, 94vw)";
-  const me = myEmployeeRecord();
-  const supName = (me && me.name) || ((currentAccount && currentAccount.username) || "");
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
@@ -4078,20 +4076,16 @@ function renderCoachingNewForm(box) {
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     <div class="form-group" style="position:relative; margin-top:14px;">
-      <label>Employee Name *</label>
+      <label>Employee *</label>
       <input id="coaEmployeeSearch" type="text" placeholder="Type a name…" oninput="filterCoachingEmployeeOptions()" autocomplete="off" />
       <div id="coaEmployeeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
       <input type="hidden" id="coaEmployeeId" />
     </div>
     <div style="display:flex; gap:10px;">
-      <div class="form-group" style="flex:1;"><label>Position / Title</label><input id="coaPosition" type="text" readonly style="opacity:.7;" /></div>
-      <div class="form-group" style="flex:1;"><label>Designation (Department)</label><input id="coaDepartment" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Position</label><input id="coaPosition" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Department</label><input id="coaDepartment" type="text" readonly style="opacity:.7;" /></div>
     </div>
-    <div style="display:flex; gap:10px;">
-      <div class="form-group" style="flex:1;"><label>Supervisor</label><input type="text" readonly value="${escapeHtml(supName)}" style="opacity:.7;" /></div>
-      <div class="form-group" style="flex:1;"><label>NCR No (optional)</label><input id="coaNcrNo" type="text" placeholder="If applicable" /></div>
-    </div>
-    <div class="form-group"><label>Date</label><input type="text" readonly value="${escapeHtml(toLocalYMD(new Date()))}" style="opacity:.7;" /></div>
+    <div class="form-group"><label>Date Form Filled Out</label><input type="text" readonly value="${escapeHtml(toLocalYMD(new Date()))}" style="opacity:.7;" /></div>
     <div class="form-group">
       <label>Coaching Topic * <span style="font-weight:400; color:var(--text3);">(List specific attributes / actions that were exhibited.)</span></label>
       <textarea id="coaTopic" style="min-height:100px;" placeholder="Describe what was observed…"></textarea>
@@ -4209,12 +4203,11 @@ function renderCoachingDetail(box) {
       <div style="font-size:11px; color:var(--text3); margin-bottom:14px;">${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
         <div><span style="color:var(--text3);">Employee:</span> ${escapeHtml(c.title)}</div>
-        <div><span style="color:var(--text3);">Position/Title:</span> ${escapeHtml(c.position)}</div>
-        <div><span style="color:var(--text3);">Designation:</span> ${escapeHtml(c.department)}</div>
-        <div><span style="color:var(--text3);">Supervisor:</span> ${escapeHtml(c.supervisorName)}</div>
-        <div><span style="color:var(--text3);">NCR No:</span> ${escapeHtml(c.ncrNo || "—")}</div>
+        <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(c.position)}</div>
+        <div><span style="color:var(--text3);">Department:</span> ${escapeHtml(c.department)}</div>
+        <div><span style="color:var(--text3);">Issued by:</span> ${escapeHtml(c.supervisorName)}</div>
         <div><span style="color:var(--text3);">Coaching Ref No:</span> ${escapeHtml(c.refNo)}</div>
-        <div><span style="color:var(--text3);">Date:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
+        <div><span style="color:var(--text3);">Date Filed:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
       </div>
       <div style="font-weight:600; margin-bottom:4px;">Coaching Topic</div>
       <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.topic)}</p>
@@ -4287,12 +4280,11 @@ function downloadCoachingPdf(itemId) {
     <div class="meta">${escapeHtml(c.refNo)} · ${escapeHtml(coachingStatusLabel(c).text)}</div>
     <div class="info">
       <div><span>Employee:</span> ${escapeHtml(c.title)}</div>
-      <div><span>Position/Title:</span> ${escapeHtml(c.position)}</div>
-      <div><span>Designation:</span> ${escapeHtml(c.department)}</div>
-      <div><span>Supervisor:</span> ${escapeHtml(c.supervisorName)}</div>
-      <div><span>NCR No:</span> ${escapeHtml(c.ncrNo || "—")}</div>
+      <div><span>Position:</span> ${escapeHtml(c.position)}</div>
+      <div><span>Department:</span> ${escapeHtml(c.department)}</div>
+      <div><span>Issued by:</span> ${escapeHtml(c.supervisorName)}</div>
       <div><span>Coaching Ref No:</span> ${escapeHtml(c.refNo)}</div>
-      <div><span>Date:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
+      <div><span>Date Filed:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
     </div>
     <h3>Coaching Topic</h3><p style="white-space:pre-wrap;">${escapeHtml(c.topic)}</p>
     <h3>Action Plan</h3><ol>${c.actionPlan.map(a => `<li>${escapeHtml(a)}</li>`).join("")}</ol>
@@ -4555,7 +4547,8 @@ async function loadEmployeeDetail(employeeId) {
       date: it.fields["Date"] || "",
       type: it.fields["IncidentType"] || "Other", // NTE | Coaching | Sanction | Personal Issue | Other
       description: it.fields["IncidentNotes"] || "",
-      nteCaseId: it.fields["NTECaseId"] || null
+      nteCaseId: it.fields["NTECaseId"] || null,
+      coachingCaseId: it.fields["CoachingCaseId"] || null
     }))
   ]);
   result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -5497,6 +5490,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
             ${incidentTypeBadge(i.type)}
             <span style="font-size:12px; flex:1;">${escapeHtml(dateOnly(i.date))} ${i.date ? "· " : ""}${escapeHtml(i.description)}</span>
             ${i.nteCaseId ? `<span onclick="openNteFromIncident('${i.nteCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View NTE</span>` : ""}
+            ${i.coachingCaseId ? `<span onclick="openCoachingFromIncident('${i.coachingCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View Coaching</span>` : ""}
             ${canAccessIncidents ? delBtn("incident", i.itemId) : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
