@@ -364,15 +364,9 @@
         </div>
       </div>
       <div class="header-actions">
-        <a class="trash-icon-btn" href="handbook.html" target="_blank" rel="noopener" title="Employee Handbook" style="text-decoration:none; display:inline-flex; align-items:center;">
-          &#128214;
-        </a>
         <button class="trash-icon-btn" onclick="openFormerEmployeesList()" id="formerEmployeesBtn" style="display:none" title="Former Employees">
           &#128100;&#128683;
           <span class="tab-count" id="formerEmployeesCount" style="display:none"></span>
-        </button>
-        <button class="trash-icon-btn" onclick="openLeaveReport()" id="leaveReportBtn" style="display:none" title="Leave & Sick Report">
-          &#128202;
         </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
@@ -470,7 +464,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-03";
+const BUILD_ID = "2026-09-28-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2794,7 +2788,15 @@ function nteStatusLabel(status) {
   return map[status] || { text: status, color: "var(--text3)" };
 }
 
+// Case lists (NTE / Coaching) are for HR/Admin only; managers reach cases via the create
+// forms and the "Needs your action" queue on the Requests page.
+function canViewCaseLists() { return !!(canAccessHR || isPermissionAdmin); }
+function caseBackLabel(name) { return canViewCaseLists() ? "&larr; " + name : "&larr; Back to Requests"; }
+function nteListOrClose() { if (canViewCaseLists()) openNteCases(); else closeHRModal(); }
+function coachingListOrClose() { if (canViewCaseLists()) openCoachingCases(); else closeHRModal(); }
+
 function openNteCases() {
+  if (!canViewCaseLists()) return;
   if (!nteCasesListId) return; // defense in depth — button is already hidden otherwise
   hrView = { mode: "nteList" };
   document.getElementById("hrModal").classList.add("open");
@@ -3267,7 +3269,7 @@ function renderNteNewForm(box) {
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
-        <div onclick="openNteCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; NTE Cases</div>
+        <div onclick="nteListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${caseBackLabel("NTE Cases")}</div>
         <h3 style="margin-bottom:2px;">New Notice to Explain</h3>
       </div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
@@ -3291,7 +3293,7 @@ function renderNteNewForm(box) {
       <div id="nteSelectedViolations" style="margin-top:8px; display:flex; flex-direction:column; gap:6px;"></div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="openNteCases()">Cancel</button>
+      <button class="btn btn-secondary" onclick="nteListOrClose()">Cancel</button>
       <button class="btn btn-primary" onclick="createNteCase()">Save as Draft</button>
     </div>
   `;
@@ -3349,7 +3351,7 @@ function renderNteDetail(box) {
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
-        <div onclick="openNteCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; NTE Cases</div>
+        <div onclick="nteListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${caseBackLabel("NTE Cases")}</div>
         <h3 style="margin-bottom:2px;">Notice to Explain — ${escapeHtml(c.title)}</h3>
         <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${statusInfo.color};">${escapeHtml(statusInfo.text)}</span></div>
       </div>
@@ -3682,6 +3684,7 @@ function coachingStatusLabel(c) {
 
 // ── open/navigation ─────────────────────────────────────────────────────────
 function openCoachingCases() {
+  if (!canViewCaseLists()) return;
   if (!coachingCasesListId) return;
   hrView = { mode: "coachingList" };
   document.getElementById("hrModal").classList.add("open");
@@ -4080,7 +4083,7 @@ function renderCoachingNewForm(box) {
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
-        <div onclick="openCoachingCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; Coaching</div>
+        <div onclick="coachingListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${caseBackLabel("Coaching")}</div>
         <h3 style="margin-bottom:2px;">New Coaching Form</h3>
         <div style="font-size:12px; color:var(--text2);">Issued immediately — no approval step. The employee is notified as soon as you issue it.</div>
       </div>
@@ -4121,7 +4124,7 @@ function renderCoachingNewForm(box) {
       ${signaturePadHtml("coaSigIssuer")}
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="openCoachingCases()">Cancel</button>
+      <button class="btn btn-secondary" onclick="coachingListOrClose()">Cancel</button>
       <button class="btn btn-primary" onclick="createCoachingCase()">Issue to Employee</button>
     </div>
   `;
@@ -4199,7 +4202,7 @@ function renderCoachingDetail(box) {
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
-        <div onclick="openCoachingCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; Coaching</div>
+        <div onclick="coachingListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${caseBackLabel("Coaching")}</div>
         <h3 style="margin-bottom:2px;">Coaching Form — ${escapeHtml(c.title)}</h3>
         <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${st.color};">${escapeHtml(st.text)}</span></div>
       </div>
@@ -5807,8 +5810,6 @@ function renderTabs() {
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
   const formerEmployeesBtn = document.getElementById("formerEmployeesBtn");
   formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
-  const leaveReportBtn = document.getElementById("leaveReportBtn");
-  leaveReportBtn.style.display = canAccessSalary ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
@@ -5934,8 +5935,22 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length;
   } catch (e) { return 0; }
+}
+function openNteNewFromRequests() {
+  if (!canDraftNte() || !nteCasesListId) return;
+  document.getElementById("hrModal").classList.add("open");
+  openNteNewForm();
+}
+function openCoachingNewFromRequests() {
+  if (!canIssueCoaching() || !coachingCasesListId) return;
+  document.getElementById("hrModal").classList.add("open");
+  openCoachingNewForm();
+}
+function myDraftNteCases() {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return nteCases.filter(c => c.status === "Draft" && c.requestedBy && c.requestedBy.toLowerCase() === myEmail);
 }
 function openNteCaseFromRequests(id) {
   document.getElementById("hrModal").classList.add("open");
@@ -5967,6 +5982,7 @@ function renderRequestsTodo() {
   myPendingNteCases().forEach(c => rows.push({ label: `Notice to Explain — response due ${dateOnly(c.responseDueDate) || "soon"}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   myPendingCoachingCases().forEach(c => rows.push({ label: "Coaching form — please review and acknowledge", sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myCoachingTodo().forEach(c => rows.push({ label: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
+  myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   nteApprovalQueue().forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   if (!rows.length) return "";
   return `<div class="req-card req-todo" style="margin-bottom:26px;">
@@ -5982,12 +5998,13 @@ function renderRequests() {
   const employee = [
     { icon: "&#128421;", title: "General Requests", desc: "PC & devices · Facilities · Office supply · Others" },
     { icon: "&#128172;", title: "Employee Feedback", desc: "Share feedback with the company." },
-    { icon: "&#10067;", title: "Inquiry", desc: "Ask HR / Admin a question." }
+    { icon: "&#10067;", title: "Inquiry", desc: "Ask HR / Admin a question." },
+    { icon: "&#128214;", title: "View Employee Handbook", desc: "Open the Employee Handbook in a new tab.", onclick: "window.open('handbook.html','_blank','noopener')" }
   ];
   const management = [
-    { icon: "&#129309;", title: "Create Coaching Form", desc: "Issue a coaching form and follow it through to the result.", onclick: coachingCasesListId ? "openCoachingCases()" : "", badge: myPendingCoachingCases().length + myCoachingTodo().length },
+    { icon: "&#129309;", title: "Create Coaching Form", desc: "Issue a coaching form to an employee.", onclick: coachingCasesListId ? "openCoachingNewFromRequests()" : "" },
     { icon: "&#128200;", title: "Create PIP", desc: "Performance Improvement Plan." },
-    { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteCases()" : "", badge: myPendingNteCases().length },
+    { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteNewFromRequests()" : "" },
     { icon: "&#127942;", title: "Request Recognition", desc: "Recommend an employee for recognition." },
     { icon: "&#128101;", title: "Manpower Request", desc: "Addition · Removal · Transfer" },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
@@ -5996,7 +6013,7 @@ function renderRequests() {
   const hr = [
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     { icon: "&#128202;", title: "Manpower Status", desc: "" },
-    { icon: "&#127796;", title: "Leave & Sick Status", desc: "" },
+    ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
     { icon: "&#128193;", title: "NTE / Coaching / PIP Cases", desc: "All disciplinary and coaching cases.",
       actions: [
         ...(nteCasesListId ? [{ label: "NTE Cases", onclick: "openNteCases()", badge: nteQueue }] : []),
