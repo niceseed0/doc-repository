@@ -361,6 +361,10 @@
           &#128221;
           <span class="tab-count" id="nteCount" style="display:none"></span>
         </button>
+        <button class="trash-icon-btn" onclick="openCoachingCases()" id="coachingBtn" style="display:none" title="Coaching">
+          &#129309;
+          <span class="tab-count" id="coachingCount" style="display:none"></span>
+        </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
           <span class="tab-count" id="trashCount" style="display:none"></span>
@@ -457,7 +461,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-22-06";
+const BUILD_ID = "2026-09-28-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -479,6 +483,7 @@ const CONFIG = {
   leaveUsageListDisplayName: "HR Leave Usage",
   reportsListDisplayName: "HR Reports",
   nteCasesListDisplayName: "HR NTE Cases",
+  coachingCasesListDisplayName: "HR Coaching Cases",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -939,6 +944,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // clock) -> Responded (employee Acknowledges+explains or Declines) -> Closed (HR/Cluster
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
+let coachingCasesListId = null;
+let coachingCases = []; // see Coaching Form module below
 let nteCasesListId = null;
 let nteCases = []; // [{ itemId, title, employeeId, position, department, refNo, requestedBy, requestedDate, statementOfFacts, violationCodes:[...], status, approvedBy, approvedDate, issuedDate, responseDueDate, acknowledgement, acknowledgedDate, employeeResponse, responseDate, reviewedBy, reviewedDate, outcome, suspensionStart, suspensionEnd, rejectionReason }]
 
@@ -958,7 +965,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), checkEditPermission()]);
     refreshAccessFlags();
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1016,6 +1023,8 @@ async function resolveSiteAndLists() {
   reportsListId = reportsMatch ? reportsMatch.id : null; // optional — Reports tab stays hidden entirely if missing
   const nteMatch = (lists.value || []).find(l => l.displayName === CONFIG.nteCasesListDisplayName);
   nteCasesListId = nteMatch ? nteMatch.id : null; // optional — NTE tab stays hidden entirely if missing
+  const coachingMatch = (lists.value || []).find(l => l.displayName === CONFIG.coachingCasesListDisplayName);
+  coachingCasesListId = coachingMatch ? coachingMatch.id : null; // optional — Coaching button stays hidden if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -3544,6 +3553,769 @@ function renderNteEditForm(box) {
 // which silently shifts the date back a day for any positive-offset timezone (e.g. UTC+8
 // Manila) whenever the local time-of-day is midnight — exactly what month/week boundaries
 // below are built from — so this is used everywhere those boundaries are formatted.
+// ═══════════════════════════════════════════════════════════════════════════
+// Coaching Form module
+// Flow: Issued (APM+ issues, no approval step) → employee Acknowledges → Active (coaching
+// period runs) → manager writes follow-up: Close / Extend (back to Active) / Not improved
+// (Closed, further action needed).  Employee Decline → Declined → manager confirms → Closed.
+// Reuses the NTE permission helpers, signature pad, and header/modal plumbing.
+// ═══════════════════════════════════════════════════════════════════════════
+const COACHING_ACK_STATEMENT = "I acknowledge that I have received coaching and understand the expectations and guidance provided to support my performance improvement. I also recognize that any future violations may result in disciplinary action. My signature below confirms receipt and understanding of this coaching.";
+const COACHING_ITEM_STATUSES = ["Completed", "Needs More Training", "Not Improved"];
+const COACHING_DECISIONS = {
+  "Close": "Close coaching (resolved)",
+  "Extend": "Extend coaching period",
+  "FurtherAction": "Not improved — further action required"
+};
+const COMPANY_ADDRESS_LINES = ["6F Units 607-610 Raffles Corporate Center, F. Ortigas Jr. Road,", "Ortigas Center, Pasig City 1605", "Business Line: 02-5310-1454"];
+
+function coaParseJson(raw, fallback) {
+  if (!raw) return fallback;
+  try { const v = JSON.parse(raw); return v == null ? fallback : v; } catch (e) { return fallback; }
+}
+
+async function loadCoachingCases() {
+  coachingCases = [];
+  if (!coachingCasesListId) return;
+  const mapItem = it => {
+    const f = it.fields;
+    return {
+      itemId: it.id,
+      title: f["Title"] || "",
+      employeeId: f["EmployeeId"] || "",
+      position: f["Position"] || "",
+      department: f["Department"] || "",
+      refNo: f["CoachingRefNo"] || "",
+      ncrNo: f["NCRNo"] || "",
+      issuedBy: f["IssuedBy"] || "",
+      supervisorName: f["SupervisorName"] || "",
+      issuedDate: f["IssuedDate"] || null,
+      topic: f["CoachingTopic"] || "",
+      actionPlan: coaParseJson(f["ActionPlan"], []),
+      expectedOutcome: f["ExpectedOutcome"] || "",
+      durationDays: Number(f["DurationDays"]) || 0,
+      followUpDate: f["FollowUpDate"] || null,
+      status: f["Status"] || "Issued",
+      acknowledgement: f["Acknowledgement"] || "",
+      acknowledgedDate: f["AcknowledgedDate"] || null,
+      declineReason: f["DeclineReason"] || "",
+      followUps: coaParseJson(f["FollowUps"], []),
+      finalOutcome: f["FinalOutcome"] || "",
+      closedBy: f["ClosedBy"] || "",
+      closedDate: f["ClosedDate"] || null,
+      issuerSignature: f["IssuerSignature"] || null,
+      recipientSignature: f["RecipientSignature"] || null,
+      closerSignature: f["CloserSignature"] || null
+    };
+  };
+  try {
+    if (canDraftNte() || canApproveNte()) {
+      let url = `/sites/${siteId}/lists/${coachingCasesListId}/items?$expand=fields&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => coachingCases.push(mapItem(it)));
+        url = data["@odata.nextLink"] || null;
+      }
+    } else {
+      // Same privacy boundary as NTE: everyone else only ever receives their own case(s).
+      const me = myEmployeeRecord();
+      if (me) {
+        const url = `/sites/${siteId}/lists/${coachingCasesListId}/items?$expand=fields&$filter=fields/EmployeeId eq '${me.id}'&$top=100`;
+        const data = await graphFetch(url, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+        (data.value || []).forEach(it => coachingCases.push(mapItem(it)));
+      }
+    }
+    coachingCases.sort((a, b) => (b.issuedDate || "").localeCompare(a.issuedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR Coaching cases (list may not exist yet):", e);
+    coachingCases = [];
+  }
+}
+
+// ── permissions / badges ────────────────────────────────────────────────────
+function canIssueCoaching() { return canDraftNte(); } // APM or higher
+function isCoachingIssuer(c) {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return !!(c.issuedBy && c.issuedBy.toLowerCase() === myEmail);
+}
+function canManageCoaching(c) { return isCoachingIssuer(c) || canApproveNte(); }
+function isCoachingTarget(c) {
+  const me = myEmployeeRecord();
+  return !!(me && String(c.employeeId) === String(me.id));
+}
+function myPendingCoachingCases() {
+  return coachingCases.filter(c => isCoachingTarget(c) && c.status === "Issued");
+}
+function coachingFollowUpDue(c) {
+  return c.status === "Active" && !!c.followUpDate && dateOnly(c.followUpDate) <= toLocalYMD(new Date());
+}
+// Things waiting on me as the issuing supervisor: declined cases to confirm, follow-ups due.
+function myCoachingTodo() {
+  return coachingCases.filter(c => isCoachingIssuer(c) && (c.status === "Declined" || coachingFollowUpDue(c)));
+}
+function canSeeCoachingTab() {
+  return canDraftNte() || canApproveNte() || coachingCases.some(c => isCoachingTarget(c));
+}
+
+function coachingStatusLabel(c) {
+  if (c.status === "Issued") return { text: "Issued — awaiting acknowledgement", color: "var(--accent)" };
+  if (c.status === "Active") {
+    return coachingFollowUpDue(c)
+      ? { text: "In coaching — follow-up due", color: "var(--yellow)" }
+      : { text: "In coaching", color: "var(--accent)" };
+  }
+  if (c.status === "Declined") return { text: "Declined — needs manager confirmation", color: "var(--yellow)" };
+  if (c.status === "Closed") return { text: "Closed", color: "var(--green)" };
+  return { text: c.status, color: "var(--text3)" };
+}
+
+// ── open/navigation ─────────────────────────────────────────────────────────
+function openCoachingCases() {
+  if (!coachingCasesListId) return;
+  hrView = { mode: "coachingList" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openCoachingNewForm() {
+  if (!canIssueCoaching()) return;
+  hrView = { mode: "coachingNew" };
+  renderHRModal();
+}
+function openCoachingDetail(caseId) {
+  hrView = { mode: "coachingDetail", caseId };
+  renderHRModal();
+}
+function openCoachingAckForm(caseId, isAck) {
+  hrView = { mode: "coachingAck", caseId, isAck };
+  renderHRModal();
+}
+function confirmCoachingAcknowledge(itemId) {
+  const c = coachingCases.find(x => x.itemId === itemId);
+  const days = c ? c.durationDays : 0;
+  const ok = confirm(COACHING_ACK_STATEMENT + `\n\nBy acknowledging, your ${days}-day coaching period starts today.\n\nDo you confirm the above and wish to proceed?`);
+  if (!ok) return;
+  openCoachingAckForm(itemId, true);
+}
+
+// ── employee search (new form) ──────────────────────────────────────────────
+function filterCoachingEmployeeOptions() {
+  const q = document.getElementById("coaEmployeeSearch").value.trim().toLowerCase();
+  const box = document.getElementById("coaEmployeeOptions");
+  document.getElementById("coaEmployeeId").value = "";
+  document.getElementById("coaPosition").value = "";
+  document.getElementById("coaDepartment").value = "";
+  if (!q) { box.style.display = "none"; return; }
+  const matches = employees.filter(e => e.status !== "Resigned" && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="selectCoachingEmployee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function selectCoachingEmployee(id) {
+  const emp = employees.find(e => e.id === id);
+  if (!emp) return;
+  document.getElementById("coaEmployeeId").value = id;
+  document.getElementById("coaEmployeeSearch").value = emp.name;
+  document.getElementById("coaEmployeeOptions").style.display = "none";
+  document.getElementById("coaPosition").value = emp.position || "";
+  document.getElementById("coaDepartment").value = emp.team || "";
+}
+function toggleCoachingDurationOther(selectId, wrapId) {
+  const sel = document.getElementById(selectId);
+  const wrap = document.getElementById(wrapId);
+  if (sel && wrap) wrap.style.display = sel.value === "other" ? "" : "none";
+}
+// Reads a duration <select> (7 / 14 / 30 / other) + custom-days input pair. Returns days or 0.
+function readCoachingDuration(selectId, otherId) {
+  const v = document.getElementById(selectId).value;
+  if (v === "other") {
+    const n = parseInt(document.getElementById(otherId).value, 10);
+    return n > 0 ? n : 0;
+  }
+  return parseInt(v, 10) || 0;
+}
+function coachingDurationSelectHtml(selectId, wrapId, otherId) {
+  return `<select id="${selectId}" onchange="toggleCoachingDurationOther('${selectId}','${wrapId}')">
+      <option value="7">7 Days</option><option value="14">14 Days</option><option value="30">30 Days</option><option value="other">Others (specify)</option>
+    </select>
+    <div id="${wrapId}" style="display:none; margin-top:6px;"><input id="${otherId}" type="number" min="1" max="365" placeholder="Number of days" /></div>`;
+}
+
+// ── create (issue immediately) ──────────────────────────────────────────────
+async function createCoachingCase() {
+  if (!canIssueCoaching()) return;
+  const employeeId = document.getElementById("coaEmployeeId").value;
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp) { toast("Search and select an employee.", "error"); return; }
+  const topic = document.getElementById("coaTopic").value.trim();
+  if (!topic) { toast("Enter the coaching topic.", "error"); return; }
+  const actionPlan = [0, 1, 2, 3, 4].map(i => document.getElementById("coaAction" + i).value.trim()).filter(Boolean);
+  if (!actionPlan.length) { toast("Enter at least one action plan item.", "error"); return; }
+  const expectedOutcome = document.getElementById("coaExpected").value.trim();
+  if (!expectedOutcome) { toast("Enter the expected outcome.", "error"); return; }
+  const durationDays = readCoachingDuration("coaDuration", "coaDurationOther");
+  if (!durationDays) { toast("Enter the number of coaching days.", "error"); return; }
+  const sig = signatureDataUrl("coaSigIssuer");
+  if (!sig) { toast("Please sign before issuing.", "error"); return; }
+  if (!confirm(`Issue this coaching form to ${emp.name}? They will be notified immediately.`)) return;
+
+  const me = myEmployeeRecord();
+  const issuedBy = (currentAccount && currentAccount.username) || "";
+  const supervisorName = (me && me.name) || issuedBy;
+  const ncrNo = document.getElementById("coaNcrNo").value.trim();
+  const issuedDate = toLocalYMD(new Date());
+  const refNo = "COA-" + issuedDate.replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  const sigPayload = buildSignaturePayload(sig, supervisorName, me && me.position, new Date().toISOString());
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${coachingCasesListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: {
+        Title: emp.name, EmployeeId: String(emp.id), Position: emp.position || "", Department: emp.team || "",
+        CoachingRefNo: refNo, NCRNo: ncrNo, IssuedBy: issuedBy, SupervisorName: supervisorName, IssuedDate: issuedDate,
+        CoachingTopic: topic, ActionPlan: JSON.stringify(actionPlan), ExpectedOutcome: expectedOutcome,
+        DurationDays: durationDays, Status: "Issued", IssuerSignature: sigPayload
+      } })
+    });
+    coachingCases.unshift({
+      itemId: created.id, title: emp.name, employeeId: String(emp.id), position: emp.position || "", department: emp.team || "",
+      refNo, ncrNo, issuedBy, supervisorName, issuedDate, topic, actionPlan, expectedOutcome, durationDays, followUpDate: null,
+      status: "Issued", acknowledgement: "", acknowledgedDate: null, declineReason: "", followUps: [], finalOutcome: "",
+      closedBy: "", closedDate: null, issuerSignature: sigPayload, recipientSignature: null, closerSignature: null
+    });
+    setSyncing(false, true);
+    toast("Coaching form issued ✓", "success");
+    openCoachingDetail(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not issue coaching form: " + err.message, "error");
+  }
+}
+
+// ── employee acknowledge / decline ──────────────────────────────────────────
+async function submitCoachingAck(itemId, isAck) {
+  const c = coachingCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  let reason = "";
+  if (!isAck) {
+    reason = document.getElementById("coaAckText").value.trim();
+    if (!reason) { toast("Enter your reason for declining.", "error"); return; }
+  }
+  const sig = signatureDataUrl("coaSigRecipient");
+  if (!sig) { toast("Please sign before submitting.", "error"); return; }
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, c.title, c.position, now);
+  const followUpDate = isAck ? addDaysToYMD(toLocalYMD(new Date()), c.durationDays) : null;
+  const fields = isAck
+    ? { Status: "Active", Acknowledgement: "Acknowledged", AcknowledgedDate: now, FollowUpDate: followUpDate, RecipientSignature: sigPayload }
+    : { Status: "Declined", Acknowledgement: "Declined", AcknowledgedDate: now, DeclineReason: reason, RecipientSignature: sigPayload };
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${coachingCasesListId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+    Object.assign(c, {
+      status: fields.Status, acknowledgement: fields.Acknowledgement, acknowledgedDate: now,
+      declineReason: reason, recipientSignature: sigPayload, followUpDate: followUpDate || c.followUpDate
+    });
+    setSyncing(false, true);
+    toast(isAck ? `Acknowledged ✓ — coaching period runs until ${followUpDate}` : "Decline submitted ✓", "success");
+    openCoachingDetail(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+// Logs a Coaching entry in HR Incidents (shows up in HR Records + report counts).
+// Failing to log never blocks the case itself from closing.
+async function logCoachingIncident(c, outcomeText) {
+  if (!incidentsListId) return;
+  try {
+    const incidentDate = toLocalYMD(new Date());
+    const notes = `Coaching ${c.refNo}: ${outcomeText}`;
+    const created = await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: "Coaching", IncidentNotes: notes } })
+    });
+    allIncidents.push({ itemId: created.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: "Coaching", notes });
+  } catch (e) {
+    console.warn("Could not log coaching incident:", e);
+    toast("Case closed, but the HR Records entry could not be created.", "error");
+  }
+}
+
+// ── manager confirms a declined coaching → Closed ───────────────────────────
+async function confirmCoachingDecline(itemId) {
+  const c = coachingCases.find(x => x.itemId === itemId);
+  if (!c || !canManageCoaching(c)) return;
+  const sig = signatureDataUrl("coaSigCloser");
+  if (!sig) { toast("Please sign to confirm.", "error"); return; }
+  if (!confirm("Confirm you've reviewed the employee's decline reason and close this coaching?")) return;
+  const closedBy = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  const me = myEmployeeRecord();
+  const sigPayload = buildSignaturePayload(sig, (me && me.name) || closedBy, me && me.position, now);
+  const outcome = "Declined by Employee";
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${coachingCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Closed", FinalOutcome: outcome, ClosedBy: closedBy, ClosedDate: now, CloserSignature: sigPayload })
+    });
+    Object.assign(c, { status: "Closed", finalOutcome: outcome, closedBy, closedDate: now, closerSignature: sigPayload });
+    await logCoachingIncident(c, outcome);
+    setSyncing(false, true);
+    toast("Coaching closed ✓", "success");
+    openCoachingDetail(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not close: " + err.message, "error");
+  }
+}
+
+// ── follow-up (end of coaching period) ──────────────────────────────────────
+function toggleCoachingExtension() {
+  const sel = document.querySelector('input[name="coaDecision"]:checked');
+  const box = document.getElementById("coaExtensionFields");
+  if (box) box.style.display = sel && sel.value === "Extend" ? "" : "none";
+}
+
+async function submitCoachingFollowUp(itemId) {
+  const c = coachingCases.find(x => x.itemId === itemId);
+  if (!c || !canManageCoaching(c)) return;
+  const checklist = [];
+  for (let i = 0; i < c.actionPlan.length; i++) {
+    const sel = document.querySelector(`input[name="coaItem${i}"]:checked`);
+    if (!sel) { toast(`Mark a result for action plan #${i + 1}.`, "error"); return; }
+    checklist.push({ item: c.actionPlan[i], status: sel.value });
+  }
+  const feedback = document.getElementById("coaFeedback").value.trim();
+  if (!feedback) { toast("Enter the overall feedback.", "error"); return; }
+  const decisionEl = document.querySelector('input[name="coaDecision"]:checked');
+  if (!decisionEl) { toast("Choose how to proceed: close, extend, or further action.", "error"); return; }
+  const decision = decisionEl.value;
+  let extensionDays = 0, newFollowUpDate = null;
+  if (decision === "Extend") {
+    extensionDays = readCoachingDuration("coaExtDuration", "coaExtOther");
+    if (!extensionDays) { toast("Enter the number of extension days.", "error"); return; }
+    newFollowUpDate = addDaysToYMD(toLocalYMD(new Date()), extensionDays);
+  }
+  const sig = signatureDataUrl("coaSigFollowUp");
+  if (!sig) { toast("Please sign before submitting.", "error"); return; }
+  if (c.followUpDate && dateOnly(c.followUpDate) > toLocalYMD(new Date())) {
+    if (!confirm(`The coaching period doesn't end until ${dateOnly(c.followUpDate)}. Submit the follow-up now anyway?`)) return;
+  }
+  if (decision === "Close" && checklist.some(x => x.status !== "Completed")) {
+    if (!confirm("Some action plan items are not marked Completed. Close the coaching as resolved anyway?")) return;
+  }
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, (me && me.name) || by, me && me.position, now);
+  const round = { date: now, by, checklist, feedback, decision, extensionDays, newFollowUpDate, signature: sigPayload };
+  const followUps = [...c.followUps, round];
+  const fields = { FollowUps: JSON.stringify(followUps) };
+  let finalOutcome = "";
+  if (decision === "Extend") {
+    fields.FollowUpDate = newFollowUpDate;
+    fields.Status = "Active";
+  } else {
+    finalOutcome = decision === "Close" ? "Completed / Resolved" : "Not Improved — Further Action Required";
+    Object.assign(fields, { Status: "Closed", FinalOutcome: finalOutcome, ClosedBy: by, ClosedDate: now });
+  }
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${coachingCasesListId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+    c.followUps = followUps;
+    if (decision === "Extend") {
+      c.followUpDate = newFollowUpDate;
+    } else {
+      Object.assign(c, { status: "Closed", finalOutcome, closedBy: by, closedDate: now });
+      await logCoachingIncident(c, finalOutcome);
+    }
+    setSyncing(false, true);
+    toast(decision === "Extend" ? `Coaching extended until ${newFollowUpDate} ✓` : "Coaching closed ✓", "success");
+    openCoachingDetail(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save follow-up: " + err.message, "error");
+  }
+}
+
+async function deleteCoachingCase(itemId) {
+  if (!canApproveNte()) return;
+  const c = coachingCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  if (!confirm("Delete this coaching case? This also removes its HR Records entry. This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    if (incidentsListId) {
+      try {
+        let url = `/sites/${siteId}/lists/${incidentsListId}/items?$expand=fields&$top=2000`;
+        const linked = [];
+        const marker = `Coaching ${c.refNo}:`;
+        while (url) {
+          const data = await graphFetch(url);
+          (data.value || []).forEach(it => {
+            if (String(it.fields["IncidentType"] || "") === "Coaching" && String(it.fields["IncidentNotes"] || "").includes(marker)) linked.push(it.id);
+          });
+          url = data["@odata.nextLink"] || null;
+        }
+        for (const incId of linked) await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items/${incId}`, { method: "DELETE" });
+        allIncidents = allIncidents.filter(i => !linked.includes(i.itemId));
+      } catch (e) { console.warn("Could not check/delete linked coaching incident:", e); }
+    }
+    await graphFetch(`/sites/${siteId}/lists/${coachingCasesListId}/items/${itemId}`, { method: "DELETE" });
+    coachingCases = coachingCases.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Coaching case deleted", "success");
+    if (hrView && hrView.mode === "coachingDetail" && hrView.caseId === itemId) hrView = { mode: "coachingList" };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────
+function coachingSignaturesHtml(c, forPrint) {
+  const border = forPrint ? "#e1e4ec" : "var(--border)";
+  const c2 = forPrint ? "#333" : "var(--text2)";
+  const c3 = forPrint ? "#8891a3" : "var(--text3)";
+  const sigs = [
+    { label: "Supervisor", raw: c.issuerSignature },
+    { label: "Employee", raw: c.recipientSignature },
+    { label: "Confirmed by (Manager)", raw: c.closerSignature }
+  ].map(s => ({ label: s.label, meta: parseSignatureField(s.raw) })).filter(s => s.meta);
+  if (!sigs.length) return "";
+  return `<div style="display:flex; flex-wrap:wrap; gap:18px; margin-top:16px; padding-top:14px; border-top:1px solid ${border};">
+    ${sigs.map(s => `<div>
+      <img src="${s.meta.dataUrl}" style="height:${forPrint ? 50 : 55}px; background:#fff; border:1px solid ${border}; border-radius:4px; display:block;" />
+      <div style="font-size:11px; color:${c3}; margin-top:3px;">${escapeHtml(s.label)}</div>
+      ${s.meta.name ? `<div style="font-size:11px; color:${c2};">${escapeHtml(s.meta.name)}${s.meta.position ? " · " + escapeHtml(s.meta.position) : ""}</div>` : ""}
+      ${s.meta.date ? `<div style="font-size:10px; color:${c3};">${escapeHtml(dateOnly(s.meta.date))}</div>` : ""}
+    </div>`).join("")}
+  </div>`;
+}
+
+function coachingDurationChecks(days) {
+  const std = [7, 14, 30];
+  const isOther = !std.includes(days);
+  const box = on => on ? "&#9745;" : "&#9744;";
+  return `${std.map(d => `${box(d === days)} ${d} Days`).join(" &nbsp; ")} &nbsp; ${box(isOther)} Others${isOther ? ` (${days} days)` : ""}`;
+}
+
+function coachingStatusBadge(status, forPrint) {
+  const map = {
+    "Completed": forPrint ? "#1a7f4b" : "var(--green)",
+    "Needs More Training": forPrint ? "#a86a00" : "var(--yellow)",
+    "Not Improved": forPrint ? "#c0392b" : "var(--red)"
+  };
+  return `<span style="font-weight:600; color:${map[status] || "inherit"};">${escapeHtml(status)}</span>`;
+}
+
+function coachingFollowUpsHtml(c, forPrint) {
+  if (!c.followUps.length) return "";
+  const border = forPrint ? "#e1e4ec" : "var(--border)";
+  const bg = forPrint ? "#f7f8fb" : "var(--surface2)";
+  const muted = forPrint ? "#8891a3" : "var(--text3)";
+  return c.followUps.map((r, idx) => {
+    const sig = parseSignatureField(r.signature);
+    return `<div style="background:${bg}; border:1px solid ${border}; border-radius:8px; padding:14px 16px; margin-top:14px; ${forPrint ? "page-break-inside:avoid;" : ""}">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Follow-Up Coaching #${idx + 1} <span style="font-weight:400; color:${muted}; font-size:12px;">— ${escapeHtml(dateOnly(r.date))}</span></div>
+      <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:10px;">
+        ${r.checklist.map((x, i) => `<tr><td style="padding:4px 6px; border-bottom:1px solid ${border}; width:26px; color:${muted};">${i + 1}.</td><td style="padding:4px 6px; border-bottom:1px solid ${border};">${escapeHtml(x.item)}</td><td style="padding:4px 6px; border-bottom:1px solid ${border}; text-align:right; white-space:nowrap;">${coachingStatusBadge(x.status, forPrint)}</td></tr>`).join("")}
+      </table>
+      <div style="font-size:12px; font-weight:600;">Feedback</div>
+      <p style="white-space:pre-wrap; font-size:13px; margin:2px 0 10px;">${escapeHtml(r.feedback)}</p>
+      <div style="font-size:12px;"><strong>Decision:</strong> ${escapeHtml(COACHING_DECISIONS[r.decision] || r.decision)}${r.decision === "Extend" ? ` — ${r.extensionDays} more days (new follow-up date ${escapeHtml(dateOnly(r.newFollowUpDate))})` : ""}</div>
+      ${sig ? `<div style="margin-top:10px;"><img src="${sig.dataUrl}" style="height:${forPrint ? 45 : 50}px; background:#fff; border:1px solid ${border}; border-radius:4px; display:block;" /><div style="font-size:11px; color:${muted}; margin-top:2px;">${escapeHtml(sig.name)}${sig.position ? " · " + escapeHtml(sig.position) : ""}${sig.date ? " · " + escapeHtml(dateOnly(sig.date)) : ""}</div></div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderCoachingList(box) {
+  box.style.width = "min(760px, 95vw)";
+  const canApprove = canApproveNte();
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const visible = canApprove
+    ? coachingCases
+    : coachingCases.filter(c => isCoachingTarget(c) || (c.issuedBy && c.issuedBy.toLowerCase() === myEmail));
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Coaching</h3>
+        <div style="font-size:12px; color:var(--text2);">${visible.length} case${visible.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${canIssueCoaching() ? `<button class="btn btn-primary" onclick="openCoachingNewForm()" style="margin:14px 0;">&#65291; New Coaching</button>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${visible.length ? visible.map(c => {
+        const s = coachingStatusLabel(c);
+        const extra = c.status === "Active" && c.followUpDate ? ` · follow-up ${escapeHtml(dateOnly(c.followUpDate))}` : "";
+        return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div onclick="openCoachingDetail('${c.itemId}')" style="cursor:pointer; flex:1; min-width:0;">
+            <div style="font-size:13px; color:var(--accent);">${escapeHtml(c.title)}</div>
+            <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(c.refNo)} · ${escapeHtml(dateOnly(c.issuedDate))}${extra}</div>
+          </div>
+          <span style="font-size:12px; font-weight:600; color:${s.color}; white-space:nowrap;">${escapeHtml(s.text)}</span>
+          ${canApprove ? `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteCoachingCase('${c.itemId}')" title="Delete case">&#128465;</button>` : ""}
+        </div>`;
+      }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No coaching cases yet.</div>`}
+    </div>
+  `;
+}
+
+function renderCoachingNewForm(box) {
+  box.style.width = "min(640px, 94vw)";
+  const me = myEmployeeRecord();
+  const supName = (me && me.name) || ((currentAccount && currentAccount.username) || "");
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="openCoachingCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; Coaching</div>
+        <h3 style="margin-bottom:2px;">New Coaching Form</h3>
+        <div style="font-size:12px; color:var(--text2);">Issued immediately — no approval step. The employee is notified as soon as you issue it.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="position:relative; margin-top:14px;">
+      <label>Employee Name *</label>
+      <input id="coaEmployeeSearch" type="text" placeholder="Type a name…" oninput="filterCoachingEmployeeOptions()" autocomplete="off" />
+      <div id="coaEmployeeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+      <input type="hidden" id="coaEmployeeId" />
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Position / Title</label><input id="coaPosition" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Designation (Department)</label><input id="coaDepartment" type="text" readonly style="opacity:.7;" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Supervisor</label><input type="text" readonly value="${escapeHtml(supName)}" style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>NCR No (optional)</label><input id="coaNcrNo" type="text" placeholder="If applicable" /></div>
+    </div>
+    <div class="form-group"><label>Date</label><input type="text" readonly value="${escapeHtml(toLocalYMD(new Date()))}" style="opacity:.7;" /></div>
+    <div class="form-group">
+      <label>Coaching Topic * <span style="font-weight:400; color:var(--text3);">(List specific attributes / actions that were exhibited.)</span></label>
+      <textarea id="coaTopic" style="min-height:100px;" placeholder="Describe what was observed…"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Action Plan * <span style="font-weight:400; color:var(--text3);">(List the specific recommended actions. At least one; up to five.)</span></label>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${[0, 1, 2, 3, 4].map(i => `<div style="display:flex; align-items:center; gap:8px;"><span style="font-size:12px; color:var(--text3); width:16px;">${i + 1}.</span><input id="coaAction${i}" type="text" placeholder="${i === 0 ? "Required" : "Optional"}" style="flex:1;" /></div>`).join("")}
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Expected Outcome * <span style="font-weight:400; color:var(--text3);">(List the expected outcome of the coaching)</span></label>
+      <textarea id="coaExpected" style="min-height:80px;"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Coaching Duration *</label>
+      ${coachingDurationSelectHtml("coaDuration", "coaDurationOtherWrap", "coaDurationOther")}
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">The period starts when the employee acknowledges; the follow-up date is set then.</div>
+    </div>
+    <div class="form-group">
+      <label>Supervisor Signature *</label>
+      ${signaturePadHtml("coaSigIssuer")}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openCoachingCases()">Cancel</button>
+      <button class="btn btn-primary" onclick="createCoachingCase()">Issue to Employee</button>
+    </div>
+  `;
+  initSignaturePad("coaSigIssuer");
+}
+
+function renderCoachingDetail(box) {
+  box.style.width = "min(760px, 95vw)";
+  const c = coachingCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Case not found.</div>`; return; }
+  const isTarget = isCoachingTarget(c);
+  const canManage = canManageCoaching(c);
+  const st = coachingStatusLabel(c);
+  const padToInit = [];
+
+  let actionPanel = "";
+  if (c.status === "Issued" && isTarget) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Please review this coaching and respond</div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-primary" onclick="confirmCoachingAcknowledge('${c.itemId}')">Acknowledge</button>
+        <button class="btn btn-secondary" onclick="openCoachingAckForm('${c.itemId}', false)">Decline</button>
+      </div>
+    </div>`;
+  } else if (c.status === "Issued") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for the employee to acknowledge.</div>`;
+  } else if (c.status === "Declined" && canManage) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Manager confirmation</div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:10px;">The employee declined with the reason shown above. Confirming closes this coaching.</div>
+      <div class="form-group"><label>Manager Signature</label>${signaturePadHtml("coaSigCloser")}</div>
+      <button class="btn btn-primary" onclick="confirmCoachingDecline('${c.itemId}')">Confirm &amp; Close</button>
+    </div>`;
+    padToInit.push("coaSigCloser");
+  } else if (c.status === "Declined") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for manager confirmation.</div>`;
+  } else if (c.status === "Active" && canManage) {
+    const due = coachingFollowUpDue(c);
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:2px;">Follow-up &amp; result</div>
+      <div style="font-size:12px; color:${due ? "var(--yellow)" : "var(--text2)"}; margin-bottom:12px;">Coaching period ends ${escapeHtml(dateOnly(c.followUpDate))}${due ? " — follow-up is due." : "."}</div>
+      <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Action plan checklist</div>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:14px;">
+        ${c.actionPlan.map((a, i) => `<div style="border:1px solid var(--border); border-radius:6px; padding:8px 10px;">
+          <div style="font-size:13px; margin-bottom:6px;">${i + 1}. ${escapeHtml(a)}</div>
+          <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:12px;">
+            ${COACHING_ITEM_STATUSES.map(s => `<label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="coaItem${i}" value="${escapeHtml(s)}" /> ${escapeHtml(s)}</label>`).join("")}
+          </div>
+        </div>`).join("")}
+      </div>
+      <div class="form-group"><label>Overall Feedback *</label><textarea id="coaFeedback" style="min-height:70px;" maxlength="800" placeholder="Short overall feedback on the coaching…"></textarea></div>
+      <div class="form-group">
+        <label>Decision *</label>
+        <div style="display:flex; flex-direction:column; gap:6px; font-size:13px;">
+          ${Object.keys(COACHING_DECISIONS).map(k => `<label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="coaDecision" value="${k}" onchange="toggleCoachingExtension()" /> ${escapeHtml(COACHING_DECISIONS[k])}</label>`).join("")}
+        </div>
+        <div id="coaExtensionFields" style="display:none; margin-top:8px;">
+          <label style="font-size:12px;">Extension period</label>
+          ${coachingDurationSelectHtml("coaExtDuration", "coaExtOtherWrap", "coaExtOther")}
+        </div>
+      </div>
+      <div class="form-group"><label>Manager Signature *</label>${signaturePadHtml("coaSigFollowUp")}</div>
+      <button class="btn btn-primary" onclick="submitCoachingFollowUp('${c.itemId}')">Submit Follow-Up</button>
+    </div>`;
+    padToInit.push("coaSigFollowUp");
+  } else if (c.status === "Active") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Coaching in progress — period ends ${escapeHtml(dateOnly(c.followUpDate))}.</div>`;
+  } else if (c.status === "Closed") {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600;">Result: ${escapeHtml(c.finalOutcome)}</div>
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Closed by ${escapeHtml(c.closedBy)} on ${escapeHtml(dateOnly(c.closedDate))}</div>
+    </div>`;
+  }
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="openCoachingCases()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; Coaching</div>
+        <h3 style="margin-bottom:2px;">Coaching Form — ${escapeHtml(c.title)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${st.color};">${escapeHtml(st.text)}</span></div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        <button class="btn btn-secondary" onclick="downloadCoachingPdf('${c.itemId}')" style="padding:4px 10px; font-size:12px;">&#128196; PDF</button>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:6px;" />
+      <div style="font-size:11px; color:var(--text3); margin-bottom:14px;">${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
+        <div><span style="color:var(--text3);">Employee:</span> ${escapeHtml(c.title)}</div>
+        <div><span style="color:var(--text3);">Position/Title:</span> ${escapeHtml(c.position)}</div>
+        <div><span style="color:var(--text3);">Designation:</span> ${escapeHtml(c.department)}</div>
+        <div><span style="color:var(--text3);">Supervisor:</span> ${escapeHtml(c.supervisorName)}</div>
+        <div><span style="color:var(--text3);">NCR No:</span> ${escapeHtml(c.ncrNo || "—")}</div>
+        <div><span style="color:var(--text3);">Coaching Ref No:</span> ${escapeHtml(c.refNo)}</div>
+        <div><span style="color:var(--text3);">Date:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
+      </div>
+      <div style="font-weight:600; margin-bottom:4px;">Coaching Topic</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.topic)}</p>
+      <div style="font-weight:600; margin-bottom:4px;">Action Plan</div>
+      <ol style="margin:0 0 14px 20px; color:var(--text2);">${c.actionPlan.map(a => `<li>${escapeHtml(a)}</li>`).join("")}</ol>
+      <div style="font-weight:600; margin-bottom:4px;">Expected Outcome</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.expectedOutcome)}</p>
+      <div style="font-weight:600; margin-bottom:4px;">Coaching Duration</div>
+      <p style="color:var(--text2); margin-bottom:4px;">${coachingDurationChecks(c.durationDays)}</p>
+      <p style="color:var(--text2); font-size:12px;">Number of days: ${c.durationDays} · Follow-up date: ${c.followUpDate ? escapeHtml(dateOnly(c.followUpDate)) : "[set when the employee acknowledges]"}</p>
+      <p style="color:var(--text3); font-size:12px; margin-top:14px;">${escapeHtml(COACHING_ACK_STATEMENT)}</p>
+      ${coachingSignaturesHtml(c, false)}
+    </div>
+
+    ${c.acknowledgement === "Declined" ? `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:14px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:6px;">Decline Reason — ${escapeHtml(dateOnly(c.acknowledgedDate))}</div>
+      <p style="white-space:pre-wrap; color:var(--text2); font-size:13px;">${escapeHtml(c.declineReason)}</p>
+    </div>` : ""}
+
+    ${coachingFollowUpsHtml(c, false)}
+    ${actionPanel}
+  `;
+  padToInit.forEach(initSignaturePad);
+}
+
+function renderCoachingAckForm(box) {
+  box.style.width = "min(560px, 92vw)";
+  const c = coachingCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Case not found.</div>`; return; }
+  const isAck = hrView.isAck;
+  box.innerHTML = `
+    <div onclick="openCoachingDetail('${c.itemId}')" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:8px;">&larr; Back</div>
+    <h3>${isAck ? "Acknowledge Coaching" : "Decline Coaching"}</h3>
+    ${isAck
+      ? `<p style="font-size:12px; color:var(--text2); margin:8px 0 12px;">${escapeHtml(COACHING_ACK_STATEMENT)}</p>`
+      : `<div class="form-group" style="margin-top:10px;"><label>Reason for declining *</label><textarea id="coaAckText" style="min-height:120px;" placeholder="Type your reason…"></textarea></div>`}
+    <div class="form-group">
+      <label>Signature (Employee)</label>
+      ${signaturePadHtml("coaSigRecipient")}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openCoachingDetail('${c.itemId}')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCoachingAck('${c.itemId}', ${isAck})">${isAck ? "Acknowledge" : "Submit Decline"}</button>
+    </div>
+  `;
+  initSignaturePad("coaSigRecipient");
+}
+
+// Print-ready copy (new tab → browser "Save as PDF"), laid out like the paper form.
+function downloadCoachingPdf(itemId) {
+  const c = coachingCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  const declinedHtml = c.acknowledgement === "Declined" ? `<h3>Decline Reason</h3><p style="color:#8891a3;">${escapeHtml(dateOnly(c.acknowledgedDate))}</p><p style="white-space:pre-wrap;">${escapeHtml(c.declineReason)}</p>` : "";
+  const resultHtml = c.status === "Closed" ? `<h3>Result</h3><p><strong>${escapeHtml(c.finalOutcome)}</strong></p><p style="color:#8891a3; font-size:12px;">Closed by ${escapeHtml(c.closedBy)} on ${escapeHtml(dateOnly(c.closedDate))}</p>` : "";
+  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8" />
+    <title>${escapeHtml(c.refNo)} — Coaching Form</title>
+    <style>
+      body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color: #1a1f2b; max-width: 720px; margin: 40px auto; line-height: 1.6; font-size: 13px; }
+      h1 { font-size: 18px; margin: 10px 0 2px; }
+      h3 { font-size: 13px; margin: 20px 0 4px; }
+      .addr { color: #525a6e; font-size: 11px; }
+      .meta { color: #8891a3; font-size: 12px; margin-bottom: 18px; }
+      .info { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 12px; margin-bottom: 16px; border-top: 1px solid #e1e4ec; border-bottom: 1px solid #e1e4ec; padding: 10px 0; }
+      .info span { color: #8891a3; }
+      @media print { body { margin: 0; } }
+    </style></head><body>
+    <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:6px;" />
+    <div class="addr">ELITE GLOBAL SOURCING PHIL. INC.<br>${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
+    <h1>Coaching Form</h1>
+    <div class="meta">${escapeHtml(c.refNo)} · ${escapeHtml(coachingStatusLabel(c).text)}</div>
+    <div class="info">
+      <div><span>Employee:</span> ${escapeHtml(c.title)}</div>
+      <div><span>Position/Title:</span> ${escapeHtml(c.position)}</div>
+      <div><span>Designation:</span> ${escapeHtml(c.department)}</div>
+      <div><span>Supervisor:</span> ${escapeHtml(c.supervisorName)}</div>
+      <div><span>NCR No:</span> ${escapeHtml(c.ncrNo || "—")}</div>
+      <div><span>Coaching Ref No:</span> ${escapeHtml(c.refNo)}</div>
+      <div><span>Date:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
+    </div>
+    <h3>Coaching Topic</h3><p style="white-space:pre-wrap;">${escapeHtml(c.topic)}</p>
+    <h3>Action Plan</h3><ol>${c.actionPlan.map(a => `<li>${escapeHtml(a)}</li>`).join("")}</ol>
+    <h3>Expected Outcome</h3><p style="white-space:pre-wrap;">${escapeHtml(c.expectedOutcome)}</p>
+    <h3>Coaching Duration</h3><p>${coachingDurationChecks(c.durationDays)}</p>
+    <p style="font-size:12px;">Number of days: ${c.durationDays} · Follow-up date: ${c.followUpDate ? escapeHtml(dateOnly(c.followUpDate)) : "—"}</p>
+    <h3>Employee Acknowledgement</h3>
+    <p style="color:#525a6e; font-size:12px;">${escapeHtml(COACHING_ACK_STATEMENT)}</p>
+    ${coachingSignaturesHtml(c, true)}
+    ${declinedHtml}
+    ${c.followUps.length ? `<h3 style="margin-top:28px; font-size:15px;">Follow-Up Coaching</h3>` : ""}
+    ${coachingFollowUpsHtml(c, true)}
+    ${resultHtml}
+    <script>window.onload = () => setTimeout(() => window.print(), 200);<\/script>
+    </body></html>`;
+  const win = window.open("", "_blank");
+  if (!win) { toast("Please allow pop-ups to download the PDF.", "error"); return; }
+  win.document.open();
+  win.document.write(doc);
+  win.document.close();
+}
+
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -4293,6 +5065,10 @@ function renderHRModal() {
   if (hrView.mode === "nteReject") { renderNteRejectForm(box); return; }
   if (hrView.mode === "nteDecline") { renderNteDeclineForm(box); return; }
   if (hrView.mode === "nteEdit") { renderNteEditForm(box); return; }
+  if (hrView.mode === "coachingList") { renderCoachingList(box); return; }
+  if (hrView.mode === "coachingNew") { renderCoachingNewForm(box); return; }
+  if (hrView.mode === "coachingDetail") { renderCoachingDetail(box); return; }
+  if (hrView.mode === "coachingAck") { renderCoachingAckForm(box); return; }
 
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
@@ -4866,7 +5642,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -4991,6 +5767,12 @@ function renderTabs() {
   const myPending = myPendingNteCases().length;
   if (myPending > 0) { nteCount.textContent = myPending; nteCount.style.display = ""; }
   else { nteCount.style.display = "none"; }
+  const coachingBtn = document.getElementById("coachingBtn");
+  coachingBtn.style.display = (coachingCasesListId && canSeeCoachingTab()) ? "" : "none";
+  const coachingCount = document.getElementById("coachingCount");
+  const coachingBadge = myPendingCoachingCases().length + myCoachingTodo().length;
+  if (coachingBadge > 0) { coachingCount.textContent = coachingBadge; coachingCount.style.display = ""; }
+  else { coachingCount.style.display = "none"; }
   const myProfileBtn = document.getElementById("myProfileBtn");
   myProfileBtn.style.display = employeesListId ? "" : "none";
   const approvalsCount = document.getElementById("approvalsCount");
