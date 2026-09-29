@@ -485,7 +485,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-02";
+const BUILD_ID = "2026-09-29-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5237,6 +5237,62 @@ function renderTaskDetail(box) {
   `;
 }
 
+// ── Weekly PM Report overview: per-cluster submission progress for this week ────
+let wprExpandedClusters = new Set();
+function toggleWprCluster(cluster) {
+  if (wprExpandedClusters.has(cluster)) wprExpandedClusters.delete(cluster); else wprExpandedClusters.add(cluster);
+  renderContent();
+}
+function canViewWeeklyReportOverview() { return canApproveNte(); } // HOC (Cluster Lead+) or HR/Admin
+function weeklyReportOverviewRows() {
+  const weekKey = toLocalYMD(mondayOf(new Date()));
+  return CONFIG.clusterTeams.map(cluster => {
+    const teams = subteamsForCluster(cluster).map(s => s.team);
+    const rows = teams.map(team => {
+      const task = recurringTasks.find(t => t.taskType === "WeeklyPMReport" && t.cluster === cluster && t.team === team && t.weekKey === weekKey);
+      return { team, task };
+    });
+    const submitted = rows.filter(r => r.task && r.task.status === "Closed").length;
+    const pct = rows.length ? Math.round((submitted / rows.length) * 100) : 0;
+    return { cluster, rows, submitted, total: rows.length, pct };
+  });
+}
+function renderWeeklyReportOverview() {
+  if (!canViewWeeklyReportOverview() || !recurringTasksListId) return "";
+  const clusters = weeklyReportOverviewRows();
+  return `<div class="req-card" style="margin-bottom:20px;">
+    <div class="req-title"><span>&#128202;</span><span>Weekly PM Report — this week</span></div>
+    <div class="req-desc" style="margin-bottom:10px;">Submission progress by cluster. Click a cluster to see each team's report.</div>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      ${clusters.map(c => {
+        const open = wprExpandedClusters.has(c.cluster);
+        const barColor = c.pct === 100 ? "var(--green)" : c.pct === 0 ? "var(--text3)" : "var(--yellow)";
+        return `<div>
+          <div onclick="toggleWprCluster('${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:12px;">
+            <span style="font-size:11px; color:var(--text3); width:14px;">${open ? "&#9660;" : "&#9654;"}</span>
+            <span style="font-size:13px; font-weight:600; min-width:130px;">${escapeHtml(c.cluster)}</span>
+            <div style="flex:1; height:8px; background:var(--surface2); border-radius:4px; overflow:hidden;">
+              <div style="width:${c.pct}%; height:100%; background:${barColor};"></div>
+            </div>
+            <span style="font-size:12px; font-weight:700; color:${barColor}; width:88px; text-align:right;">${c.submitted}/${c.total} · ${c.pct}%</span>
+          </div>
+          ${open ? `<div style="margin:8px 0 0 26px; display:flex; flex-direction:column; gap:4px;">
+            ${c.rows.map(r => {
+              const done = r.task && r.task.status === "Closed";
+              return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface2);">
+                <span style="font-size:12.5px;">${escapeHtml(r.team)}</span>
+                ${done
+                  ? `<a href="${escapeAttr(r.task.reportLink)}" target="_blank" rel="noopener noreferrer" style="font-size:12px; font-weight:600; color:var(--accent);">Open &rarr;</a>`
+                  : `<span style="font-size:11px; color:var(--text3);">Not submitted</span>`}
+              </div>`;
+            }).join("")}
+          </div>` : ""}
+        </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+
 function renderWeeklyDeadlineSetting() {
   if (!isPermissionAdmin) return "";
   const wd = recurringTaskSettings.weeklyPmReportWeekday;
@@ -7708,6 +7764,7 @@ function renderMyTasks() {
   return `<div style="max-width:1500px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
     ${renderWeeklyDeadlineSetting()}
+    ${renderWeeklyReportOverview()}
     ${renderCalendar()}
     ${renderTodoBoard()}
     <div class="req-card soon" style="margin-top:22px; max-width:420px;">
