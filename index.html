@@ -123,6 +123,22 @@
   .rec-chip { display:inline-flex; align-items:center; gap:4px; background:var(--surface2); border:1px solid var(--border); border-radius:14px; padding:3px 6px 3px 10px; font-size:12px; font-weight:600; }
   .rec-chip-x { cursor:pointer; color:var(--text3); font-size:15px; line-height:1; padding:0 4px; }
   .rec-chip-x:hover { color:var(--red, #ef4444); }
+  .cal-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .cal-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .cal-title { font-size: 18px; font-weight: 700; }
+  .cal-nav { display: flex; gap: 6px; }
+  .cal-nav .btn { min-width: 36px; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--border); border-left: 1px solid var(--border); }
+  .cal-dow { padding: 8px 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text3); text-align: center; background: var(--surface2); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .cal-cell { min-height: 96px; padding: 6px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: hidden; }
+  .cal-cell.cal-weekend { background: color-mix(in srgb, var(--surface2) 55%, transparent); }
+  .cal-cell.cal-out { opacity: .38; }
+  .cal-num { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 4px; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
+  .cal-cell.cal-today .cal-num { background: var(--accent); color: #fff; border-radius: 50%; }
+  .cal-ev { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); }
+  .cal-ev-deadline { background: color-mix(in srgb, var(--red, #ef4444) 22%, transparent); }
+  .cal-more { font-size: 10px; color: var(--text3); }
+  @media (max-width: 640px) { .cal-cell { min-height: 64px; padding: 3px; } .cal-dow { padding: 6px 2px; font-size: 10px; } .cal-title { font-size: 16px; } }
   .req-badge { background: var(--red, #ef4444); color: #fff; border-radius: 10px; font-size: 10px; font-weight: 700; padding: 1px 7px; margin-left: 6px; }
   .req-todo { border-color: var(--accent); }
   .req-todo-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
@@ -467,7 +483,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-05";
+const BUILD_ID = "2026-09-28-07";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -4348,7 +4364,7 @@ let recNewShots = [];
 async function loadRecognitionCases() {
   recognitionCases = [];
   if (!recognitionCasesListId) return;
-  const select = "Title,Recipients,RecognitionRefNo,RequestedBy,RequesterName,RequestedDate,OccurrenceDate,Details,SourceLink,Status,ReviewedBy,ReviewedDate,ReturnReason,ReviewerSignature";
+  const select = "Title,Recipients,RecognitionRefNo,RequestedBy,RequesterName,RequestedDate,OccurrenceDate,Details,Status,ReviewedBy,ReviewedDate,ReturnReason,ReviewerSignature";
   const mapItem = it => {
     const f = it.fields;
     return {
@@ -4361,7 +4377,7 @@ async function loadRecognitionCases() {
       requestedDate: f["RequestedDate"] || null,
       occurrenceDate: f["OccurrenceDate"] || null,
       details: f["Details"] || "",
-      sourceLink: f["SourceLink"] || "",
+      originalText: null,    // "SourceLink" column holds the pasted original message; loaded lazily with screenshots
       status: f["Status"] || "Pending",
       reviewedBy: f["ReviewedBy"] || "",
       reviewedDate: f["ReviewedDate"] || null,
@@ -4402,9 +4418,14 @@ function isRecognitionRequester(c) {
   const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
   return !!(c.requestedBy && c.requestedBy.toLowerCase() === myEmail);
 }
-function canReviewThisRecognition(c) { return canReviewRecognition() && !isRecognitionRequester(c); }
+// A reviewer may not approve a request that recognizes themselves.
+function isRecognitionRecipient(c) {
+  const me = myEmployeeRecord();
+  return !!(me && (c.recipients || []).some(r => String(r.id) === String(me.id)));
+}
+function canReviewThisRecognition(c) { return canReviewRecognition() && !isRecognitionRecipient(c); }
 function recognitionReviewQueue() {
-  return canReviewRecognition() ? recognitionCases.filter(c => c.status === "Pending" && !isRecognitionRequester(c)) : [];
+  return canReviewRecognition() ? recognitionCases.filter(c => c.status === "Pending" && !isRecognitionRecipient(c)) : [];
 }
 function myReturnedRecognition() {
   const cutoff = Date.now() - RECOGNITION_RETURNED_NOTICE_DAYS * 86400000;
@@ -4429,7 +4450,7 @@ function recSafeUrl(u) {
 // ── navigation ──────────────────────────────────────────────────────────────
 function openRecognitionList(mine) {
   if (!recognitionCasesListId) return;
-  if (!mine && !canViewCaseLists()) mine = true;
+  if (!mine && !canReviewRecognition()) mine = true; // reviewers (HOC, HR/Admin) can open the full list
   hrView = { mode: "recList", mine: !!mine };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
@@ -4478,9 +4499,8 @@ function filterRecEmployees() {
   const q = document.getElementById("recSearch").value.trim().toLowerCase();
   const box = document.getElementById("recOptions");
   if (!q) { box.style.display = "none"; return; }
-  const me = myEmployeeRecord();
   const chosen = new Set(recNewRecipients.map(r => String(r.id)));
-  const matches = employees.filter(e => e.status !== "Resigned" && !chosen.has(String(e.id)) && !(me && String(me.id) === String(e.id)) && e.name.toLowerCase().includes(q)).slice(0, 8);
+  const matches = employees.filter(e => e.status !== "Resigned" && !chosen.has(String(e.id)) && e.name.toLowerCase().includes(q)).slice(0, 8);
   if (!matches.length) { box.style.display = "none"; return; }
   box.innerHTML = matches.map(e => `<div onclick="addRecRecipient('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
   box.style.display = "";
@@ -4569,13 +4589,9 @@ async function submitRecognitionRequest() {
   if (occurrenceDate > toLocalYMD(new Date())) { toast("The date can't be in the future.", "error"); return; }
   const details = document.getElementById("recDetails").value.trim();
   if (!details) { toast("Describe what happened.", "error"); return; }
-  const rawLink = document.getElementById("recLink").value.trim();
-  let sourceLink = "";
-  if (rawLink) {
-    sourceLink = recSafeUrl(rawLink);
-    if (!sourceLink) { toast("That link doesn't look valid. Use a full http(s) address.", "error"); return; }
-  }
-  if (!sourceLink && !recNewShots.length) { toast("Attach the original message link or at least one screenshot as evidence.", "error"); return; }
+  const originalText = document.getElementById("recOriginal").value.trim();
+  if (originalText.length > 20000) { toast("The original message is too long (max 20,000 characters). Trim it or rely on the screenshot.", "error"); return; }
+  if (!originalText && !recNewShots.length) { toast("Paste the original message text or attach at least one screenshot as evidence.", "error"); return; }
   if (!confirm(`Send this recognition request for ${recNewRecipients.map(r => r.name).join(", ")}?`)) return;
 
   const me = myEmployeeRecord();
@@ -4587,7 +4603,7 @@ async function submitRecognitionRequest() {
   const fields = {
     Title: title, Recipients: JSON.stringify(recNewRecipients), RecognitionRefNo: refNo,
     RequestedBy: requestedBy, RequesterName: requesterName, RequestedDate: requestedDate, OccurrenceDate: occurrenceDate,
-    Details: details, SourceLink: sourceLink, Status: "Pending"
+    Details: details, SourceLink: originalText, Status: "Pending"
   };
   recNewShots.forEach((d, i) => { fields["Screenshot" + (i + 1)] = d; });
   setSyncing(true);
@@ -4595,7 +4611,7 @@ async function submitRecognitionRequest() {
     const created = await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
     recognitionCases.unshift({
       itemId: created.id, title, recipients: recNewRecipients.slice(), refNo, requestedBy, requesterName, requestedDate, occurrenceDate,
-      details, sourceLink, status: "Pending", reviewedBy: "", reviewedDate: null, returnReason: "", reviewerSignature: null,
+      details, originalText, status: "Pending", reviewedBy: "", reviewedDate: null, returnReason: "", reviewerSignature: null,
       screenshots: recNewShots.slice(), shotsLoaded: true
     });
     setSyncing(false, true);
@@ -4612,12 +4628,14 @@ async function ensureRecognitionShots(c) {
   if (c.shotsLoaded || c._loadingShots) return;
   c._loadingShots = true;
   try {
-    const data = await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${c.itemId}?$expand=fields($select=Screenshot1,Screenshot2,Screenshot3)`);
+    const data = await graphFetch(`/sites/${siteId}/lists/${recognitionCasesListId}/items/${c.itemId}?$expand=fields($select=SourceLink,Screenshot1,Screenshot2,Screenshot3)`);
     const f = data.fields || {};
+    c.originalText = f["SourceLink"] || "";
     c.screenshots = [f["Screenshot1"], f["Screenshot2"], f["Screenshot3"]].filter(Boolean);
     c.shotsLoaded = true;
   } catch (e) {
     console.warn("Could not load screenshots:", e);
+    c.originalText = c.originalText || "";
     c.screenshots = [];
     c.shotsLoaded = true;
   }
@@ -4732,7 +4750,6 @@ function recognitionBodyHtml(c, forPrint) {
   const border = forPrint ? "#e1e4ec" : "var(--border)";
   const muted = forPrint ? "#8891a3" : "var(--text3)";
   const body = forPrint ? "#1a1f2b" : "var(--text2)";
-  const link = c.sourceLink ? recSafeUrl(c.sourceLink) : "";
   const shots = c.screenshots || [];
   const sig = parseSignatureField(c.reviewerSignature);
   return `
@@ -4748,7 +4765,7 @@ function recognitionBodyHtml(c, forPrint) {
     </div>
     <div style="font-weight:600; margin-bottom:4px;">What happened</div>
     <p style="white-space:pre-wrap; color:${body}; margin-bottom:14px;">${escapeHtml(c.details)}</p>
-    ${link ? `<div style="font-weight:600; margin-bottom:4px;">Original message link</div><p style="margin-bottom:14px; word-break:break-all;"><a href="${escapeAttr(link)}" target="_blank" rel="noopener noreferrer" style="color:${forPrint ? "#1a56db" : "var(--accent)"};">${escapeHtml(link)}</a></p>` : ""}
+    ${c.originalText ? `<div style="font-weight:600; margin-bottom:4px;">Original message</div><div style="white-space:pre-wrap; word-break:break-word; color:${body}; background:${forPrint ? "#f7f8fb" : "var(--surface2)"}; border:1px solid ${border}; border-radius:8px; padding:10px 12px; margin-bottom:14px; font-size:12.5px;">${escapeHtml(c.originalText)}</div>` : ""}
     ${shots.length ? `<div style="font-weight:600; margin-bottom:6px;">Screenshots</div><div style="margin-bottom:14px;">${shots.map(d => forPrint
         ? `<img src="${d}" style="max-width:100%; max-height:420px; border:1px solid ${border}; margin:0 8px 8px 0; page-break-inside:avoid;" />`
         : `<img src="${d}" onclick="this.style.maxHeight = this.style.maxHeight ? '' : 'none'; this.style.height = this.style.height ? '' : 'auto'; this.style.maxWidth='100%';" title="Click to enlarge" style="height:120px; border:1px solid ${border}; border-radius:6px; background:#fff; margin:0 8px 8px 0; cursor:zoom-in;" />`).join("")}</div>` : ""}
@@ -4809,7 +4826,7 @@ function renderRecognitionNewForm(box) {
     </div>
     <div class="form-group"><label>Date it happened *</label><input id="recDate" type="date" value="${escapeHtml(toLocalYMD(new Date()))}" max="${escapeHtml(toLocalYMD(new Date()))}" /></div>
     <div class="form-group"><label>What happened *</label><textarea id="recDetails" style="min-height:110px;" placeholder="Describe the contribution and its impact…"></textarea></div>
-    <div class="form-group"><label>Original message link <span style="font-weight:400; color:var(--text3);">(Teams / email / chat link)</span></label><input id="recLink" type="text" placeholder="https://…" /></div>
+    <div class="form-group"><label>Original message <span style="font-weight:400; color:var(--text3);">(copy &amp; paste the text)</span></label><textarea id="recOriginal" style="min-height:110px;" maxlength="20000" placeholder="Paste the original message / comment here…"></textarea></div>
     <div class="form-group">
       <label>Screenshots <span style="font-weight:400; color:var(--text3);">(<span id="recShotCount">0/${RECOGNITION_MAX_SHOTS}</span>)</span></label>
       <div id="recPasteZone" tabindex="0" style="border:1px dashed var(--border); border-radius:8px; padding:12px; font-size:12px; color:var(--text2); outline:none;">
@@ -4817,7 +4834,7 @@ function renderRecognitionNewForm(box) {
         <input id="recFileInput" type="file" accept="image/*" multiple onchange="addRecognitionShots(this.files)" />
         <div id="recShots" style="margin-top:10px;"></div>
       </div>
-      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Attach the link, at least one screenshot, or both. Images are shrunk automatically.</div>
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Provide the pasted original message, at least one screenshot, or both. Images are shrunk automatically.</div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
@@ -4847,6 +4864,8 @@ function renderRecognitionDetail(box) {
       <button class="btn btn-secondary" onclick="returnRecognitionRequest('${c.itemId}')">Return with Reason</button>
     </div>`;
     padToInit.push("recSigReviewer");
+  } else if (c.status === "Pending" && canReviewRecognition() && isRecognitionRecipient(c)) {
+    panel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">You are one of the people being recognized, so another Head of Cluster or HR/Admin needs to review this request.</div>`;
   } else if (c.status === "Pending") {
     panel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for review by a Head of Cluster or HR/Admin.</div>`;
   } else if (c.status === "Returned") {
@@ -6599,7 +6618,7 @@ function renderRequests() {
     { icon: "&#128200;", title: "Create PIP", desc: "Performance Improvement Plan." },
     { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteNewFromRequests()" : "" },
     { icon: "&#127942;", title: "Request Recognition", desc: "Recommend teammates or managers for recognition.",
-      actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }] : undefined },
+      actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }, ...(canReviewRecognition() ? [{ label: "Review Requests", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : [])] : undefined },
     { icon: "&#128101;", title: "Manpower Request", desc: "Addition · Removal · Transfer" },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }
@@ -6628,18 +6647,72 @@ function renderRequests() {
   </div>`;
 }
 
+// ── My Tasks: monthly calendar ───────────────────────────────────────────
+// Shows the current month by default; prev/next buttons page through months.
+// calendarEventsFor(ymd) is the single hook where tasks / deadlines will plug in later
+// (return [{ title, type: "task" | "deadline" }, ...] for that day).
+let calView = null; // { y, m } — null means "this month"
+function calCurrent() {
+  if (!calView) { const d = new Date(); calView = { y: d.getFullYear(), m: d.getMonth() }; }
+  return calView;
+}
+function calNav(delta) {
+  const v = calCurrent();
+  const d = new Date(v.y, v.m + delta, 1);
+  calView = { y: d.getFullYear(), m: d.getMonth() };
+  renderContent();
+}
+function calToday() { calView = null; renderContent(); }
+function calendarEventsFor(ymd) { return []; }
+
+function renderCalendar() {
+  const v = calCurrent();
+  const monthName = new Date(v.y, v.m, 1).toLocaleString("en-US", { month: "long" });
+  const first = new Date(v.y, v.m, 1);
+  const daysInMonth = new Date(v.y, v.m + 1, 0).getDate();
+  const offset = first.getDay(); // Sunday-first
+  const cells = Math.ceil((offset + daysInMonth) / 7) * 7;
+  const todayYmd = toLocalYMD(new Date());
+  const now = new Date();
+  const isThisMonth = v.y === now.getFullYear() && v.m === now.getMonth();
+  const head = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => `<div class="cal-dow">${d}</div>`).join("");
+  let body = "";
+  for (let i = 0; i < cells; i++) {
+    const d = new Date(v.y, v.m, 1 - offset + i);
+    const ymd = toLocalYMD(d);
+    const inMonth = d.getMonth() === v.m;
+    const events = inMonth ? calendarEventsFor(ymd) : [];
+    const weekend = d.getDay() === 0 || d.getDay() === 6;
+    body += `<div class="cal-cell${inMonth ? "" : " cal-out"}${weekend ? " cal-weekend" : ""}${ymd === todayYmd ? " cal-today" : ""}">
+      <div class="cal-num">${d.getDate()}</div>
+      ${events.slice(0, 3).map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}">${escapeHtml(e.title)}</div>`).join("")}
+      ${events.length > 3 ? `<div class="cal-more">+${events.length - 3} more</div>` : ""}
+    </div>`;
+  }
+  return `<div class="cal-wrap">
+    <div class="cal-bar">
+      <div class="cal-title">${escapeHtml(monthName)} ${v.y}</div>
+      <div class="cal-nav">
+        <button class="btn btn-secondary btn-sm" onclick="calNav(-1)" title="Previous month">&lsaquo;</button>
+        <button class="btn btn-secondary btn-sm" onclick="calToday()" ${isThisMonth ? "disabled" : ""}>Today</button>
+        <button class="btn btn-secondary btn-sm" onclick="calNav(1)" title="Next month">&rsaquo;</button>
+      </div>
+    </div>
+    <div class="cal-grid">${head}${body}</div>
+  </div>`;
+}
+
 function renderMyTasks() {
-  const card = (icon, title, desc) => `<div class="req-card soon"><div class="req-title"><span>${icon}</span><span>${title}</span><span class="req-tag">Coming soon</span></div><div class="req-desc">${desc}</div></div>`;
   return `<div style="max-width:1100px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
-    <div class="req-grid">
-      ${card("&#128197;", "Calendar", "Your schedule, deadlines and follow-ups in one place.")}
-      ${card("&#128276;", "Task Notification", "Tasks and approvals waiting on you.")}
+    ${renderCalendar()}
+    <div class="req-card soon" style="margin-top:22px; max-width:420px;">
+      <div class="req-title"><span>&#128276;</span><span>Task Notification</span><span class="req-tag">Coming soon</span></div>
+      <div class="req-desc">Tasks and deadlines you add or are assigned will appear on the calendar and notify you here.</div>
     </div>
     <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE and coaching items are shown under <strong>Requests</strong> for now.</div>
   </div>`;
 }
-
 
 function renderContent() {
   const main = document.getElementById("mainContent");
