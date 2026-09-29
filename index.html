@@ -483,7 +483,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-09";
+const BUILD_ID = "2026-09-29-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -509,6 +509,7 @@ const CONFIG = {
   recognitionCasesListDisplayName: "HR Recognition Requests",
   recurringTasksListDisplayName: "HR Recurring Tasks",
   recurringTaskSettingsListDisplayName: "HR Recurring Task Settings",
+  generalTasksListDisplayName: "HR General Tasks",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -970,6 +971,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
 let recurringTasksListId = null;
+let generalTasksListId = null;
+let generalTasks = []; // see General Task Request module below
 let recurringTaskSettingsListId = null;
 let recognitionCasesListId = null;
 let recognitionCases = []; // see Recognition Request module below
@@ -994,7 +997,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1061,6 +1064,8 @@ async function resolveSiteAndLists() {
   recurringTasksListId = recurringMatch ? recurringMatch.id : null; // optional — Weekly PM Report auto-generation stays off if missing
   const recurringSettingsMatch = (lists.value || []).find(l => l.displayName === CONFIG.recurringTaskSettingsListDisplayName);
   recurringTaskSettingsListId = recurringSettingsMatch ? recurringSettingsMatch.id : null; // optional — falls back to the Tuesday default
+  const generalTasksMatch = (lists.value || []).find(l => l.displayName === CONFIG.generalTasksListDisplayName);
+  generalTasksListId = generalTasksMatch ? generalTasksMatch.id : null; // optional — General Task Request card stays "Coming soon" if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -5104,7 +5109,7 @@ function canRequestExtension(t) {
 }
 
 // ── calendar hook ────────────────────────────────────────────────────────────
-function calendarEventsFor(ymd) {
+function calendarEventsForRecurring(ymd) {
   return visibleRecurringTasks()
     .filter(t => t.dueDate === ymd)
     .map(t => ({ title: `${t.title} — ${t.team} (${t.cluster})${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline" }));
@@ -5242,25 +5247,625 @@ function renderWeeklyDeadlineSetting() {
   </div>`;
 }
 
+// Merges Weekly PM Report alerts with General Task Request deadlines the signed-in user is
+// on the hook for, so "My Tasks" shows one combined D-3…D-0 list regardless of task kind.
+function unifiedTaskAlerts() {
+  const weekly = recurringTaskAlerts().map(({ t, level }) => ({
+    level, sortMs: new Date(t.dueDate + "T23:59:59").getTime(), onclick: `openRecurringTask('${t.itemId}')`,
+    title: `${t.title} — ${t.team}`, sub: t.cluster, dueLabel: `Due ${dateOnly(t.dueDate)}`, badge: alertLabel(t)
+  }));
+  const general = generalTaskAlerts().map(({ t, a, level }) => ({
+    level, sortMs: genTaskDueMs(t), onclick: `openGeneralTaskDetail('${t.itemId}')`,
+    title: t.content.slice(0, 50) + (t.content.length > 50 ? "…" : ""), sub: t.refNo, dueLabel: `Due ${fmtDueDateTime(t.dueDateTime)}`,
+    badge: level === "due" ? "Due now" : level === "d1" ? "D-1" : "D-3"
+  }));
+  return [...weekly, ...general].sort((a, b) => a.sortMs - b.sortMs);
+}
+function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
+
 function renderTaskAlerts() {
-  const alerts = recurringTaskAlerts();
+  const alerts = unifiedTaskAlerts();
   if (!alerts.length) return `<div style="font-size:12px; color:var(--text3); margin-bottom:20px;">No task deadlines within the next 3 days.</div>`;
   const styleFor = level => level === "due" ? { bg: "color-mix(in srgb, var(--red, #ef4444) 15%, transparent)", border: "var(--red, #ef4444)", color: "var(--red, #ef4444)" }
     : level === "d1" ? { bg: "color-mix(in srgb, var(--yellow) 18%, transparent)", border: "var(--yellow)", color: "var(--yellow)" }
     : { bg: "var(--surface2)", border: "var(--border)", color: "var(--text2)" };
   return `<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:22px;">
-    ${alerts.map(({ t, level }) => {
-      const s = styleFor(level);
-      return `<div onclick="openRecurringTask('${t.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:${s.bg}; border:1px solid ${s.border}; border-radius:8px; padding:10px 14px;">
+    ${alerts.map(x => {
+      const s = styleFor(x.level);
+      return `<div onclick="${x.onclick}" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:${s.bg}; border:1px solid ${s.border}; border-radius:8px; padding:10px 14px;">
         <div>
-          <div style="font-size:13px; font-weight:600;">${escapeHtml(t.title)} — ${escapeHtml(t.team)}</div>
-          <div style="font-size:10px; color:var(--text3);">${escapeHtml(t.cluster)}</div>
-          <div style="font-size:11px; color:var(--text3);">Due ${escapeHtml(dateOnly(t.dueDate))}</div>
+          <div style="font-size:13px; font-weight:600;">${escapeHtml(x.title)}</div>
+          <div style="font-size:10px; color:var(--text3);">${escapeHtml(x.sub)}</div>
+          <div style="font-size:11px; color:var(--text3);">${escapeHtml(x.dueLabel)}</div>
         </div>
-        <span style="font-size:${level === "due" ? "14px" : "12px"}; font-weight:800; color:${s.color};">${escapeHtml(alertLabel(t))}</span>
+        <span style="font-size:${x.level === "due" ? "14px" : "12px"}; font-weight:800; color:${s.color};">${escapeHtml(x.badge)}</span>
       </div>`;
     }).join("")}
   </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// General Task Request module
+// APM+ can request tasks. Own-team managers (APM/PM) assign only within their own team;
+// SPM and above may assign across teams. Multiple assignees per task, each acting
+// independently (Acknowledge / Decline / Request a different assignee) — no signatures.
+// Decline and reassignment requests only take effect once the requester approves them.
+// A single shared deadline (date + time) applies to the whole task; any acknowledged
+// assignee or the requester can request an extension, self-service, until the chosen
+// cutoff (12h / 24h / 3 days before the deadline).
+// ═══════════════════════════════════════════════════════════════════════════
+const GENTASK_EXTENSION_CUTOFFS = [
+  { hours: 12, label: "12 hours before the deadline" },
+  { hours: 24, label: "24 hours before the deadline" },
+  { hours: 72, label: "3 days before the deadline" }
+];
+let genTaskNewAssignees = [];
+
+function coaParseJsonSafe(raw, fallback) { return coaParseJson(raw, fallback); } // alias for readability here
+
+async function loadGeneralTasks() {
+  generalTasks = [];
+  if (!generalTasksListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${generalTasksListId}/items?$expand=fields&$top=500&$orderby=fields/DueDateTime asc`;
+    const data = await graphFetch(url);
+    (data.value || []).forEach(it => {
+      const f = it.fields;
+      generalTasks.push({
+        itemId: it.id, refNo: f["TaskRefNo"] || "", requestedBy: f["RequestedBy"] || "", requesterName: f["RequesterName"] || "",
+        requestedDate: f["RequestedDate"] || null, originalDueDateTime: f["OriginalDueDateTime"] || f["DueDateTime"] || null,
+        dueDateTime: f["DueDateTime"] || null, content: f["TaskContent"] || "", submissionMethod: f["SubmissionMethod"] || "",
+        extensionCutoffHours: parseInt(f["ExtensionCutoffHours"], 10) || 24,
+        extensionReason: f["ExtensionReason"] || "", extensionRequestedBy: f["ExtensionRequestedBy"] || "", extensionRequestedDate: f["ExtensionRequestedDate"] || null,
+        assignees: coaParseJson(f["Assignees"], [])
+      });
+    });
+  } catch (e) {
+    console.warn("Could not load HR General Tasks (list may not exist yet):", e);
+    generalTasks = [];
+  }
+}
+
+// ── permissions ──────────────────────────────────────────────────────────────
+function canRequestGeneralTask() { return canDraftNte(); }               // APM or higher
+function canAssignAcrossTeams() {
+  const me = myEmployeeRecord();
+  return !!me && positionRankIndex(me.position) <= positionRankIndex("Senior Product Manager");
+}
+function genTaskAssigneePool() {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  if (canAssignAcrossTeams()) return employees.filter(e => e.status !== "Resigned");
+  return employees.filter(e => e.status !== "Resigned" && e.team === me.team && (me.cluster || "") === (e.cluster || ""));
+}
+function isGeneralTaskRequester(t) {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return !!(t.requestedBy && t.requestedBy.toLowerCase() === myEmail);
+}
+function myAssigneeEntry(t) {
+  const me = myEmployeeRecord();
+  return me ? (t.assignees || []).find(a => String(a.id) === String(me.id)) : null;
+}
+function genTaskDueMs(t) { return new Date(t.dueDateTime).getTime(); }
+function canRequestTaskExtension(t) {
+  const ms = genTaskDueMs(t) - t.extensionCutoffHours * 3600000;
+  return Date.now() < ms;
+}
+
+// ── queues ───────────────────────────────────────────────────────────────────
+function myGeneralTaskAssignments() {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  return generalTasks
+    .map(t => ({ t, a: myAssigneeEntry(t) }))
+    .filter(x => x.a);
+}
+function myPendingGeneralTasks() { return myGeneralTaskAssignments().filter(x => x.a.status === "Pending"); }
+function myActiveGeneralTasks() { return myGeneralTaskAssignments().filter(x => x.a.status === "Acknowledged"); }
+function myRequestedGeneralTasks() {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return generalTasks.filter(t => t.requestedBy && t.requestedBy.toLowerCase() === myEmail);
+}
+function genTasksNeedingMyApproval() {
+  return myRequestedGeneralTasks().filter(t => (t.assignees || []).some(a => a.status === "DeclinePending" || a.status === "ChangePending"));
+}
+function assigneeStatusLabel(status) {
+  const map = {
+    Pending: { text: "Awaiting response", color: "var(--text3)" },
+    Acknowledged: { text: "Acknowledged", color: "var(--accent)" },
+    DeclinePending: { text: "Decline — awaiting your approval", color: "var(--yellow)" },
+    ChangePending: { text: "Reassignment requested — awaiting your approval", color: "var(--yellow)" },
+    Declined: { text: "Declined", color: "var(--red, #ef4444)" },
+    Submitted: { text: "Submitted", color: "var(--green)" }
+  };
+  return map[status] || { text: status, color: "var(--text3)" };
+}
+function genTaskOverallDone(t) {
+  return (t.assignees || []).length > 0 && (t.assignees || []).every(a => a.status === "Submitted" || a.status === "Declined");
+}
+
+// ── unified deadline alert level (shared with the weekly-task calendar/alerts) ──
+// diff<=0 → most urgent ("due"/overdue); <=24h → "d1"; <=72h (D-3/D-2) → "soon"; else none.
+function alertLevelForDueMs(dueMs) {
+  const diff = dueMs - Date.now();
+  if (diff <= 0) return "due";
+  if (diff <= 24 * 3600000) return "d1";
+  if (diff <= 72 * 3600000) return "soon";
+  return null;
+}
+function generalTaskAlertLevel(t, a) {
+  if (!a || a.status === "Submitted" || a.status === "Declined") return null;
+  return alertLevelForDueMs(genTaskDueMs(t));
+}
+function generalTaskAlerts() {
+  return myGeneralTaskAssignments()
+    .map(({ t, a }) => ({ t, a, level: generalTaskAlertLevel(t, a) }))
+    .filter(x => x.level);
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openGeneralTaskNewForm() {
+  if (!canRequestGeneralTask()) return;
+  genTaskNewAssignees = [];
+  hrView = { mode: "gtNew" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openGeneralTaskList(mine) {
+  if (!generalTasksListId) return;
+  hrView = { mode: "gtList", mine: !!mine };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openGeneralTaskDetail(itemId) {
+  hrView = { mode: "gtDetail", caseId: itemId };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function closeGenTaskModal() { closeHRModal(); }
+
+// ── new request: assignee picker (reuses the chip UI pattern) ───────────────
+function renderGtAssignees() {
+  const el = document.getElementById("gtAssignees");
+  if (!el) return;
+  el.innerHTML = genTaskNewAssignees.length
+    ? genTaskNewAssignees.map((r, i) => `<span class="rec-chip">${escapeHtml(r.name)}<span style="color:var(--text3); font-weight:400;"> · ${escapeHtml(r.position || r.team || "")}</span><span class="rec-chip-x" onclick="removeGtAssignee(${i})" title="Remove">&times;</span></span>`).join("")
+    : `<span style="font-size:12px; color:var(--text3);">No one selected yet.</span>`;
+}
+function filterGtEmployees() {
+  const q = document.getElementById("gtSearch").value.trim().toLowerCase();
+  const box = document.getElementById("gtOptions");
+  if (!q) { box.style.display = "none"; return; }
+  const chosen = new Set(genTaskNewAssignees.map(r => String(r.id)));
+  const pool = genTaskAssigneePool();
+  const matches = pool.filter(e => !chosen.has(String(e.id)) && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="addGtAssignee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function addGtAssignee(id) {
+  const e = employees.find(x => String(x.id) === String(id));
+  if (!e || genTaskNewAssignees.some(r => String(r.id) === String(id))) return;
+  genTaskNewAssignees.push({ id: String(e.id), name: e.name, position: e.position || "", team: e.team || "" });
+  document.getElementById("gtSearch").value = "";
+  document.getElementById("gtOptions").style.display = "none";
+  renderGtAssignees();
+}
+function removeGtAssignee(i) { genTaskNewAssignees.splice(i, 1); renderGtAssignees(); }
+
+// ── submit new request ───────────────────────────────────────────────────────
+async function submitGeneralTaskRequest() {
+  if (!canRequestGeneralTask()) return;
+  if (!genTaskNewAssignees.length) { toast("Select at least one assignee.", "error"); return; }
+  const dueRaw = document.getElementById("gtDue").value; // datetime-local
+  if (!dueRaw) { toast("Set the deadline date and time.", "error"); return; }
+  const dueDateTime = new Date(dueRaw).toISOString();
+  if (new Date(dueDateTime).getTime() <= Date.now()) { toast("The deadline must be in the future.", "error"); return; }
+  const content = document.getElementById("gtContent").value.trim();
+  if (!content) { toast("Describe the task.", "error"); return; }
+  const submissionMethod = document.getElementById("gtSubmission").value.trim();
+  if (!submissionMethod) { toast("Describe how the task should be submitted.", "error"); return; }
+  const cutoffHours = parseInt(document.getElementById("gtCutoff").value, 10);
+  if (!confirm(`Send this task to ${genTaskNewAssignees.map(a => a.name).join(", ")}?`)) return;
+
+  const me = myEmployeeRecord();
+  const requestedBy = (currentAccount && currentAccount.username) || "";
+  const requesterName = (me && me.name) || requestedBy;
+  const requestedDate = new Date().toISOString();
+  const refNo = "GT-" + toLocalYMD(new Date()).replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  const assignees = genTaskNewAssignees.map(a => ({ ...a, status: "Pending" }));
+  const fields = {
+    Title: content.slice(0, 100), TaskRefNo: refNo, RequestedBy: requestedBy, RequesterName: requesterName, RequestedDate: requestedDate,
+    OriginalDueDateTime: dueDateTime, DueDateTime: dueDateTime, TaskContent: content, SubmissionMethod: submissionMethod,
+    ExtensionCutoffHours: String(cutoffHours), Assignees: JSON.stringify(assignees)
+  };
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${generalTasksListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    generalTasks.unshift({
+      itemId: created.id, refNo, requestedBy, requesterName, requestedDate, originalDueDateTime: dueDateTime, dueDateTime,
+      content, submissionMethod, extensionCutoffHours: cutoffHours, extensionReason: "", extensionRequestedBy: "", extensionRequestedDate: null,
+      assignees
+    });
+    setSyncing(false, true);
+    toast("Task request sent ✓", "success");
+    openGeneralTaskDetail(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not send request: " + err.message, "error");
+  }
+}
+
+// ── persist a task's mutated assignee list / due date ───────────────────────
+async function saveGeneralTask(t, fields) {
+  await graphFetch(`/sites/${siteId}/lists/${generalTasksListId}/items/${t.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+}
+
+// ── assignee actions ─────────────────────────────────────────────────────────
+async function gtAcknowledge(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  const a = t && myAssigneeEntry(t);
+  if (!t || !a || a.status !== "Pending") return;
+  a.status = "Acknowledged";
+  a.respondedDate = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Acknowledged ✓", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function gtDecline(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  const a = t && myAssigneeEntry(t);
+  if (!t || !a || a.status !== "Pending") return;
+  const reason = document.getElementById("gtDeclineReason").value.trim();
+  if (!reason) { toast("Enter your reason for declining.", "error"); return; }
+  a.status = "DeclinePending"; a.declineReason = reason; a.respondedDate = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Decline sent to the requester for approval", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+function gtChangeCandidates() {
+  const me = myEmployeeRecord();
+  return employees.filter(e => e.status !== "Resigned" && !(me && String(me.id) === String(e.id)));
+}
+function filterGtChangeCandidate() {
+  const q = document.getElementById("gtChangeSearch").value.trim().toLowerCase();
+  const box = document.getElementById("gtChangeOptions");
+  document.getElementById("gtChangeToId").value = "";
+  if (!q) { box.style.display = "none"; return; }
+  const matches = gtChangeCandidates().filter(e => e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="pickGtChangeCandidate('${e.id}','${jsAttrEscape(e.name)}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function pickGtChangeCandidate(id, name) {
+  document.getElementById("gtChangeToId").value = id;
+  document.getElementById("gtChangeSearch").value = name;
+  document.getElementById("gtChangeOptions").style.display = "none";
+}
+async function gtRequestChange(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  const a = t && myAssigneeEntry(t);
+  if (!t || !a || a.status !== "Pending") return;
+  const toId = document.getElementById("gtChangeToId").value;
+  const candidate = employees.find(e => String(e.id) === String(toId));
+  if (!candidate) { toast("Search and select who should take this over.", "error"); return; }
+  const reason = document.getElementById("gtChangeReason").value.trim();
+  if (!reason) { toast("Enter the reason for the change.", "error"); return; }
+  a.status = "ChangePending";
+  a.changeToId = String(candidate.id); a.changeToName = candidate.name; a.changeToPosition = candidate.position || ""; a.changeToTeam = candidate.team || "";
+  a.changeReason = reason; a.respondedDate = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Reassignment request sent to the requester for approval", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function gtSubmit(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  const a = t && myAssigneeEntry(t);
+  if (!t || !a || a.status !== "Acknowledged") return;
+  const content = document.getElementById("gtSubmitContent").value.trim();
+  const link = document.getElementById("gtSubmitLink").value.trim();
+  let safeLink = "";
+  if (link) { safeLink = recSafeUrl(link); if (!safeLink) { toast("That link doesn't look valid.", "error"); return; } }
+  if (!content && !safeLink) { toast("Write a short note or attach a link — at least one.", "error"); return; }
+  a.status = "Submitted"; a.submittedContent = content; a.submittedLink = safeLink; a.submittedDate = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Task submitted ✓", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+// ── requester actions: approve/return decline or change requests ───────────
+async function gtApproveDecline(itemId, assigneeId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t || !isGeneralTaskRequester(t)) return;
+  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
+  if (!a || a.status !== "DeclinePending") return;
+  a.status = "Declined";
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Decline confirmed", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function gtReturnDecline(itemId, assigneeId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t || !isGeneralTaskRequester(t)) return;
+  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
+  if (!a || a.status !== "DeclinePending") return;
+  if (!confirm(`Ask ${a.name} to reconsider? This puts the task back to "awaiting response" for them.`)) return;
+  a.status = "Pending"; a.declineReason = "";
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Sent back to the assignee", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function gtApproveChange(itemId, assigneeId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t || !isGeneralTaskRequester(t)) return;
+  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
+  if (!a || a.status !== "ChangePending") return;
+  if (!confirm(`Reassign this task to ${a.changeToName}?`)) return;
+  a.id = a.changeToId; a.name = a.changeToName; a.position = a.changeToPosition; a.team = a.changeToTeam;
+  a.status = "Pending";
+  a.reassignedFrom = a.reassignedFrom || []; a.reassignedFrom.push({ name: a.name, date: new Date().toISOString() });
+  delete a.changeToId; delete a.changeToName; delete a.changeToPosition; delete a.changeToTeam; delete a.changeReason;
+  a.declineReason = ""; a.respondedDate = null;
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Reassigned ✓", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function gtReturnChange(itemId, assigneeId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t || !isGeneralTaskRequester(t)) return;
+  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
+  if (!a || a.status !== "ChangePending") return;
+  a.status = "Pending";
+  delete a.changeToId; delete a.changeToName; delete a.changeToPosition; delete a.changeToTeam; delete a.changeReason;
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
+    setSyncing(false, true);
+    toast("Reassignment request declined", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+// ── extension (self-service, task-wide deadline) ────────────────────────────
+async function gtRequestExtension(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t) return;
+  const a = myAssigneeEntry(t);
+  const allowed = isGeneralTaskRequester(t) || (a && a.status === "Acknowledged");
+  if (!allowed || !canRequestTaskExtension(t)) return;
+  const newDueRaw = document.getElementById("gtExtDue").value;
+  if (!newDueRaw) { toast("Choose the new deadline.", "error"); return; }
+  const newDue = new Date(newDueRaw).toISOString();
+  if (new Date(newDue).getTime() <= genTaskDueMs(t)) { toast("The new deadline must be later than the current one.", "error"); return; }
+  const reason = document.getElementById("gtExtReason").value.trim();
+  if (!reason) { toast("Enter the reason for the extension.", "error"); return; }
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  if (!confirm("Move the deadline for everyone on this task?")) return;
+  setSyncing(true);
+  try {
+    await saveGeneralTask(t, { DueDateTime: newDue, ExtensionReason: reason, ExtensionRequestedBy: by, ExtensionRequestedDate: now });
+    Object.assign(t, { dueDateTime: newDue, extensionReason: reason, extensionRequestedBy: by, extensionRequestedDate: now });
+    setSyncing(false, true);
+    toast("Deadline extended ✓", "success");
+    openGeneralTaskDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+async function deleteGeneralTask(itemId) {
+  const t = generalTasks.find(x => x.itemId === itemId);
+  if (!t || !(isGeneralTaskRequester(t) || canViewCaseLists())) return;
+  if (!confirm("Delete this task request? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${generalTasksListId}/items/${itemId}`, { method: "DELETE" });
+    generalTasks = generalTasks.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Task deleted", "success");
+    if (hrView && hrView.mode === "gtDetail" && hrView.caseId === itemId) hrView = { mode: "gtList", mine: true };
+    renderHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+
+// ── calendar hook (merged with the weekly-task one defined earlier) ─────────
+function calendarEventsFor(ymd) {
+  const fromRecurring = calendarEventsForRecurring(ymd);
+  const fromGeneral = myGeneralTaskAssignments()
+    .filter(({ t }) => toLocalYMD(new Date(t.dueDateTime)) === ymd)
+    .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline" }));
+  return [...fromRecurring, ...fromGeneral];
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function fmtDueDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+function gtOwnActionsHtml(t, a) {
+  if (a.status === "Pending") {
+    return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Please respond</div>
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button class="btn btn-primary" onclick="gtAcknowledge('${t.itemId}')">Acknowledge</button>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+        <div>
+          <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Decline</div>
+          <textarea id="gtDeclineReason" style="min-height:60px;" placeholder="Reason…"></textarea>
+          <button class="btn btn-secondary" onclick="gtDecline('${t.itemId}')" style="margin-top:6px;">Decline</button>
+        </div>
+        <div style="position:relative;">
+          <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Request a different assignee</div>
+          <input id="gtChangeSearch" type="text" placeholder="Search a name…" oninput="filterGtChangeCandidate()" autocomplete="off" />
+          <div id="gtChangeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:160px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+          <input type="hidden" id="gtChangeToId" />
+          <textarea id="gtChangeReason" style="min-height:60px; margin-top:6px;" placeholder="Reason…"></textarea>
+          <button class="btn btn-secondary" onclick="gtRequestChange('${t.itemId}')" style="margin-top:6px;">Request Change</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  if (a.status === "Acknowledged") {
+    return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Submit this task</div>
+      <div class="form-group"><label>Note <span style="font-weight:400; color:var(--text3);">(text or link — at least one)</span></label><textarea id="gtSubmitContent" style="min-height:70px;" placeholder="What was done…"></textarea></div>
+      <div class="form-group"><label>Link (optional)</label><input id="gtSubmitLink" type="text" placeholder="https://…" /></div>
+      <button class="btn btn-primary" onclick="gtSubmit('${t.itemId}')">Submit</button>
+      ${gtExtensionBlockHtml(t)}
+    </div>`;
+  }
+  if (a.status === "DeclinePending") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for ${escapeHtml(t.requesterName)} to review your decline.</div>`;
+  if (a.status === "ChangePending") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for ${escapeHtml(t.requesterName)} to approve reassigning this to ${escapeHtml(a.changeToName)}.</div>`;
+  if (a.status === "Submitted") return `<div style="font-size:12px; color:var(--green); margin-top:12px;">Submitted on ${escapeHtml(fmtDueDateTime(a.submittedDate))}.</div>`;
+  if (a.status === "Declined") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">You declined this task.</div>`;
+  return "";
+}
+function gtExtensionBlockHtml(t) {
+  if (!canRequestTaskExtension(t)) return `<div style="font-size:11px; color:var(--text3); margin-top:12px;">Extension requests are closed — the cutoff for this task has passed.</div>`;
+  return `<div style="border-top:1px solid var(--border); margin-top:14px; padding-top:12px;">
+    <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Request an extension</div>
+    <div class="form-group"><label>New deadline</label><input id="gtExtDue" type="datetime-local" /></div>
+    <div class="form-group"><label>Reason *</label><textarea id="gtExtReason" style="min-height:60px;" placeholder="Why is more time needed?"></textarea></div>
+    <button class="btn btn-secondary" onclick="gtRequestExtension('${t.itemId}')">Request Extension</button>
+  </div>`;
+}
+function gtAssigneeCardHtml(t, a, forRequester) {
+  const s = assigneeStatusLabel(a.status);
+  let extra = "";
+  if (a.status === "DeclinePending") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">"${escapeHtml(a.declineReason)}"</div>`;
+  if (a.status === "ChangePending") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">Proposes ${escapeHtml(a.changeToName)} — "${escapeHtml(a.changeReason)}"</div>`;
+  if (a.status === "Submitted") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">${a.submittedContent ? escapeHtml(a.submittedContent) : ""}${a.submittedLink ? `${a.submittedContent ? "<br>" : ""}<a href="${escapeAttr(a.submittedLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">${escapeHtml(a.submittedLink)}</a>` : ""}</div>`;
+  const actions = forRequester && a.status === "DeclinePending" ? `<div style="display:flex; gap:6px; margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="gtApproveDecline('${t.itemId}','${a.id}')">Approve Decline</button><button class="btn btn-secondary btn-sm" onclick="gtReturnDecline('${t.itemId}','${a.id}')">Ask to Reconsider</button></div>`
+    : forRequester && a.status === "ChangePending" ? `<div style="display:flex; gap:6px; margin-top:8px;"><button class="btn btn-primary btn-sm" onclick="gtApproveChange('${t.itemId}','${a.id}')">Approve Reassignment</button><button class="btn btn-secondary btn-sm" onclick="gtReturnChange('${t.itemId}','${a.id}')">Decline Reassignment</button></div>`
+    : "";
+  return `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
+    <div style="display:flex; justify-content:space-between; gap:10px;">
+      <div style="font-size:13px; font-weight:600;">${escapeHtml(a.name)}<span style="font-weight:400; color:var(--text3);"> · ${escapeHtml(a.position || a.team || "")}</span></div>
+      <span style="font-size:12px; font-weight:600; color:${s.color}; white-space:nowrap;">${escapeHtml(s.text)}</span>
+    </div>
+    ${extra}${actions}
+  </div>`;
+}
+
+function renderGeneralTaskNewForm(box) {
+  box.style.width = "min(640px, 94vw)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">New Task Request</h3>
+        <div style="font-size:12px; color:var(--text2);">${canAssignAcrossTeams() ? "You can assign anyone in any team." : "You can assign members of your own team."}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="position:relative; margin-top:14px;">
+      <label>Assignee(s) * <span style="font-weight:400; color:var(--text3);">(pick one or more)</span></label>
+      <div id="gtAssignees" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
+      <input id="gtSearch" type="text" placeholder="Type a name to add…" oninput="filterGtEmployees()" autocomplete="off" />
+      <div id="gtOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+    </div>
+    <div class="form-group"><label>Deadline (date &amp; time) *</label><input id="gtDue" type="datetime-local" /></div>
+    <div class="form-group"><label>Task content *</label><textarea id="gtContent" style="min-height:100px;" placeholder="Describe the task…"></textarea></div>
+    <div class="form-group"><label>Submission method *</label><textarea id="gtSubmission" style="min-height:70px;" placeholder="How should this be submitted / reported back?"></textarea></div>
+    <div class="form-group">
+      <label>Extension request cutoff</label>
+      <select id="gtCutoff">${GENTASK_EXTENSION_CUTOFFS.map(c => `<option value="${c.hours}" ${c.hours === 24 ? "selected" : ""}>${escapeHtml(c.label)}</option>`).join("")}</select>
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Assignees can no longer request more time once this window starts.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitGeneralTaskRequest()">Send Request</button>
+    </div>`;
+  renderGtAssignees();
+}
+
+function renderGeneralTaskList(box) {
+  box.style.width = "min(720px, 95vw)";
+  const mine = !!hrView.mine;
+  const list = mine ? myRequestedGeneralTasks() : generalTasks;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${mine ? "My Task Requests" : "Task Requests"}</h3>
+        <div style="font-size:12px; color:var(--text2);">${list.length} request${list.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${canRequestGeneralTask() ? `<button class="btn btn-primary" onclick="openGeneralTaskNewForm()" style="margin:14px 0;">&#65291; New Request</button>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${list.length ? list.map(t => {
+        const done = genTaskOverallDone(t);
+        const needsApproval = (t.assignees || []).some(a => a.status === "DeclinePending" || a.status === "ChangePending");
+        return `<div onclick="openGeneralTaskDetail('${t.itemId}')" style="cursor:pointer; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <div style="font-size:13px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.content.slice(0, 60))}</div>
+            <span style="font-size:12px; font-weight:600; color:${done ? "var(--green)" : "var(--text2)"}; white-space:nowrap;">${done ? "All settled" : "Open"}${needsApproval ? ' <span class="req-badge">!</span>' : ""}</span>
+          </div>
+          <div style="font-size:11px; color:var(--text3); margin-top:2px;">${escapeHtml(t.refNo)} · Due ${escapeHtml(fmtDueDateTime(t.dueDateTime))} · ${(t.assignees || []).map(a => escapeHtml(a.name)).join(", ")}</div>
+        </div>`;
+      }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No task requests yet.</div>`}
+    </div>`;
+}
+
+function renderGeneralTaskDetail(box) {
+  box.style.width = "min(700px, 95vw)";
+  const t = generalTasks.find(x => x.itemId === hrView.caseId);
+  if (!t) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Task not found.</div>`; return; }
+  const isRequester = isGeneralTaskRequester(t);
+  const myEntry = myAssigneeEntry(t);
+  const level = generalTaskAlertLevel(t, myEntry);
+  const badgeColor = level === "due" ? "var(--red, #ef4444)" : level === "d1" ? "var(--yellow)" : "var(--text3)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(t.refNo)}</h3>
+        <div style="font-size:12px; color:var(--text2);">Requested by ${escapeHtml(t.requesterName)} · Due ${escapeHtml(fmtDueDateTime(t.dueDateTime))}${t.originalDueDateTime !== t.dueDateTime ? ` <span style="color:${badgeColor};">(extended)</span>` : ""}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${isRequester ? `<button class="btn btn-danger btn-sm" onclick="deleteGeneralTask('${t.itemId}')" title="Delete">&#128465;</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeGenTaskModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <div style="font-weight:600; margin-bottom:4px;">Task</div>
+      <p style="white-space:pre-wrap; margin-bottom:12px;">${escapeHtml(t.content)}</p>
+      <div style="font-weight:600; margin-bottom:4px;">Submission method</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:0;">${escapeHtml(t.submissionMethod)}</p>
+    </div>
+    ${t.extensionReason ? `<div style="font-size:12px; color:var(--text3); margin-top:10px;"><strong>Extension:</strong> ${escapeHtml(t.extensionReason)} (by ${escapeHtml(t.extensionRequestedBy)})</div>` : ""}
+    <div style="font-size:13px; font-weight:600; margin-top:18px; margin-bottom:8px;">Assignees</div>
+    ${(t.assignees || []).map(a => gtAssigneeCardHtml(t, a, isRequester)).join("")}
+    ${myEntry ? gtOwnActionsHtml(t, myEntry) : ""}
+    ${isRequester && !myEntry && canRequestTaskExtension(t) ? gtExtensionBlockHtml(t) : ""}
+  `;
 }
 
 function toLocalYMD(d) {
@@ -6022,6 +6627,9 @@ function renderHRModal() {
   if (hrView.mode === "recNew") { renderRecognitionNewForm(box); return; }
   if (hrView.mode === "recDetail") { renderRecognitionDetail(box); return; }
   if (hrView.mode === "taskDetail") { renderTaskDetail(box); return; }
+  if (hrView.mode === "gtNew") { renderGeneralTaskNewForm(box); return; }
+  if (hrView.mode === "gtList") { renderGeneralTaskList(box); return; }
+  if (hrView.mode === "gtDetail") { renderGeneralTaskDetail(box); return; }
 
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
@@ -6597,7 +7205,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -6720,7 +7328,7 @@ function renderTabs() {
     { key: "overview", label: "Overview", click: "switchSection('overview')" },
     { key: "profile", label: "My Profile", click: "openMyProfile()", hidden: !employeesListId },
     { key: "team", label: "My Team", click: "openMyTeam()", hidden: !employeesListId },
-    { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: recurringTasksBadgeCount() },
+    { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: taskAlertBadgeCount() },
     { key: "requests", label: "Requests", click: "switchSection('requests')", badge },
     { key: "docs", label: "Document Repository", click: "switchSection('docs')" }
   ].filter(n => !n.hidden);
@@ -6883,7 +7491,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -6931,6 +7539,8 @@ function renderRequestsTodo() {
   myPendingCoachingCases().forEach(c => rows.push({ label: "Coaching form — please review and acknowledge", sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myCoachingTodo().forEach(c => rows.push({ label: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
+  myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
+  genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   myReturnedRecognition().forEach(c => rows.push({ label: `Recognition request returned — ${recRecipientNames(c)}`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   nteApprovalQueue().forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
@@ -6949,7 +7559,8 @@ function renderRequests() {
     { icon: "&#128421;", title: "General Requests", desc: "PC & devices · Facilities · Office supply · Others" },
     { icon: "&#128172;", title: "Employee Feedback", desc: "Share feedback with the company." },
     { icon: "&#10067;", title: "Inquiry", desc: "Ask HR / Admin a question." },
-    { icon: "&#128214;", title: "View Employee Handbook", desc: "Open the Employee Handbook in a new tab.", onclick: "window.open('handbook.html','_blank','noopener')" }
+    { icon: "&#128214;", title: "View Employee Handbook", desc: "Open the Employee Handbook in a new tab.", onclick: "window.open('handbook.html','_blank','noopener')" },
+    ...(generalTasksListId && myGeneralTaskAssignments().length ? [{ icon: "&#128203;", title: "My Task Assignments", desc: "Tasks assigned to you — acknowledge, decline, or submit.", onclick: "openGeneralTaskList(false)", badge: myPendingGeneralTasks().length }] : [])
   ];
   const management = [
     { icon: "&#129309;", title: "Create Coaching Form", desc: "Issue a coaching form to an employee.", onclick: coachingCasesListId ? "openCoachingNewFromRequests()" : "" },
@@ -6958,6 +7569,8 @@ function renderRequests() {
     { icon: "&#127942;", title: "Request Recognition", desc: "Recommend teammates or managers for recognition.",
       actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }, ...(canReviewRecognition() ? [{ label: "Review Requests", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : [])] : undefined },
     { icon: "&#128101;", title: "Manpower Request", desc: "Addition · Removal · Transfer" },
+    { icon: "&#128203;", title: "General Task Request", desc: "Assign a one-off task with a deadline and track it to submission.",
+      actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }
   ];
