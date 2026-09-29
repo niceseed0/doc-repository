@@ -485,7 +485,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-03";
+const BUILD_ID = "2026-09-29-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5089,9 +5089,12 @@ async function ensureRecurringTasks(force) {
 }
 
 // ── permissions ──────────────────────────────────────────────────────────────
+// Weekly PM Report is a Product Manager / Assistant Product Manager job on each team —
+// Senior Product Manager and Cluster Lead do not submit it themselves (they can still view
+// submitted reports via the overview widget, and HR/Admin can act on any team's behalf below).
 function isTeamManager(team, cluster) {
   const me = myEmployeeRecord();
-  return !!(me && me.team === team && (me.cluster || "") === (cluster || "") && positionRankIndex(me.position) <= positionRankIndex("Assistant Product Manager"));
+  return !!(me && me.team === team && (me.cluster || "") === (cluster || "") && (me.position === "Product Manager" || me.position === "Assistant Product Manager"));
 }
 function canManageRecurringTask(t) { return isTeamManager(t.team, t.cluster) || canAccessHR || isPermissionAdmin; }
 // Cluster subteams the signed-in user should see recurring tasks for: their own subteam (if a
@@ -5237,15 +5240,27 @@ function renderTaskDetail(box) {
   `;
 }
 
-// ── Weekly PM Report overview: per-cluster submission progress for this week ────
-let wprExpandedClusters = new Set();
+// ── Weekly PM Report overview: per-cluster submission progress + report history ─
+let wprExpandedClusters = new Set();       // this-week cluster rows expanded
+let wprShowHistory = false;                // "Previous Reports" panel toggled open
+let wprHistoryOpenWeeks = new Set();       // expanded past weeks
+let wprHistoryOpenClusters = new Set();    // expanded "weekKey|||cluster" combos in history
 function toggleWprCluster(cluster) {
   if (wprExpandedClusters.has(cluster)) wprExpandedClusters.delete(cluster); else wprExpandedClusters.add(cluster);
   renderContent();
 }
-function canViewWeeklyReportOverview() { return canApproveNte(); } // HOC (Cluster Lead+) or HR/Admin
-function weeklyReportOverviewRows() {
-  const weekKey = toLocalYMD(mondayOf(new Date()));
+function toggleWprHistory() { wprShowHistory = !wprShowHistory; renderContent(); }
+function toggleWprHistoryWeek(weekKey) {
+  if (wprHistoryOpenWeeks.has(weekKey)) wprHistoryOpenWeeks.delete(weekKey); else wprHistoryOpenWeeks.add(weekKey);
+  renderContent();
+}
+function toggleWprHistoryCluster(weekKey, cluster) {
+  const key = weekKey + "|||" + cluster;
+  if (wprHistoryOpenClusters.has(key)) wprHistoryOpenClusters.delete(key); else wprHistoryOpenClusters.add(key);
+  renderContent();
+}
+function canViewWeeklyReportOverview() { return canApproveNte(); } // HOC (Cluster Lead+) or HR/Admin — view only, they don't submit
+function weeklyReportRowsForWeek(weekKey) {
   return CONFIG.clusterTeams.map(cluster => {
     const teams = subteamsForCluster(cluster).map(s => s.team);
     const rows = teams.map(team => {
@@ -5257,10 +5272,59 @@ function weeklyReportOverviewRows() {
     return { cluster, rows, submitted, total: rows.length, pct };
   });
 }
+function weeklyReportOverviewRows() { return weeklyReportRowsForWeek(toLocalYMD(mondayOf(new Date()))); }
+// Past weeks that actually have Weekly PM Report instances, most recent first.
+function weeklyReportHistoryWeeks() {
+  const currentWeekKey = toLocalYMD(mondayOf(new Date()));
+  const keys = [...new Set(recurringTasks.filter(t => t.taskType === "WeeklyPMReport" && t.weekKey !== currentWeekKey).map(t => t.weekKey))];
+  return keys.sort((a, b) => b.localeCompare(a)).slice(0, 8);
+}
+function weekRangeLabel(weekKey) {
+  const monday = new Date(weekKey + "T00:00:00");
+  const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+  const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `Week of ${fmt(monday)} – ${fmt(sunday)}`;
+}
+function reportTeamRowHtml(r) {
+  const done = r.task && r.task.status === "Closed";
+  return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface2);">
+    <span style="font-size:12.5px;">${escapeHtml(r.team)}</span>
+    ${done
+      ? `<a href="${escapeAttr(r.task.reportLink)}" target="_blank" rel="noopener noreferrer" style="font-size:12px; font-weight:600; color:var(--accent);">Open &rarr;</a>`
+      : `<span style="font-size:11px; color:var(--text3);">Not submitted</span>`}
+  </div>`;
+}
+function renderWeeklyReportHistory() {
+  const weeks = weeklyReportHistoryWeeks();
+  return `<div style="border-top:1px solid var(--border); margin-top:12px; padding-top:10px;">
+    ${weeks.length ? weeks.map(wk => {
+      const openWeek = wprHistoryOpenWeeks.has(wk);
+      const rows = weeklyReportRowsForWeek(wk);
+      return `<div style="margin-bottom:6px;">
+        <div onclick="toggleWprHistoryWeek('${wk}')" style="cursor:pointer; display:flex; align-items:center; gap:8px; padding:4px 0;">
+          <span style="font-size:10px; color:var(--text3); width:12px;">${openWeek ? "&#9660;" : "&#9654;"}</span>
+          <span style="font-size:12.5px; font-weight:600;">${escapeHtml(weekRangeLabel(wk))}</span>
+        </div>
+        ${openWeek ? `<div style="margin:4px 0 4px 20px; display:flex; flex-direction:column; gap:6px;">
+          ${rows.map(c => {
+            const openCluster = wprHistoryOpenClusters.has(wk + "|||" + c.cluster);
+            return `<div>
+              <div onclick="toggleWprHistoryCluster('${wk}','${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:8px;">
+                <span style="font-size:10px; color:var(--text3); width:12px;">${openCluster ? "&#9660;" : "&#9654;"}</span>
+                <span style="font-size:12px; color:var(--text2);">${escapeHtml(c.cluster)} <span style="color:var(--text3);">(${c.submitted}/${c.total})</span></span>
+              </div>
+              ${openCluster ? `<div style="margin:4px 0 2px 20px; display:flex; flex-direction:column; gap:4px;">${c.rows.map(reportTeamRowHtml).join("")}</div>` : ""}
+            </div>`;
+          }).join("")}
+        </div>` : ""}
+      </div>`;
+    }).join("") : `<div style="font-size:12px; color:var(--text3);">No earlier reports yet.</div>`}
+  </div>`;
+}
 function renderWeeklyReportOverview() {
   if (!canViewWeeklyReportOverview() || !recurringTasksListId) return "";
   const clusters = weeklyReportOverviewRows();
-  return `<div class="req-card" style="margin-bottom:20px;">
+  return `<div class="req-card" style="width:420px; flex:1 1 380px; max-width:480px;">
     <div class="req-title"><span>&#128202;</span><span>Weekly PM Report — this week</span></div>
     <div class="req-desc" style="margin-bottom:10px;">Submission progress by cluster. Click a cluster to see each team's report.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
@@ -5270,39 +5334,46 @@ function renderWeeklyReportOverview() {
         return `<div>
           <div onclick="toggleWprCluster('${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:12px;">
             <span style="font-size:11px; color:var(--text3); width:14px;">${open ? "&#9660;" : "&#9654;"}</span>
-            <span style="font-size:13px; font-weight:600; min-width:130px;">${escapeHtml(c.cluster)}</span>
+            <span style="font-size:13px; font-weight:600; min-width:110px;">${escapeHtml(c.cluster)}</span>
             <div style="flex:1; height:8px; background:var(--surface2); border-radius:4px; overflow:hidden;">
               <div style="width:${c.pct}%; height:100%; background:${barColor};"></div>
             </div>
-            <span style="font-size:12px; font-weight:700; color:${barColor}; width:88px; text-align:right;">${c.submitted}/${c.total} · ${c.pct}%</span>
+            <span style="font-size:12px; font-weight:700; color:${barColor}; width:80px; text-align:right;">${c.submitted}/${c.total} · ${c.pct}%</span>
           </div>
-          ${open ? `<div style="margin:8px 0 0 26px; display:flex; flex-direction:column; gap:4px;">
-            ${c.rows.map(r => {
-              const done = r.task && r.task.status === "Closed";
-              return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface2);">
-                <span style="font-size:12.5px;">${escapeHtml(r.team)}</span>
-                ${done
-                  ? `<a href="${escapeAttr(r.task.reportLink)}" target="_blank" rel="noopener noreferrer" style="font-size:12px; font-weight:600; color:var(--accent);">Open &rarr;</a>`
-                  : `<span style="font-size:11px; color:var(--text3);">Not submitted</span>`}
-              </div>`;
-            }).join("")}
-          </div>` : ""}
+          ${open ? `<div style="margin:8px 0 0 26px; display:flex; flex-direction:column; gap:4px;">${c.rows.map(reportTeamRowHtml).join("")}</div>` : ""}
         </div>`;
       }).join("")}
     </div>
+    <div onclick="toggleWprHistory()" style="cursor:pointer; font-size:12px; color:var(--accent); margin-top:12px;">${wprShowHistory ? "Hide" : "Show"} Previous Reports ${wprShowHistory ? "&#9650;" : "&#9660;"}</div>
+    ${wprShowHistory ? renderWeeklyReportHistory() : ""}
   </div>`;
 }
+// Add more report-type overview widgets here later and list them alongside this one.
+function renderReportsOverviewRow() {
+  const widgets = [renderWeeklyReportOverview()].filter(Boolean);
+  if (!widgets.length) return "";
+  return `<div style="display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; align-items:flex-start;">${widgets.join("")}</div>`;
+}
 
-function renderWeeklyDeadlineSetting() {
+// Recurring-task admin settings, one small card per report type. Rendered in a row (see
+// renderReportsSettingsRow) so future report types (monthly, etc.) sit beside this one.
+function renderWeeklyDeadlineSettingCard() {
   if (!isPermissionAdmin) return "";
   const wd = recurringTaskSettings.weeklyPmReportWeekday;
-  return `<div class="req-card" style="max-width:420px; margin-bottom:20px;">
+  return `<div class="req-card" style="width:280px; flex:0 0 auto;">
     <div class="req-title"><span>&#9881;&#65039;</span><span>Weekly PM Report deadline</span></div>
     <div class="req-desc" style="margin-bottom:8px;">Applies to every team, starting the next generated week.</div>
     <select onchange="saveWeeklyPmReportWeekday(parseInt(this.value,10))" style="max-width:200px;">
       ${WEEKDAY_NAMES.map((n, i) => `<option value="${i}" ${i === wd ? "selected" : ""}>${n}</option>`).join("")}
     </select>
   </div>`;
+}
+// Add more report-type settings cards here later (e.g. renderMonthlyReportSettingCard()) and
+// list them alongside this one below.
+function renderReportsSettingsRow() {
+  const cards = [renderWeeklyDeadlineSettingCard()].filter(Boolean);
+  if (!cards.length) return "";
+  return `<div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:26px;">${cards.join("")}</div>`;
 }
 
 // Merges Weekly PM Report alerts with General Task Request deadlines the signed-in user is
@@ -7763,8 +7834,7 @@ function renderTodoBoard() {
 function renderMyTasks() {
   return `<div style="max-width:1500px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
-    ${renderWeeklyDeadlineSetting()}
-    ${renderWeeklyReportOverview()}
+    ${renderReportsOverviewRow()}
     ${renderCalendar()}
     ${renderTodoBoard()}
     <div class="req-card soon" style="margin-top:22px; max-width:420px;">
@@ -7772,6 +7842,7 @@ function renderMyTasks() {
       <div class="req-desc">A dedicated notification feed for tasks and deadlines is planned; the lists above already cover deadlines.</div>
     </div>
     <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE, coaching and recognition items are shown under <strong>Requests</strong>.</div>
+    ${renderReportsSettingsRow()}
   </div>`;
 }
 
