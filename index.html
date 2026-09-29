@@ -137,7 +137,9 @@
   .cal-cell.cal-today .cal-num { background: var(--accent); color: #fff; border-radius: 50%; }
   .cal-ev { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); }
   .cal-ev-deadline { background: color-mix(in srgb, var(--red, #ef4444) 22%, transparent); }
-  .cal-more { font-size: 10px; color: var(--text3); }
+  .cal-more { font-size: 10px; color: var(--text3); cursor: pointer; text-decoration: underline; }
+  .cal-more:hover { color: var(--accent); }
+  .cal-cell { min-height: 120px; }
   @media (max-width: 640px) { .cal-cell { min-height: 64px; padding: 3px; } .cal-dow { padding: 6px 2px; font-size: 10px; } .cal-title { font-size: 16px; } }
   .req-badge { background: var(--red, #ef4444); color: #fff; border-radius: 10px; font-size: 10px; font-weight: 700; padding: 1px 7px; margin-left: 6px; }
   .req-todo { border-color: var(--accent); }
@@ -483,7 +485,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-01";
+const BUILD_ID = "2026-09-29-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5112,7 +5114,7 @@ function canRequestExtension(t) {
 function calendarEventsForRecurring(ymd) {
   return visibleRecurringTasks()
     .filter(t => t.dueDate === ymd)
-    .map(t => ({ title: `${t.title} — ${t.team} (${t.cluster})${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline" }));
+    .map(t => ({ title: `${t.title} — ${t.team} (${t.cluster})${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline", onclick: `openRecurringTask('${t.itemId}')` }));
 }
 
 // ── alerts ───────────────────────────────────────────────────────────────────
@@ -5700,7 +5702,7 @@ function calendarEventsFor(ymd) {
   const fromRecurring = calendarEventsForRecurring(ymd);
   const fromGeneral = myGeneralTaskAssignments()
     .filter(({ t }) => toLocalYMD(new Date(t.dueDateTime)) === ymd)
-    .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline" }));
+    .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline", onclick: `openGeneralTaskDetail('${t.itemId}')` }));
   return [...fromRecurring, ...fromGeneral];
 }
 
@@ -6630,6 +6632,7 @@ function renderHRModal() {
   if (hrView.mode === "gtNew") { renderGeneralTaskNewForm(box); return; }
   if (hrView.mode === "gtList") { renderGeneralTaskList(box); return; }
   if (hrView.mode === "gtDetail") { renderGeneralTaskDetail(box); return; }
+  if (hrView.mode === "dayEvents") { renderDayEvents(box); return; }
 
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
@@ -7614,6 +7617,31 @@ function calNav(delta) {
   renderContent();
 }
 function calToday() { calView = null; renderContent(); }
+// How many events show inline per day cell before collapsing to "+n more" (click to see the rest).
+const CAL_MAX_INLINE_EVENTS = 3;
+function openDayEvents(ymd) {
+  hrView = { mode: "dayEvents", ymd };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderDayEvents(box) {
+  box.style.width = "min(480px, 92vw)";
+  const ymd = hrView.ymd;
+  const events = calendarEventsFor(ymd);
+  const label = new Date(ymd + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+      <h3 style="margin:0;">${escapeHtml(label)}</h3>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${events.length ? events.map(e => `<div ${e.onclick ? `onclick="closeHRModal(); ${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""} display:flex; align-items:center; gap:8px; padding:9px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2);">
+        <span class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" style="margin:0; white-space:normal;">&nbsp;</span>
+        <span style="font-size:13px;">${escapeHtml(e.title)}</span>
+      </div>`).join("") : `<div style="font-size:12px; color:var(--text3);">No tasks on this day.</div>`}
+    </div>`;
+}
+
 function renderCalendar() {
   const v = calCurrent();
   const monthName = new Date(v.y, v.m, 1).toLocaleString("en-US", { month: "long" });
@@ -7634,8 +7662,8 @@ function renderCalendar() {
     const weekend = d.getDay() === 0 || d.getDay() === 6;
     body += `<div class="cal-cell${inMonth ? "" : " cal-out"}${weekend ? " cal-weekend" : ""}${ymd === todayYmd ? " cal-today" : ""}">
       <div class="cal-num">${d.getDate()}</div>
-      ${events.slice(0, 3).map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}">${escapeHtml(e.title)}</div>`).join("")}
-      ${events.length > 3 ? `<div class="cal-more">+${events.length - 3} more</div>` : ""}
+      ${events.slice(0, CAL_MAX_INLINE_EVENTS).map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}" ${e.onclick ? `onclick="event.stopPropagation(); ${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""}">${escapeHtml(e.title)}</div>`).join("")}
+      ${events.length > CAL_MAX_INLINE_EVENTS ? `<div class="cal-more" onclick="openDayEvents('${ymd}')">+${events.length - CAL_MAX_INLINE_EVENTS} more</div>` : ""}
     </div>`;
   }
   return `<div class="cal-wrap">
@@ -7651,15 +7679,40 @@ function renderCalendar() {
   </div>`;
 }
 
+// Three to-do columns, bucketed from the same D-3..D-0 alert levels: "soon" (2+ days left,
+// i.e. D-3/D-2), "d1" (1 day left) and "due" (due today or overdue) — see alertLevelForDueMs.
+function renderTodoColumn(title, accentColor, items) {
+  return `<div style="flex:1; min-width:220px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px;">
+    <div style="font-size:13px; font-weight:700; color:${accentColor}; margin-bottom:10px;">${escapeHtml(title)} <span style="color:var(--text3); font-weight:400;">(${items.length})</span></div>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      ${items.length ? items.map(x => `<div onclick="${x.onclick}" style="cursor:pointer; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface2);">
+          <div style="font-size:12.5px; font-weight:600;">${escapeHtml(x.title)}</div>
+          <div style="font-size:10.5px; color:var(--text3); margin-top:2px;">${escapeHtml(x.sub)} · ${escapeHtml(x.dueLabel)}</div>
+        </div>`).join("") : `<div style="font-size:12px; color:var(--text3);">Nothing here.</div>`}
+    </div>
+  </div>`;
+}
+function renderTodoBoard() {
+  const alerts = unifiedTaskAlerts();
+  const soon = alerts.filter(x => x.level === "soon");
+  const d1 = alerts.filter(x => x.level === "d1");
+  const due = alerts.filter(x => x.level === "due");
+  return `<div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:22px;">
+    ${renderTodoColumn("2+ days left", "var(--text2)", soon)}
+    ${renderTodoColumn("1 day left", "var(--yellow)", d1)}
+    ${renderTodoColumn("Due today / overdue", "var(--red, #ef4444)", due)}
+  </div>`;
+}
+
 function renderMyTasks() {
-  return `<div style="max-width:1100px; margin:0 auto;">
+  return `<div style="max-width:1500px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
     ${renderWeeklyDeadlineSetting()}
-    ${renderTaskAlerts()}
     ${renderCalendar()}
+    ${renderTodoBoard()}
     <div class="req-card soon" style="margin-top:22px; max-width:420px;">
       <div class="req-title"><span>&#128276;</span><span>Task Notification</span><span class="req-tag">Coming soon</span></div>
-      <div class="req-desc">A dedicated notification feed for tasks and deadlines is planned; the alerts above already cover the Weekly PM Report.</div>
+      <div class="req-desc">A dedicated notification feed for tasks and deadlines is planned; the lists above already cover deadlines.</div>
     </div>
     <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE, coaching and recognition items are shown under <strong>Requests</strong>.</div>
   </div>`;
