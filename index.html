@@ -483,7 +483,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-08";
+const BUILD_ID = "2026-09-28-09";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5016,7 +5016,7 @@ async function loadRecurringTasks() {
     (data.value || []).forEach(it => {
       const f = it.fields;
       recurringTasks.push({
-        itemId: it.id, title: f["Title"] || "", taskType: f["TaskType"] || "", team: f["Team"] || "",
+        itemId: it.id, title: f["Title"] || "", taskType: f["TaskType"] || "", team: f["Team"] || "", cluster: f["Cluster"] || "",
         weekKey: f["WeekKey"] || "", originalDueDate: f["OriginalDueDate"] || null, dueDate: f["DueDate"] || null,
         status: f["Status"] || "Open", reportLink: f["ReportLink"] || "",
         completedBy: f["CompletedBy"] || "", completedByName: f["CompletedByName"] || "", completedDate: f["CompletedDate"] || null,
@@ -5031,20 +5031,32 @@ async function loadRecurringTasks() {
 
 // Creates this week's + next week's instance for every real team (not Archives) if missing.
 // Runs on every load for whoever has permission to see it; duplicate-safe via WeekKey+Team+TaskType.
+// Only teams that sit under a cluster (e.g. JOYCITY under John's Cluster) file a Weekly PM
+// Report — the top-level Document Repository tabs (HR & Admin, Finance, IT, CX-QA…) do not.
+function allClusterSubteams() {
+  const out = [];
+  for (const cluster of CONFIG.clusterTeams) {
+    for (const s of subteamsForCluster(cluster)) out.push({ team: s.team, cluster });
+  }
+  return out;
+}
+function subteamKey(team, cluster) { return `${cluster}|||${team}`; }
+
 async function ensureRecurringTasks(force) {
-  if (!recurringTasksListId || !teamChoices.length) return;
+  if (!recurringTasksListId) return;
+  const subteams = allClusterSubteams();
+  if (!subteams.length) return;
   if (!force && !(isPermissionAdmin || canAccessHR || canDraftNte())) return; // only managers+ trigger generation
-  const teams = teamChoices.filter(t => t !== "Archives");
   const today = new Date();
   const weekday = recurringTaskSettings.weeklyPmReportWeekday;
   const weeks = [mondayOf(today), mondayOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7))];
   const toCreate = [];
-  for (const team of teams) {
+  for (const { team, cluster } of subteams) {
     for (const monday of weeks) {
       const weekKey = toLocalYMD(monday);
       const due = toLocalYMD(dateForWeekday(monday, weekday));
-      const exists = recurringTasks.some(t => t.taskType === "WeeklyPMReport" && t.team === team && t.weekKey === weekKey);
-      if (!exists) toCreate.push({ team, weekKey, due });
+      const exists = recurringTasks.some(t => t.taskType === "WeeklyPMReport" && t.team === team && t.cluster === cluster && t.weekKey === weekKey);
+      if (!exists) toCreate.push({ team, cluster, weekKey, due });
     }
   }
   if (!toCreate.length) return;
@@ -5053,12 +5065,12 @@ async function ensureRecurringTasks(force) {
       const created = await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items`, {
         method: "POST",
         body: JSON.stringify({ fields: {
-          Title: "Weekly PM Report", TaskType: "WeeklyPMReport", Team: item.team, WeekKey: item.weekKey,
+          Title: "Weekly PM Report", TaskType: "WeeklyPMReport", Team: item.team, Cluster: item.cluster, WeekKey: item.weekKey,
           OriginalDueDate: item.due, DueDate: item.due, Status: "Open"
         } })
       });
       recurringTasks.push({
-        itemId: created.id, title: "Weekly PM Report", taskType: "WeeklyPMReport", team: item.team, weekKey: item.weekKey,
+        itemId: created.id, title: "Weekly PM Report", taskType: "WeeklyPMReport", team: item.team, cluster: item.cluster, weekKey: item.weekKey,
         originalDueDate: item.due, dueDate: item.due, status: "Open", reportLink: "", completedBy: "", completedByName: "",
         completedDate: null, extensionReason: "", extensionRequestedBy: "", extensionRequestedDate: null
       });
@@ -5070,21 +5082,21 @@ async function ensureRecurringTasks(force) {
 }
 
 // ── permissions ──────────────────────────────────────────────────────────────
-function isTeamManager(team) {
+function isTeamManager(team, cluster) {
   const me = myEmployeeRecord();
-  return !!(me && me.team === team && positionRankIndex(me.position) <= positionRankIndex("Assistant Product Manager"));
+  return !!(me && me.team === team && (me.cluster || "") === (cluster || "") && positionRankIndex(me.position) <= positionRankIndex("Assistant Product Manager"));
 }
-function canManageRecurringTask(t) { return isTeamManager(t.team) || canAccessHR || isPermissionAdmin; }
-// Teams the signed-in user should see recurring tasks for: their own team (if a manager) plus every
-// team, for HR/Admin.
+function canManageRecurringTask(t) { return isTeamManager(t.team, t.cluster) || canAccessHR || isPermissionAdmin; }
+// Cluster subteams the signed-in user should see recurring tasks for: their own subteam (if a
+// manager on it) plus every subteam under both clusters, for HR/Admin.
 function myRecurringTaskTeams() {
-  if (canAccessHR || isPermissionAdmin) return teamChoices.filter(t => t !== "Archives");
+  if (canAccessHR || isPermissionAdmin) return allClusterSubteams();
   const me = myEmployeeRecord();
-  return (me && canDraftNte() && me.team) ? [me.team] : [];
+  return (me && me.cluster && canDraftNte()) ? [{ team: me.team, cluster: me.cluster }] : [];
 }
 function visibleRecurringTasks() {
-  const teams = new Set(myRecurringTaskTeams());
-  return recurringTasks.filter(t => teams.has(t.team));
+  const keys = new Set(myRecurringTaskTeams().map(p => subteamKey(p.team, p.cluster)));
+  return recurringTasks.filter(t => keys.has(subteamKey(t.team, t.cluster)));
 }
 function canRequestExtension(t) {
   if (t.status !== "Open") return false;
@@ -5095,7 +5107,7 @@ function canRequestExtension(t) {
 function calendarEventsFor(ymd) {
   return visibleRecurringTasks()
     .filter(t => t.dueDate === ymd)
-    .map(t => ({ title: `${t.title} — ${t.team}${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline" }));
+    .map(t => ({ title: `${t.title} — ${t.team} (${t.cluster})${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline" }));
 }
 
 // ── alerts ───────────────────────────────────────────────────────────────────
@@ -5193,7 +5205,7 @@ function renderTaskDetail(box) {
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
         <h3 style="margin-bottom:2px;">${escapeHtml(t.title)}</h3>
-        <div style="font-size:12px; color:var(--text2);">${escapeHtml(t.team)} · Due ${escapeHtml(dateOnly(t.dueDate))}${t.originalDueDate !== t.dueDate ? ` <span style="color:var(--text3);">(orig. ${escapeHtml(dateOnly(t.originalDueDate))})</span>` : ""}</div>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(t.cluster)} / ${escapeHtml(t.team)} · Due ${escapeHtml(dateOnly(t.dueDate))}${t.originalDueDate !== t.dueDate ? ` <span style="color:var(--text3);">(orig. ${escapeHtml(dateOnly(t.originalDueDate))})</span>` : ""}</div>
       </div>
       <button class="btn btn-secondary" onclick="closeRecurringTaskModal()" style="padding:4px 10px;">✕</button>
     </div>
@@ -5203,7 +5215,7 @@ function renderTaskDetail(box) {
         <div><strong>Report:</strong> <a href="${escapeAttr(t.reportLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); word-break:break-all;">${escapeHtml(t.reportLink)}</a></div>
         <div style="font-size:11px; color:var(--text3); margin-top:6px;">Submitted by ${escapeHtml(t.completedByName || t.completedBy)} on ${escapeHtml(dateOnly(t.completedDate))}</div>
       </div>` : !canManage ? `
-      <div style="font-size:12px; color:var(--text3);">Any manager on ${escapeHtml(t.team)} can submit this task.</div>` : `
+      <div style="font-size:12px; color:var(--text3);">Any manager on ${escapeHtml(t.cluster)} / ${escapeHtml(t.team)} can submit this task.</div>` : `
       <div class="form-group"><label>Report file link *</label><input id="taskReportLink" type="text" placeholder="https://…" /></div>
       <button class="btn btn-primary" onclick="submitRecurringTask('${t.itemId}')" style="margin-bottom:18px;">Submit &amp; Close</button>
       <div style="border-top:1px solid var(--border); padding-top:14px;">
@@ -5242,6 +5254,7 @@ function renderTaskAlerts() {
       return `<div onclick="openRecurringTask('${t.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:${s.bg}; border:1px solid ${s.border}; border-radius:8px; padding:10px 14px;">
         <div>
           <div style="font-size:13px; font-weight:600;">${escapeHtml(t.title)} — ${escapeHtml(t.team)}</div>
+          <div style="font-size:10px; color:var(--text3);">${escapeHtml(t.cluster)}</div>
           <div style="font-size:11px; color:var(--text3);">Due ${escapeHtml(dateOnly(t.dueDate))}</div>
         </div>
         <span style="font-size:${level === "due" ? "14px" : "12px"}; font-weight:800; color:${s.color};">${escapeHtml(alertLabel(t))}</span>
