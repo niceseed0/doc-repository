@@ -483,7 +483,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-28-07";
+const BUILD_ID = "2026-09-28-08";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -507,6 +507,8 @@ const CONFIG = {
   nteCasesListDisplayName: "HR NTE Cases",
   coachingCasesListDisplayName: "HR Coaching Cases",
   recognitionCasesListDisplayName: "HR Recognition Requests",
+  recurringTasksListDisplayName: "HR Recurring Tasks",
+  recurringTaskSettingsListDisplayName: "HR Recurring Task Settings",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -967,6 +969,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // clock) -> Responded (employee Acknowledges+explains or Declines) -> Closed (HR/Cluster
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
+let recurringTasksListId = null;
+let recurringTaskSettingsListId = null;
 let recognitionCasesListId = null;
 let recognitionCases = []; // see Recognition Request module below
 let coachingCasesListId = null;
@@ -990,8 +994,9 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), checkEditPermission()]);
     refreshAccessFlags();
+    ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
     renderUserPill();
@@ -1052,6 +1057,10 @@ async function resolveSiteAndLists() {
   coachingCasesListId = coachingMatch ? coachingMatch.id : null; // optional — Coaching button stays hidden if missing
   const recognitionMatch = (lists.value || []).find(l => l.displayName === CONFIG.recognitionCasesListDisplayName);
   recognitionCasesListId = recognitionMatch ? recognitionMatch.id : null; // optional — Recognition card stays "Coming soon" if missing
+  const recurringMatch = (lists.value || []).find(l => l.displayName === CONFIG.recurringTasksListDisplayName);
+  recurringTasksListId = recurringMatch ? recurringMatch.id : null; // optional — Weekly PM Report auto-generation stays off if missing
+  const recurringSettingsMatch = (lists.value || []).find(l => l.displayName === CONFIG.recurringTaskSettingsListDisplayName);
+  recurringTaskSettingsListId = recurringSettingsMatch ? recurringSettingsMatch.id : null; // optional — falls back to the Tuesday default
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -4927,6 +4936,320 @@ function downloadRecognitionPdf(itemId) {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Recurring Tasks module — "Weekly PM Report" (extensible TaskType for later)
+// One task instance per team per week is auto-generated (client-side, on load) for the
+// current week and the next week, so D-3 alerts have something to count down to.
+// Any team manager (APM or above, on that team) can submit it; HR/Admin can too.
+// Deadline weekday is a single global setting only admins can change.
+// Extension: self-service (no approval) — allowed up to 24h before the deadline.
+// ═══════════════════════════════════════════════════════════════════════════
+const RECURRING_TASK_DEFS = [
+  { type: "WeeklyPMReport", title: "Weekly PM Report" }
+]; // add more recurring task types here later; each needs a matching entry in ensureRecurringTasks()
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+let recurringTaskSettings = { weeklyPmReportWeekday: 2 }; // default Tuesday
+let recurringTasks = [];
+
+function mondayOf(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const day = x.getDay(); // 0=Sun..6=Sat
+  const diff = day === 0 ? -6 : 1 - day; // back up to Monday
+  x.setDate(x.getDate() + diff);
+  return x;
+}
+function dateForWeekday(monday, weekday) {
+  // weekday: 0=Sun..6=Sat. Monday-based week, so Sunday is day 6 of that week.
+  const offset = weekday === 0 ? 6 : weekday - 1;
+  const d = new Date(monday);
+  d.setDate(d.getDate() + offset);
+  return d;
+}
+function daysUntil(ymd) {
+  const today = new Date(toLocalYMD(new Date()) + "T00:00:00");
+  const due = new Date(ymd + "T00:00:00");
+  return Math.round((due - today) / 86400000);
+}
+
+async function loadRecurringTaskSettings() {
+  if (!recurringTaskSettingsListId) return;
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items?$expand=fields&$top=5`);
+    const row = (data.value || [])[0];
+    if (row) {
+      recurringTaskSettings.itemId = row.id;
+      const wd = parseInt(row.fields["WeeklyPMReportWeekday"], 10);
+      if (!isNaN(wd) && wd >= 0 && wd <= 6) recurringTaskSettings.weeklyPmReportWeekday = wd;
+    }
+  } catch (e) { console.warn("Could not load recurring task settings (using default Tuesday):", e); }
+}
+
+async function saveWeeklyPmReportWeekday(weekday) {
+  if (!isPermissionAdmin || !recurringTaskSettingsListId) return;
+  setSyncing(true);
+  try {
+    if (recurringTaskSettings.itemId) {
+      await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items/${recurringTaskSettings.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ WeeklyPMReportWeekday: String(weekday) }) });
+    } else {
+      const created = await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: "Global", WeeklyPMReportWeekday: String(weekday) } }) });
+      recurringTaskSettings.itemId = created.id;
+    }
+    recurringTaskSettings.weeklyPmReportWeekday = weekday;
+    setSyncing(false, true);
+    toast("Weekly deadline updated ✓", "success");
+    await ensureRecurringTasks(true);
+    renderTabs();
+    if (activeTab === "__MYTASKS__") renderContent();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
+async function loadRecurringTasks() {
+  recurringTasks = [];
+  if (!recurringTasksListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${recurringTasksListId}/items?$expand=fields&$top=500&$orderby=fields/DueDate desc`;
+    // Only the last ~10 weeks matter for display; a $top cap keeps this light as the list grows.
+    const data = await graphFetch(url);
+    (data.value || []).forEach(it => {
+      const f = it.fields;
+      recurringTasks.push({
+        itemId: it.id, title: f["Title"] || "", taskType: f["TaskType"] || "", team: f["Team"] || "",
+        weekKey: f["WeekKey"] || "", originalDueDate: f["OriginalDueDate"] || null, dueDate: f["DueDate"] || null,
+        status: f["Status"] || "Open", reportLink: f["ReportLink"] || "",
+        completedBy: f["CompletedBy"] || "", completedByName: f["CompletedByName"] || "", completedDate: f["CompletedDate"] || null,
+        extensionReason: f["ExtensionReason"] || "", extensionRequestedBy: f["ExtensionRequestedBy"] || "", extensionRequestedDate: f["ExtensionRequestedDate"] || null
+      });
+    });
+  } catch (e) {
+    console.warn("Could not load HR Recurring Tasks (list may not exist yet):", e);
+    recurringTasks = [];
+  }
+}
+
+// Creates this week's + next week's instance for every real team (not Archives) if missing.
+// Runs on every load for whoever has permission to see it; duplicate-safe via WeekKey+Team+TaskType.
+async function ensureRecurringTasks(force) {
+  if (!recurringTasksListId || !teamChoices.length) return;
+  if (!force && !(isPermissionAdmin || canAccessHR || canDraftNte())) return; // only managers+ trigger generation
+  const teams = teamChoices.filter(t => t !== "Archives");
+  const today = new Date();
+  const weekday = recurringTaskSettings.weeklyPmReportWeekday;
+  const weeks = [mondayOf(today), mondayOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7))];
+  const toCreate = [];
+  for (const team of teams) {
+    for (const monday of weeks) {
+      const weekKey = toLocalYMD(monday);
+      const due = toLocalYMD(dateForWeekday(monday, weekday));
+      const exists = recurringTasks.some(t => t.taskType === "WeeklyPMReport" && t.team === team && t.weekKey === weekKey);
+      if (!exists) toCreate.push({ team, weekKey, due });
+    }
+  }
+  if (!toCreate.length) return;
+  for (const item of toCreate) {
+    try {
+      const created = await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ fields: {
+          Title: "Weekly PM Report", TaskType: "WeeklyPMReport", Team: item.team, WeekKey: item.weekKey,
+          OriginalDueDate: item.due, DueDate: item.due, Status: "Open"
+        } })
+      });
+      recurringTasks.push({
+        itemId: created.id, title: "Weekly PM Report", taskType: "WeeklyPMReport", team: item.team, weekKey: item.weekKey,
+        originalDueDate: item.due, dueDate: item.due, status: "Open", reportLink: "", completedBy: "", completedByName: "",
+        completedDate: null, extensionReason: "", extensionRequestedBy: "", extensionRequestedDate: null
+      });
+    } catch (e) {
+      // Another tab may have created the same instance a moment ago — harmless, just skip it.
+      console.warn("Could not create recurring task instance:", e);
+    }
+  }
+}
+
+// ── permissions ──────────────────────────────────────────────────────────────
+function isTeamManager(team) {
+  const me = myEmployeeRecord();
+  return !!(me && me.team === team && positionRankIndex(me.position) <= positionRankIndex("Assistant Product Manager"));
+}
+function canManageRecurringTask(t) { return isTeamManager(t.team) || canAccessHR || isPermissionAdmin; }
+// Teams the signed-in user should see recurring tasks for: their own team (if a manager) plus every
+// team, for HR/Admin.
+function myRecurringTaskTeams() {
+  if (canAccessHR || isPermissionAdmin) return teamChoices.filter(t => t !== "Archives");
+  const me = myEmployeeRecord();
+  return (me && canDraftNte() && me.team) ? [me.team] : [];
+}
+function visibleRecurringTasks() {
+  const teams = new Set(myRecurringTaskTeams());
+  return recurringTasks.filter(t => teams.has(t.team));
+}
+function canRequestExtension(t) {
+  if (t.status !== "Open") return false;
+  return daysUntil(t.dueDate) >= 1; // must be requested more than 24h (i.e. at least until the day before) ahead
+}
+
+// ── calendar hook ────────────────────────────────────────────────────────────
+function calendarEventsFor(ymd) {
+  return visibleRecurringTasks()
+    .filter(t => t.dueDate === ymd)
+    .map(t => ({ title: `${t.title} — ${t.team}${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline" }));
+}
+
+// ── alerts ───────────────────────────────────────────────────────────────────
+// D-3/D-2 = normal, D-1 = strong (yellow), D-0 or overdue = strongest (red). Closed tasks never alert.
+function recurringTaskAlertLevel(t) {
+  if (t.status !== "Open") return null;
+  const d = daysUntil(t.dueDate);
+  if (d > 3) return null;
+  if (d <= 0) return "due";
+  if (d === 1) return "d1";
+  return "soon"; // D-3 / D-2
+}
+function recurringTaskAlerts() {
+  return visibleRecurringTasks()
+    .map(t => ({ t, level: recurringTaskAlertLevel(t) }))
+    .filter(x => x.level)
+    .sort((a, b) => daysUntil(a.t.dueDate) - daysUntil(b.t.dueDate));
+}
+function recurringTasksBadgeCount() { return recurringTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
+
+function alertLabel(t) {
+  const d = daysUntil(t.dueDate);
+  if (d < 0) return `Overdue by ${-d} day${-d === 1 ? "" : "s"}`;
+  if (d === 0) return "Due today";
+  return `D-${d}`;
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openRecurringTask(itemId) { hrView = { mode: "taskDetail", caseId: itemId }; document.getElementById("hrModal").classList.add("open"); renderHRModal(); }
+function closeRecurringTaskModal() { closeHRModal(); }
+
+async function submitRecurringTask(itemId) {
+  const t = recurringTasks.find(x => x.itemId === itemId);
+  if (!t || !canManageRecurringTask(t)) return;
+  const link = document.getElementById("taskReportLink").value.trim();
+  if (!link) { toast("Enter the report file link.", "error"); return; }
+  const safe = recSafeUrl(link);
+  if (!safe) { toast("That link doesn't look valid. Use a full http(s) address.", "error"); return; }
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Closed", ReportLink: safe, CompletedBy: by, CompletedByName: (me && me.name) || by, CompletedDate: now })
+    });
+    Object.assign(t, { status: "Closed", reportLink: safe, completedBy: by, completedByName: (me && me.name) || by, completedDate: now });
+    setSyncing(false, true);
+    toast("Task submitted ✓", "success");
+    renderTabs();
+    closeRecurringTaskModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+async function requestTaskExtension(itemId) {
+  const t = recurringTasks.find(x => x.itemId === itemId);
+  if (!t || !canManageRecurringTask(t) || !canRequestExtension(t)) return;
+  const newDue = document.getElementById("taskExtDate").value;
+  if (!newDue) { toast("Choose the new deadline.", "error"); return; }
+  if (newDue <= t.dueDate) { toast("The new deadline must be after the current one.", "error"); return; }
+  const reason = document.getElementById("taskExtReason").value.trim();
+  if (!reason) { toast("Enter the reason for the extension.", "error"); return; }
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  if (!confirm(`Move the deadline to ${newDue}?`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ DueDate: newDue, ExtensionReason: reason, ExtensionRequestedBy: by, ExtensionRequestedDate: now })
+    });
+    Object.assign(t, { dueDate: newDue, extensionReason: reason, extensionRequestedBy: by, extensionRequestedDate: now });
+    setSyncing(false, true);
+    toast(`Deadline moved to ${newDue} ✓`, "success");
+    renderTabs();
+    openRecurringTask(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save extension: " + err.message, "error");
+  }
+}
+
+// ── rendering ───────────────────────────────────────────────────────────────
+function renderTaskDetail(box) {
+  box.style.width = "min(560px, 92vw)";
+  const t = recurringTasks.find(x => x.itemId === hrView.caseId);
+  if (!t) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Task not found.</div>`; return; }
+  const canManage = canManageRecurringTask(t);
+  const level = recurringTaskAlertLevel(t);
+  const badgeColor = t.status === "Closed" ? "var(--green)" : level === "due" ? "var(--red, #ef4444)" : level === "d1" ? "var(--yellow)" : "var(--text3)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(t.title)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(t.team)} · Due ${escapeHtml(dateOnly(t.dueDate))}${t.originalDueDate !== t.dueDate ? ` <span style="color:var(--text3);">(orig. ${escapeHtml(dateOnly(t.originalDueDate))})</span>` : ""}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeRecurringTaskModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="margin:10px 0 16px;"><span style="font-size:12px; font-weight:600; color:${badgeColor};">${t.status === "Closed" ? "Closed" : alertLabel(t)}</span></div>
+    ${t.status === "Closed" ? `
+      <div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:13px;">
+        <div><strong>Report:</strong> <a href="${escapeAttr(t.reportLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); word-break:break-all;">${escapeHtml(t.reportLink)}</a></div>
+        <div style="font-size:11px; color:var(--text3); margin-top:6px;">Submitted by ${escapeHtml(t.completedByName || t.completedBy)} on ${escapeHtml(dateOnly(t.completedDate))}</div>
+      </div>` : !canManage ? `
+      <div style="font-size:12px; color:var(--text3);">Any manager on ${escapeHtml(t.team)} can submit this task.</div>` : `
+      <div class="form-group"><label>Report file link *</label><input id="taskReportLink" type="text" placeholder="https://…" /></div>
+      <button class="btn btn-primary" onclick="submitRecurringTask('${t.itemId}')" style="margin-bottom:18px;">Submit &amp; Close</button>
+      <div style="border-top:1px solid var(--border); padding-top:14px;">
+        ${canRequestExtension(t) ? `
+          <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Request an extension</div>
+          <div class="form-group"><label>New deadline</label><input id="taskExtDate" type="date" min="${escapeHtml(addDaysToYMD(t.dueDate, 1))}" /></div>
+          <div class="form-group"><label>Reason *</label><textarea id="taskExtReason" style="min-height:70px;" placeholder="Why is more time needed?"></textarea></div>
+          <button class="btn btn-secondary" onclick="requestTaskExtension('${t.itemId}')">Request Extension</button>
+        ` : `<div style="font-size:12px; color:var(--text3);">Extension requests close 24 hours before the deadline, so this task can no longer be extended.</div>`}
+      </div>`}
+    ${t.extensionReason ? `<div style="margin-top:16px; font-size:12px; color:var(--text3);"><strong>Extension note:</strong> ${escapeHtml(t.extensionReason)} (by ${escapeHtml(t.extensionRequestedBy)})</div>` : ""}
+  `;
+}
+
+function renderWeeklyDeadlineSetting() {
+  if (!isPermissionAdmin) return "";
+  const wd = recurringTaskSettings.weeklyPmReportWeekday;
+  return `<div class="req-card" style="max-width:420px; margin-bottom:20px;">
+    <div class="req-title"><span>&#9881;&#65039;</span><span>Weekly PM Report deadline</span></div>
+    <div class="req-desc" style="margin-bottom:8px;">Applies to every team, starting the next generated week.</div>
+    <select onchange="saveWeeklyPmReportWeekday(parseInt(this.value,10))" style="max-width:200px;">
+      ${WEEKDAY_NAMES.map((n, i) => `<option value="${i}" ${i === wd ? "selected" : ""}>${n}</option>`).join("")}
+    </select>
+  </div>`;
+}
+
+function renderTaskAlerts() {
+  const alerts = recurringTaskAlerts();
+  if (!alerts.length) return `<div style="font-size:12px; color:var(--text3); margin-bottom:20px;">No task deadlines within the next 3 days.</div>`;
+  const styleFor = level => level === "due" ? { bg: "color-mix(in srgb, var(--red, #ef4444) 15%, transparent)", border: "var(--red, #ef4444)", color: "var(--red, #ef4444)" }
+    : level === "d1" ? { bg: "color-mix(in srgb, var(--yellow) 18%, transparent)", border: "var(--yellow)", color: "var(--yellow)" }
+    : { bg: "var(--surface2)", border: "var(--border)", color: "var(--text2)" };
+  return `<div style="display:flex; flex-direction:column; gap:8px; margin-bottom:22px;">
+    ${alerts.map(({ t, level }) => {
+      const s = styleFor(level);
+      return `<div onclick="openRecurringTask('${t.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:${s.bg}; border:1px solid ${s.border}; border-radius:8px; padding:10px 14px;">
+        <div>
+          <div style="font-size:13px; font-weight:600;">${escapeHtml(t.title)} — ${escapeHtml(t.team)}</div>
+          <div style="font-size:11px; color:var(--text3);">Due ${escapeHtml(dateOnly(t.dueDate))}</div>
+        </div>
+        <span style="font-size:${level === "due" ? "14px" : "12px"}; font-weight:800; color:${s.color};">${escapeHtml(alertLabel(t))}</span>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -5685,6 +6008,7 @@ function renderHRModal() {
   if (hrView.mode === "recList") { renderRecognitionList(box); return; }
   if (hrView.mode === "recNew") { renderRecognitionNewForm(box); return; }
   if (hrView.mode === "recDetail") { renderRecognitionDetail(box); return; }
+  if (hrView.mode === "taskDetail") { renderTaskDetail(box); return; }
 
   if (hrView.mode === "detail") {
     box.style.width = "min(760px, 94vw)";
@@ -6260,12 +6584,13 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
     renderContent();
     toast("Refreshed with latest data ✓", "success");
+    ensureRecurringTasks().then(() => { renderTabs(); if (activeTab === "__MYTASKS__") renderContent(); });
     autoPurgeTrash().then(() => { renderTabs(); if (activeTab === "__TRASH__") renderContent(); }); // best-effort, runs quietly in the background
   } catch (err) {
     setSyncing(false, false);
@@ -6382,7 +6707,7 @@ function renderTabs() {
     { key: "overview", label: "Overview", click: "switchSection('overview')" },
     { key: "profile", label: "My Profile", click: "openMyProfile()", hidden: !employeesListId },
     { key: "team", label: "My Team", click: "openMyTeam()", hidden: !employeesListId },
-    { key: "tasks", label: "My Tasks", click: "switchSection('tasks')" },
+    { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: recurringTasksBadgeCount() },
     { key: "requests", label: "Requests", click: "switchSection('requests')", badge },
     { key: "docs", label: "Document Repository", click: "switchSection('docs')" }
   ].filter(n => !n.hidden);
@@ -6663,8 +6988,6 @@ function calNav(delta) {
   renderContent();
 }
 function calToday() { calView = null; renderContent(); }
-function calendarEventsFor(ymd) { return []; }
-
 function renderCalendar() {
   const v = calCurrent();
   const monthName = new Date(v.y, v.m, 1).toLocaleString("en-US", { month: "long" });
@@ -6705,12 +7028,14 @@ function renderCalendar() {
 function renderMyTasks() {
   return `<div style="max-width:1100px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
+    ${renderWeeklyDeadlineSetting()}
+    ${renderTaskAlerts()}
     ${renderCalendar()}
     <div class="req-card soon" style="margin-top:22px; max-width:420px;">
       <div class="req-title"><span>&#128276;</span><span>Task Notification</span><span class="req-tag">Coming soon</span></div>
-      <div class="req-desc">Tasks and deadlines you add or are assigned will appear on the calendar and notify you here.</div>
+      <div class="req-desc">A dedicated notification feed for tasks and deadlines is planned; the alerts above already cover the Weekly PM Report.</div>
     </div>
-    <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE and coaching items are shown under <strong>Requests</strong> for now.</div>
+    <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE, coaching and recognition items are shown under <strong>Requests</strong>.</div>
   </div>`;
 }
 
