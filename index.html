@@ -137,6 +137,8 @@
   .cal-cell.cal-today .cal-num { background: var(--accent); color: #fff; border-radius: 50%; }
   .cal-ev { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); }
   .cal-ev-deadline { background: color-mix(in srgb, var(--red, #ef4444) 22%, transparent); }
+  .cal-ev-holiday { background: color-mix(in srgb, var(--red, #ef4444) 30%, transparent); font-weight: 700; }
+  .cal-cell.cal-holiday { background: color-mix(in srgb, var(--red, #ef4444) 8%, transparent); }
   .cal-more { font-size: 10px; color: var(--text3); cursor: pointer; text-decoration: underline; }
   .cal-more:hover { color: var(--accent); }
   .cal-cell { min-height: 120px; }
@@ -485,7 +487,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-06";
+const BUILD_ID = "2026-09-30-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -512,6 +514,7 @@ const CONFIG = {
   recurringTasksListDisplayName: "HR Recurring Tasks",
   recurringTaskSettingsListDisplayName: "HR Recurring Task Settings",
   generalTasksListDisplayName: "HR General Tasks",
+  holidaysListDisplayName: "HR Holidays",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -973,6 +976,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
 let recurringTasksListId = null;
+let holidaysListId = null;
+let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclamations) — see loadHolidayOverrides()
 let generalTasksListId = null;
 let generalTasks = []; // see General Task Request module below
 let recurringTaskSettingsListId = null;
@@ -999,7 +1004,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1068,6 +1073,8 @@ async function resolveSiteAndLists() {
   recurringTaskSettingsListId = recurringSettingsMatch ? recurringSettingsMatch.id : null; // optional — falls back to the Tuesday default
   const generalTasksMatch = (lists.value || []).find(l => l.displayName === CONFIG.generalTasksListDisplayName);
   generalTasksListId = generalTasksMatch ? generalTasksMatch.id : null; // optional — General Task Request card stays "Coming soon" if missing
+  const holidaysMatch = (lists.value || []).find(l => l.displayName === CONFIG.holidaysListDisplayName);
+  holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -6034,12 +6041,85 @@ async function deleteGeneralTask(itemId) {
 }
 
 // ── calendar hook (merged with the weekly-task one defined earlier) ─────────
+// ── PH public holidays: computed automatically each year, plus manual overrides ─────────────
+// 15 of the 17 handbook holidays have a fixed or formula-derivable date (fixed month/day, the
+// last-Sunday-of-August rule, or the 3 Easter-linked days below) and need no upkeep. The 2 Eid
+// holidays follow the Islamic lunar calendar and can't be computed — HR/Admin adds those (and any
+// other ad-hoc proclaimed holiday) as they're announced, via the optional "HR Holidays" list.
+const PH_FIXED_HOLIDAYS = [
+  { month: 1, day: 1, name: "New Year's Day", type: "Regular" },
+  { month: 4, day: 9, name: "Araw ng Kagitingan", type: "Regular" },
+  { month: 5, day: 1, name: "Labor Day", type: "Regular" },
+  { month: 6, day: 12, name: "Independence Day", type: "Regular" },
+  { month: 11, day: 30, name: "Bonifacio Day", type: "Regular" },
+  { month: 12, day: 25, name: "Christmas Day", type: "Regular" },
+  { month: 12, day: 30, name: "Rizal Day", type: "Regular" },
+  { month: 7, day: 2, name: "Pasig Day", type: "Special" },
+  { month: 8, day: 21, name: "Ninoy Aquino Day", type: "Special" },
+  { month: 11, day: 1, name: "All Saints' Day", type: "Special" },
+  { month: 12, day: 31, name: "Last Day of the Year", type: "Special" }
+];
+// Anonymous Gregorian / Meeus-Jones-Butcher algorithm for the date of Easter Sunday.
+function easterSunday(year) {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+function lastSundayOfAugust(year) {
+  const d = new Date(year, 7, 31);
+  d.setDate(d.getDate() - d.getDay());
+  return d;
+}
+let holidayYearCache = {};
+function holidaysForYear(year) {
+  if (holidayYearCache[year]) return holidayYearCache[year];
+  const map = {};
+  const add = (date, name, type) => {
+    const ymd = toLocalYMD(date);
+    (map[ymd] = map[ymd] || []).push({ name, type });
+  };
+  PH_FIXED_HOLIDAYS.forEach(h => add(new Date(year, h.month - 1, h.day), h.name, h.type));
+  add(lastSundayOfAugust(year), "National Heroes' Day", "Regular");
+  const easter = easterSunday(year);
+  add(new Date(easter.getFullYear(), easter.getMonth(), easter.getDate() - 3), "Maundy Thursday", "Regular");
+  add(new Date(easter.getFullYear(), easter.getMonth(), easter.getDate() - 2), "Good Friday", "Regular");
+  add(new Date(easter.getFullYear(), easter.getMonth(), easter.getDate() - 1), "Black Saturday", "Special");
+  holidayOverrides.filter(h => h.date && h.date.slice(0, 4) === String(year)).forEach(h => add(new Date(h.date + "T00:00:00"), h.name, h.type || "Regular"));
+  holidayYearCache[year] = map;
+  return map;
+}
+function calendarHolidaysFor(ymd) {
+  const year = parseInt(ymd.slice(0, 4), 10);
+  return (holidaysForYear(year)[ymd] || []).map(h => ({ title: h.name, type: "holiday" }));
+}
+async function loadHolidayOverrides() {
+  holidayOverrides = [];
+  holidayYearCache = {};
+  if (!holidaysListId) return;
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${holidaysListId}/items?$expand=fields&$top=200`);
+    (data.value || []).forEach(it => {
+      const f = it.fields;
+      if (f["Date"]) holidayOverrides.push({ name: f["Title"] || "Holiday", date: String(f["Date"]).slice(0, 10), type: f["Type"] || "Regular" });
+    });
+  } catch (e) {
+    console.warn("Could not load HR Holidays (list may not exist yet — only Eid dates are affected):", e);
+    holidayOverrides = [];
+  }
+}
+
 function calendarEventsFor(ymd) {
+  const fromHolidays = calendarHolidaysFor(ymd);
   const fromRecurring = calendarEventsForRecurring(ymd);
   const fromGeneral = myGeneralTaskAssignments()
     .filter(({ t }) => toLocalYMD(new Date(t.dueDateTime)) === ymd)
     .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline", onclick: `openGeneralTaskDetail('${t.itemId}')` }));
-  return [...fromRecurring, ...fromGeneral];
+  return [...fromHolidays, ...fromRecurring, ...fromGeneral];
 }
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -7544,7 +7624,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -7995,8 +8075,9 @@ function renderCalendar() {
     const ymd = toLocalYMD(d);
     const inMonth = d.getMonth() === v.m;
     const events = inMonth ? calendarEventsFor(ymd) : [];
+    const hasHoliday = events.some(e => e.type === "holiday");
     const weekend = d.getDay() === 0 || d.getDay() === 6;
-    body += `<div class="cal-cell${inMonth ? "" : " cal-out"}${weekend ? " cal-weekend" : ""}${ymd === todayYmd ? " cal-today" : ""}">
+    body += `<div class="cal-cell${inMonth ? "" : " cal-out"}${weekend ? " cal-weekend" : ""}${hasHoliday ? " cal-holiday" : ""}${ymd === todayYmd ? " cal-today" : ""}">
       <div class="cal-num">${d.getDate()}</div>
       ${events.slice(0, CAL_MAX_INLINE_EVENTS).map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}" ${e.onclick ? `onclick="event.stopPropagation(); ${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""}">${escapeHtml(e.title)}</div>`).join("")}
       ${events.length > CAL_MAX_INLINE_EVENTS ? `<div class="cal-more" onclick="openDayEvents('${ymd}')">+${events.length - CAL_MAX_INLINE_EVENTS} more</div>` : ""}
