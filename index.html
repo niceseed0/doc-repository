@@ -485,7 +485,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-04";
+const BUILD_ID = "2026-09-29-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -4952,10 +4952,11 @@ function downloadRecognitionPdf(itemId) {
 // Extension: self-service (no approval) — allowed up to 24h before the deadline.
 // ═══════════════════════════════════════════════════════════════════════════
 const RECURRING_TASK_DEFS = [
-  { type: "WeeklyPMReport", title: "Weekly PM Report" }
+  { type: "WeeklyPMReport", title: "Weekly PM Report" },
+  { type: "AttendanceDashboard", title: "Attendance Dashboard" } // twice a month: 2nd Cutoff (prior month) + 1st Cutoff (this month)
 ]; // add more recurring task types here later; each needs a matching entry in ensureRecurringTasks()
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-let recurringTaskSettings = { weeklyPmReportWeekday: 2 }; // default Tuesday
+let recurringTaskSettings = { weeklyPmReportWeekday: 2, attendanceCutoff2Day: 2, attendanceCutoff1Day: 16 }; // defaults: Tue / 2nd / 16th
 let recurringTasks = [];
 
 function mondayOf(d) {
@@ -4987,23 +4988,27 @@ async function loadRecurringTaskSettings() {
       recurringTaskSettings.itemId = row.id;
       const wd = parseInt(row.fields["WeeklyPMReportWeekday"], 10);
       if (!isNaN(wd) && wd >= 0 && wd <= 6) recurringTaskSettings.weeklyPmReportWeekday = wd;
+      const c2 = parseInt(row.fields["AttendanceCutoff2Day"], 10);
+      if (!isNaN(c2) && c2 >= 1 && c2 <= 28) recurringTaskSettings.attendanceCutoff2Day = c2;
+      const c1 = parseInt(row.fields["AttendanceCutoff1Day"], 10);
+      if (!isNaN(c1) && c1 >= 1 && c1 <= 28) recurringTaskSettings.attendanceCutoff1Day = c1;
     }
   } catch (e) { console.warn("Could not load recurring task settings (using default Tuesday):", e); }
 }
 
-async function saveWeeklyPmReportWeekday(weekday) {
+async function patchRecurringTaskSettings(fields, localApply) {
   if (!isPermissionAdmin || !recurringTaskSettingsListId) return;
   setSyncing(true);
   try {
     if (recurringTaskSettings.itemId) {
-      await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items/${recurringTaskSettings.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ WeeklyPMReportWeekday: String(weekday) }) });
+      await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items/${recurringTaskSettings.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
     } else {
-      const created = await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: "Global", WeeklyPMReportWeekday: String(weekday) } }) });
+      const created = await graphFetch(`/sites/${siteId}/lists/${recurringTaskSettingsListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: "Global", ...fields } }) });
       recurringTaskSettings.itemId = created.id;
     }
-    recurringTaskSettings.weeklyPmReportWeekday = weekday;
+    localApply();
     setSyncing(false, true);
-    toast("Weekly deadline updated ✓", "success");
+    toast("Setting updated ✓", "success");
     await ensureRecurringTasks(true);
     renderTabs();
     if (activeTab === "__MYTASKS__") renderContent();
@@ -5011,6 +5016,15 @@ async function saveWeeklyPmReportWeekday(weekday) {
     setSyncing(false, false);
     toast("Could not save: " + err.message, "error");
   }
+}
+async function saveWeeklyPmReportWeekday(weekday) {
+  await patchRecurringTaskSettings({ WeeklyPMReportWeekday: String(weekday) }, () => { recurringTaskSettings.weeklyPmReportWeekday = weekday; });
+}
+async function saveAttendanceCutoffDay(which, day) {
+  const field = which === "cutoff2" ? "AttendanceCutoff2Day" : "AttendanceCutoff1Day";
+  await patchRecurringTaskSettings({ [field]: String(day) }, () => {
+    if (which === "cutoff2") recurringTaskSettings.attendanceCutoff2Day = day; else recurringTaskSettings.attendanceCutoff1Day = day;
+  });
 }
 
 async function loadRecurringTasks() {
@@ -5049,35 +5063,68 @@ function allClusterSubteams() {
 }
 function subteamKey(team, cluster) { return `${cluster}|||${team}`; }
 
+// clampDayInMonth: cutoff days (2 / 16 by default) are always valid, but this guards against an
+// admin picking a day past a short month's end (e.g. day 30 in February).
+function clampDayInMonth(year, monthIndex, day) {
+  const lastDay = new Date(year, monthIndex + 1, 0).getDate();
+  return Math.min(day, lastDay);
+}
+
 async function ensureRecurringTasks(force) {
   if (!recurringTasksListId) return;
   const subteams = allClusterSubteams();
   if (!subteams.length) return;
   if (!force && !(isPermissionAdmin || canAccessHR || canDraftNte())) return; // only managers+ trigger generation
   const today = new Date();
+  const toCreate = [];
+
+  // Weekly PM Report — this week + next week, one per cluster subteam.
   const weekday = recurringTaskSettings.weeklyPmReportWeekday;
   const weeks = [mondayOf(today), mondayOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7))];
-  const toCreate = [];
   for (const { team, cluster } of subteams) {
     for (const monday of weeks) {
-      const weekKey = toLocalYMD(monday);
+      const periodKey = toLocalYMD(monday);
       const due = toLocalYMD(dateForWeekday(monday, weekday));
-      const exists = recurringTasks.some(t => t.taskType === "WeeklyPMReport" && t.team === team && t.cluster === cluster && t.weekKey === weekKey);
-      if (!exists) toCreate.push({ team, cluster, weekKey, due });
+      const exists = recurringTasks.some(t => t.taskType === "WeeklyPMReport" && t.team === team && t.cluster === cluster && t.weekKey === periodKey);
+      if (!exists) toCreate.push({ title: "Weekly PM Report", taskType: "WeeklyPMReport", team, cluster, periodKey, due });
     }
   }
+
+  // Attendance Dashboard — twice a month, this month + next month, one per cluster subteam.
+  // The "2nd Cutoff" report (covering the prior month) is due early in the month; "1st Cutoff"
+  // (covering this month so far) is due mid-month. Both dates are admin-configurable and can be
+  // adjusted per occurrence afterwards (see updateRecurringTaskDueDate), since actual cutoff
+  // dates shift around holidays.
+  const months = [{ y: today.getFullYear(), m: today.getMonth() }, { y: today.getFullYear(), m: today.getMonth() + 1 }].map(({ y, m }) => {
+    const d = new Date(y, m, 1); return { y: d.getFullYear(), m: d.getMonth() };
+  });
+  const occurrences = [
+    { key: "2ndCutoff", title: "Attendance Dashboard — 2nd Cutoff", day: recurringTaskSettings.attendanceCutoff2Day },
+    { key: "1stCutoff", title: "Attendance Dashboard — 1st Cutoff", day: recurringTaskSettings.attendanceCutoff1Day }
+  ];
+  for (const { team, cluster } of subteams) {
+    for (const { y, m } of months) {
+      for (const occ of occurrences) {
+        const periodKey = `${y}-${String(m + 1).padStart(2, "0")}-${occ.key}`;
+        const due = toLocalYMD(new Date(y, m, clampDayInMonth(y, m, occ.day)));
+        const exists = recurringTasks.some(t => t.taskType === "AttendanceDashboard" && t.team === team && t.cluster === cluster && t.weekKey === periodKey);
+        if (!exists) toCreate.push({ title: occ.title, taskType: "AttendanceDashboard", team, cluster, periodKey, due });
+      }
+    }
+  }
+
   if (!toCreate.length) return;
   for (const item of toCreate) {
     try {
       const created = await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items`, {
         method: "POST",
         body: JSON.stringify({ fields: {
-          Title: "Weekly PM Report", TaskType: "WeeklyPMReport", Team: item.team, Cluster: item.cluster, WeekKey: item.weekKey,
+          Title: item.title, TaskType: item.taskType, Team: item.team, Cluster: item.cluster, WeekKey: item.periodKey,
           OriginalDueDate: item.due, DueDate: item.due, Status: "Open"
         } })
       });
       recurringTasks.push({
-        itemId: created.id, title: "Weekly PM Report", taskType: "WeeklyPMReport", team: item.team, cluster: item.cluster, weekKey: item.weekKey,
+        itemId: created.id, title: item.title, taskType: item.taskType, team: item.team, cluster: item.cluster, weekKey: item.periodKey,
         originalDueDate: item.due, dueDate: item.due, status: "Open", reportLink: "", completedBy: "", completedByName: "",
         completedDate: null, extensionReason: "", extensionRequestedBy: "", extensionRequestedDate: null
       });
@@ -5085,6 +5132,28 @@ async function ensureRecurringTasks(force) {
       // Another tab may have created the same instance a moment ago — harmless, just skip it.
       console.warn("Could not create recurring task instance:", e);
     }
+  }
+}
+
+// HR/Admin can set or pre-set the due date of any recurring task occurrence directly — including
+// ones generated ahead of time — since real cutoff dates move around holidays etc. This is a
+// direct override (no reason needed), distinct from a team's own self-service extension request.
+function canEditRecurringTaskDueDate() { return isPermissionAdmin || canAccessHR; }
+async function updateRecurringTaskDueDate(itemId, newDate) {
+  const t = recurringTasks.find(x => x.itemId === itemId);
+  if (!t || !canEditRecurringTaskDueDate()) return;
+  if (!newDate) { toast("Choose a date.", "error"); return; }
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${recurringTasksListId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify({ DueDate: newDate }) });
+    t.dueDate = newDate;
+    setSyncing(false, true);
+    toast("Deadline updated ✓", "success");
+    renderTabs();
+    openRecurringTask(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
   }
 }
 
@@ -5237,6 +5306,13 @@ function renderTaskDetail(box) {
         ` : `<div style="font-size:12px; color:var(--text3);">Extension requests close 24 hours before the deadline, so this task can no longer be extended.</div>`}
       </div>`}
     ${t.extensionReason ? `<div style="margin-top:16px; font-size:12px; color:var(--text3);"><strong>Extension note:</strong> ${escapeHtml(t.extensionReason)} (by ${escapeHtml(t.extensionRequestedBy)})</div>` : ""}
+    ${canEditRecurringTaskDueDate() ? `<div style="border-top:1px solid var(--border); margin-top:16px; padding-top:12px;">
+      <div style="font-size:12px; font-weight:600; margin-bottom:6px;">HR/Admin: set this occurrence's deadline</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input id="taskAdminDue" type="date" value="${escapeHtml(t.dueDate)}" />
+        <button class="btn btn-secondary btn-sm" onclick="updateRecurringTaskDueDate('${t.itemId}', document.getElementById('taskAdminDue').value)">Save</button>
+      </div>
+    </div>` : ""}
   `;
 }
 
@@ -5370,8 +5446,25 @@ function renderWeeklyDeadlineSettingCard() {
 }
 // Add more report-type settings cards here later (e.g. renderMonthlyReportSettingCard()) and
 // list them alongside this one below.
+function renderAttendanceCutoffSettingCard() {
+  if (!isPermissionAdmin) return "";
+  const days = Array.from({ length: 28 }, (_, i) => i + 1);
+  const opts = (selected) => days.map(d => `<option value="${d}" ${d === selected ? "selected" : ""}>${d}</option>`).join("");
+  return `<div class="req-card" style="width:280px; flex:0 0 auto;">
+    <div class="req-title"><span>&#9881;&#65039;</span><span>Attendance Dashboard due days</span></div>
+    <div class="req-desc" style="margin-bottom:8px;">Applies to every team, starting the next generated occurrence. Adjust an already-generated one from its own detail view.</div>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <label style="font-size:12px; display:flex; justify-content:space-between; align-items:center;">2nd Cutoff (prior month) — day
+        <select onchange="saveAttendanceCutoffDay('cutoff2', parseInt(this.value,10))" style="width:70px;">${opts(recurringTaskSettings.attendanceCutoff2Day)}</select>
+      </label>
+      <label style="font-size:12px; display:flex; justify-content:space-between; align-items:center;">1st Cutoff (this month) — day
+        <select onchange="saveAttendanceCutoffDay('cutoff1', parseInt(this.value,10))" style="width:70px;">${opts(recurringTaskSettings.attendanceCutoff1Day)}</select>
+      </label>
+    </div>
+  </div>`;
+}
 function renderReportsSettingsRow() {
-  const cards = [renderWeeklyDeadlineSettingCard()].filter(Boolean);
+  const cards = [renderWeeklyDeadlineSettingCard(), renderAttendanceCutoffSettingCard()].filter(Boolean);
   if (!cards.length) return "";
   return `<div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:26px;">${cards.join("")}</div>`;
 }
