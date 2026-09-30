@@ -485,7 +485,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-29-05";
+const BUILD_ID = "2026-09-29-06";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5424,9 +5424,125 @@ function renderWeeklyReportOverview() {
     ${wprShowHistory ? renderWeeklyReportHistory() : ""}
   </div>`;
 }
-// Add more report-type overview widgets here later and list them alongside this one.
+// ── Attendance Dashboard overview: same idea as the Weekly PM Report widget, but with two
+// occurrences per month (2nd Cutoff / 1st Cutoff) instead of one per week.
+let adExpandedClusters = new Set();      // keyed by "${periodKey}|||${cluster}", current month
+let adShowHistory = false;
+let adHistoryOpenPeriods = new Set();
+let adHistoryOpenClusters = new Set();   // keyed by "${periodKey}|||${cluster}"
+function toggleAdCluster(periodKey, cluster) {
+  const key = periodKey + "|||" + cluster;
+  if (adExpandedClusters.has(key)) adExpandedClusters.delete(key); else adExpandedClusters.add(key);
+  renderContent();
+}
+function toggleAdHistory() { adShowHistory = !adShowHistory; renderContent(); }
+function toggleAdHistoryPeriod(periodKey) {
+  if (adHistoryOpenPeriods.has(periodKey)) adHistoryOpenPeriods.delete(periodKey); else adHistoryOpenPeriods.add(periodKey);
+  renderContent();
+}
+function toggleAdHistoryCluster(periodKey, cluster) {
+  const key = periodKey + "|||" + cluster;
+  if (adHistoryOpenClusters.has(key)) adHistoryOpenClusters.delete(key); else adHistoryOpenClusters.add(key);
+  renderContent();
+}
+function attendanceRowsForPeriod(periodKey) {
+  return CONFIG.clusterTeams.map(cluster => {
+    const teams = subteamsForCluster(cluster).map(s => s.team);
+    const rows = teams.map(team => {
+      const task = recurringTasks.find(t => t.taskType === "AttendanceDashboard" && t.cluster === cluster && t.team === team && t.weekKey === periodKey);
+      return { team, task };
+    });
+    const submitted = rows.filter(r => r.task && r.task.status === "Closed").length;
+    const pct = rows.length ? Math.round((submitted / rows.length) * 100) : 0;
+    return { cluster, rows, submitted, total: rows.length, pct };
+  });
+}
+// This month's two occurrence keys, in submission order (2nd Cutoff is due first each month).
+function currentAttendancePeriods() {
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return [
+    { key: `${ym}-2ndCutoff`, label: "2nd Cutoff (prior month)" },
+    { key: `${ym}-1stCutoff`, label: "1st Cutoff (this month)" }
+  ];
+}
+function attendancePeriodLabel(periodKey) {
+  const m = periodKey.match(/^(\d{4})-(\d{2})-(2ndCutoff|1stCutoff)$/);
+  if (!m) return periodKey;
+  const monthName = new Date(Number(m[1]), Number(m[2]) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+  return `${monthName} — ${m[3] === "2ndCutoff" ? "2nd Cutoff" : "1st Cutoff"}`;
+}
+function attendanceHistoryPeriods() {
+  const currentKeys = new Set(currentAttendancePeriods().map(p => p.key));
+  const keys = [...new Set(recurringTasks.filter(t => t.taskType === "AttendanceDashboard" && !currentKeys.has(t.weekKey)).map(t => t.weekKey))];
+  return keys.sort((a, b) => b.localeCompare(a)).slice(0, 8);
+}
+function attendanceClusterBarsHtml(periodKey) {
+  const clusters = attendanceRowsForPeriod(periodKey);
+  return clusters.map(c => {
+    const stateKey = periodKey + "|||" + c.cluster;
+    const open = adExpandedClusters.has(stateKey);
+    const barColor = c.pct === 100 ? "var(--green)" : c.pct === 0 ? "var(--text3)" : "var(--yellow)";
+    return `<div>
+      <div onclick="toggleAdCluster('${periodKey}','${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:12px;">
+        <span style="font-size:11px; color:var(--text3); width:14px;">${open ? "&#9660;" : "&#9654;"}</span>
+        <span style="font-size:13px; font-weight:600; min-width:110px;">${escapeHtml(c.cluster)}</span>
+        <div style="flex:1; height:8px; background:var(--surface2); border-radius:4px; overflow:hidden;">
+          <div style="width:${c.pct}%; height:100%; background:${barColor};"></div>
+        </div>
+        <span style="font-size:12px; font-weight:700; color:${barColor}; width:80px; text-align:right;">${c.submitted}/${c.total} · ${c.pct}%</span>
+      </div>
+      ${open ? `<div style="margin:8px 0 0 26px; display:flex; flex-direction:column; gap:4px;">${c.rows.map(reportTeamRowHtml).join("")}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+function renderAttendanceHistory() {
+  const periods = attendanceHistoryPeriods();
+  return `<div style="border-top:1px solid var(--border); margin-top:12px; padding-top:10px;">
+    ${periods.length ? periods.map(pk => {
+      const openPeriod = adHistoryOpenPeriods.has(pk);
+      const rows = attendanceRowsForPeriod(pk);
+      return `<div style="margin-bottom:6px;">
+        <div onclick="toggleAdHistoryPeriod('${pk}')" style="cursor:pointer; display:flex; align-items:center; gap:8px; padding:4px 0;">
+          <span style="font-size:10px; color:var(--text3); width:12px;">${openPeriod ? "&#9660;" : "&#9654;"}</span>
+          <span style="font-size:12.5px; font-weight:600;">${escapeHtml(attendancePeriodLabel(pk))}</span>
+        </div>
+        ${openPeriod ? `<div style="margin:4px 0 4px 20px; display:flex; flex-direction:column; gap:6px;">
+          ${rows.map(c => {
+            const openCluster = adHistoryOpenClusters.has(pk + "|||" + c.cluster);
+            return `<div>
+              <div onclick="toggleAdHistoryCluster('${pk}','${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:8px;">
+                <span style="font-size:10px; color:var(--text3); width:12px;">${openCluster ? "&#9660;" : "&#9654;"}</span>
+                <span style="font-size:12px; color:var(--text2);">${escapeHtml(c.cluster)} <span style="color:var(--text3);">(${c.submitted}/${c.total})</span></span>
+              </div>
+              ${openCluster ? `<div style="margin:4px 0 2px 20px; display:flex; flex-direction:column; gap:4px;">${c.rows.map(reportTeamRowHtml).join("")}</div>` : ""}
+            </div>`;
+          }).join("")}
+        </div>` : ""}
+      </div>`;
+    }).join("") : `<div style="font-size:12px; color:var(--text3);">No earlier reports yet.</div>`}
+  </div>`;
+}
+function renderAttendanceOverview() {
+  if (!canViewWeeklyReportOverview() || !recurringTasksListId) return "";
+  const periods = currentAttendancePeriods();
+  return `<div class="req-card" style="width:420px; flex:1 1 380px; max-width:480px;">
+    <div class="req-title"><span>&#128202;</span><span>Attendance Dashboard — this month</span></div>
+    <div class="req-desc" style="margin-bottom:10px;">Submission progress by cluster for each cutoff. Click a cluster to see each team's report.</div>
+    <div style="display:flex; flex-direction:column; gap:16px;">
+      ${periods.map(p => `<div>
+        <div style="font-size:11px; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;">${escapeHtml(p.label)}</div>
+        <div style="display:flex; flex-direction:column; gap:10px;">${attendanceClusterBarsHtml(p.key)}</div>
+      </div>`).join("")}
+    </div>
+    <div onclick="toggleAdHistory()" style="cursor:pointer; font-size:12px; color:var(--accent); margin-top:14px;">${adShowHistory ? "Hide" : "Show"} Previous Reports ${adShowHistory ? "&#9650;" : "&#9660;"}</div>
+    ${adShowHistory ? renderAttendanceHistory() : ""}
+  </div>`;
+}
+
+// Add more report-type overview widgets here later and list them alongside these.
 function renderReportsOverviewRow() {
-  const widgets = [renderWeeklyReportOverview()].filter(Boolean);
+  const widgets = [renderWeeklyReportOverview(), renderAttendanceOverview()].filter(Boolean);
   if (!widgets.length) return "";
   return `<div style="display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; align-items:flex-start;">${widgets.join("")}</div>`;
 }
