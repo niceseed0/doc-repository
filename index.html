@@ -487,7 +487,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-30-03";
+const BUILD_ID = "2026-10-01-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5189,6 +5189,35 @@ function visibleRecurringTasks() {
   const keys = new Set(myRecurringTaskTeams().map(p => subteamKey(p.team, p.cluster)));
   return recurringTasks.filter(t => keys.has(subteamKey(t.team, t.cluster)));
 }
+// SPM and above (Cluster Lead, HR/Admin) manage many teams and don't submit Weekly PM Report /
+// Attendance Dashboard themselves (that's a PM/APM job) — the per-cluster % widget already gives
+// them the detail, so their calendar/task list shows one bundled row per report type instead of
+// one row per team.
+function recurringTasksCollapsedView() {
+  const me = myEmployeeRecord();
+  return !!(canAccessHR || isPermissionAdmin || (me && positionRankIndex(me.position) <= positionRankIndex("Senior Product Manager")));
+}
+// Groups this viewer's visible recurring-task instances by (type, occurrence, due date) into one
+// summary row each — e.g. "Weekly PM Report — 3/5 teams submitted".
+function collapsedRecurringTaskGroups() {
+  const groups = {};
+  visibleRecurringTasks().forEach(t => {
+    const key = t.taskType + "|||" + t.weekKey + "|||" + t.dueDate;
+    if (!groups[key]) groups[key] = { taskType: t.taskType, periodKey: t.weekKey, title: t.title, dueDate: t.dueDate, total: 0, done: 0 };
+    groups[key].total++;
+    if (t.status === "Closed") groups[key].done++;
+  });
+  return Object.values(groups);
+}
+// Jumps to My Tasks and scrolls to the per-cluster % widget — used when a bundled row is clicked,
+// since it doesn't correspond to one single task instance to open.
+function scrollToReportsOverview() {
+  switchSection("tasks");
+  setTimeout(() => {
+    const el = document.getElementById("reportsOverviewRow");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 50);
+}
 function canRequestExtension(t) {
   if (t.status !== "Open") return false;
   return daysUntil(t.dueDate) >= 1; // must be requested more than 24h (i.e. at least until the day before) ahead
@@ -5196,6 +5225,11 @@ function canRequestExtension(t) {
 
 // ── calendar hook ────────────────────────────────────────────────────────────
 function calendarEventsForRecurring(ymd) {
+  if (recurringTasksCollapsedView()) {
+    return collapsedRecurringTaskGroups()
+      .filter(g => g.dueDate === ymd)
+      .map(g => ({ title: `${g.title} (${g.done}/${g.total})${g.done === g.total ? " ✓" : ""}`, type: g.done === g.total ? "task" : "deadline" }));
+  }
   return visibleRecurringTasks()
     .filter(t => t.dueDate === ymd)
     .map(t => ({ title: `${t.title} — ${t.team} (${t.cluster})${t.status === "Closed" ? " ✓" : ""}`, type: t.status === "Closed" ? "task" : "deadline", onclick: `openRecurringTask('${t.itemId}')` }));
@@ -5212,10 +5246,18 @@ function recurringTaskAlertLevel(t) {
   return "soon"; // D-3 / D-2
 }
 function recurringTaskAlerts() {
+  if (recurringTasksCollapsedView()) {
+    return collapsedRecurringTaskGroups()
+      .filter(g => g.done < g.total)
+      .map(g => ({ level: alertLevelForDueMs(new Date(g.dueDate + "T23:59:59").getTime()), dueDate: g.dueDate, title: g.title, sub: `${g.done}/${g.total} teams submitted`, onclick: "scrollToReportsOverview()" }))
+      .filter(x => x.level)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  }
   return visibleRecurringTasks()
     .map(t => ({ t, level: recurringTaskAlertLevel(t) }))
     .filter(x => x.level)
-    .sort((a, b) => daysUntil(a.t.dueDate) - daysUntil(b.t.dueDate));
+    .map(({ t, level }) => ({ level, dueDate: t.dueDate, title: `${t.title} — ${t.team}`, sub: t.cluster, onclick: `openRecurringTask('${t.itemId}')` }))
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 }
 function recurringTasksBadgeCount() { return recurringTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -5556,7 +5598,7 @@ function renderAttendanceOverview() {
 function renderReportsOverviewRow() {
   const widgets = [renderWeeklyReportOverview(), renderAttendanceOverview()].filter(Boolean);
   if (!widgets.length) return "";
-  return `<div style="display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; align-items:flex-start;">${widgets.join("")}</div>`;
+  return `<div id="reportsOverviewRow" style="display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; align-items:flex-start;">${widgets.join("")}</div>`;
 }
 
 // Recurring-task admin settings, one small card per report type. Rendered in a row (see
@@ -5600,9 +5642,10 @@ function renderReportsSettingsRow() {
 // Merges Weekly PM Report alerts with General Task Request deadlines the signed-in user is
 // on the hook for, so "My Tasks" shows one combined D-3…D-0 list regardless of task kind.
 function unifiedTaskAlerts() {
-  const weekly = recurringTaskAlerts().map(({ t, level }) => ({
-    level, sortMs: new Date(t.dueDate + "T23:59:59").getTime(), onclick: `openRecurringTask('${t.itemId}')`,
-    title: `${t.title} — ${t.team}`, sub: t.cluster, dueLabel: `Due ${dateOnly(t.dueDate)}`, badge: alertLabel(t)
+  const weekly = recurringTaskAlerts().map(x => ({
+    level: x.level, sortMs: new Date(x.dueDate + "T23:59:59").getTime(), onclick: x.onclick,
+    title: x.title, sub: x.sub, dueLabel: `Due ${x.dueDate}`,
+    badge: x.level === "due" ? "Due now" : x.level === "d1" ? "D-1" : "D-3"
   }));
   const general = generalTaskAlerts().map(({ t, a, level }) => ({
     level, sortMs: genTaskDueMs(t), onclick: `openGeneralTaskDetail('${t.itemId}')`,
@@ -8092,16 +8135,16 @@ function buildWriteFields(values) {
 // ═══════════════════════════════════════════════════════════════════════════
 // TABS
 // ═══════════════════════════════════════════════════════════════════════════
-// Document Repository sub-tabs = the team tabs only (Overview now lives in the main nav).
+// Document Repository sub-tabs = "Document Center" (status + guideline) followed by the team tabs.
 function getTabList() {
-  return [...teamChoices];
+  return ["__DOCCENTER__", ...teamChoices];
 }
 
-function tabLabel(key) { return key === "Welcome" ? "Overview" : key; }
+function tabLabel(key) { return key === "Welcome" ? "Overview" : key === "__DOCCENTER__" ? "Document Center" : key; }
 
 // Tabs that are not part of the Document Repository (no Add Entry / Export CSV etc.)
 function isNonDocTab(key) {
-  return key === "Welcome" || key === "__MYTASKS__" || key === "__REQUESTS__";
+  return key === "Welcome" || key === "__MYTASKS__" || key === "__REQUESTS__" || key === "__DOCCENTER__";
 }
 function currentSection() {
   if (activeTab === "Welcome") return "overview";
@@ -8115,8 +8158,8 @@ function switchSection(key) {
   if (key === "tasks") return switchTab("__MYTASKS__");
   if (key === "requests") return switchTab("__REQUESTS__");
   if (key === "docs") {
-    const target = (lastDocTab && teamChoices.includes(lastDocTab)) ? lastDocTab : teamChoices[0];
-    if (target) return switchTab(target);
+    const target = (lastDocTab && (teamChoices.includes(lastDocTab) || lastDocTab === "__DOCCENTER__")) ? lastDocTab : "__DOCCENTER__";
+    return switchTab(target);
   }
 }
 // "My Team" opens the team roster / org-chart popup for the signed-in employee's own team.
@@ -8156,7 +8199,7 @@ function renderTabs() {
   subWrap.style.display = section === "docs" ? "" : "none";
   const tabs = getTabList();
   tabsEl.innerHTML = tabs.map(t => {
-    const count = `<span class="tab-count">${itemsForTab(t).length}</span>`;
+    const count = t === "__DOCCENTER__" ? "" : `<span class="tab-count">${itemsForTab(t).length}</span>`;
     const divider = (t === "Archives") ? `<div class="tab-divider"></div>` : "";
     return `${divider}<div class="tab ${t === activeTab ? "active" : ""}" onclick="switchTab('${jsAttrEscape(t)}')">${escapeHtml(tabLabel(t))}${count}</div>`;
   }).join("");
@@ -8204,7 +8247,7 @@ function defaultSortColIndex() {
 
 function switchTab(key) {
   activeTab = key;
-  if (teamChoices.includes(key)) lastDocTab = key;
+  if (teamChoices.includes(key) || key === "__DOCCENTER__") lastDocTab = key;
   searchQ = ""; filterStatus = ""; filterCategory = "";
   sortCol = defaultSortColIndex(); sortAsc = true;
   editingItemId = null; guideEditing = false; announcementEditing = false;
@@ -8537,6 +8580,7 @@ function renderMyTasks() {
 function renderContent() {
   const main = document.getElementById("mainContent");
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
+  else if (activeTab === "__DOCCENTER__") main.innerHTML = renderDocumentCenter();
   else if (activeTab === "__MYTASKS__") main.innerHTML = renderMyTasks();
   else if (activeTab === "__REQUESTS__") main.innerHTML = renderRequests();
   else if (activeTab === "__HISTORY__") main.innerHTML = renderHistory();
@@ -8987,7 +9031,11 @@ function sanitizeGuideHtml(html) {
   return div.innerHTML;
 }
 
-function renderWelcome() {
+// ═══════════════════════════════════════════════════════════════════════════
+// Document Center (Document Repository's first sub-tab): the document-count overview
+// and the Repository Guideline, both moved out of the main Overview page.
+// ═══════════════════════════════════════════════════════════════════════════
+function renderDocumentCenter() {
   const nonTrashedItems = allItems.filter(it => !isTrashed(it));
   const totalAll = nonTrashedItems.length;
   const sCol = statusCol();
@@ -9083,6 +9131,162 @@ function renderWelcome() {
 
   const showGuidelineBody = guidelineExpanded || guideEditing;
 
+  return `
+  <div class="welcome-card">
+    <div class="welcome-card-header"><h2>Overall Document Status</h2></div>
+    <div class="stats" style="margin-top:16px">
+      <div class="stat-card"><div class="stat-dot blue"></div><div><div class="stat-num">${totalAll}</div><div class="stat-label">Total</div></div></div>
+      ${sCol ? `
+      <div class="stat-card"><div class="stat-dot green"></div><div><div class="stat-num">${counts.active}</div><div class="stat-label">Active</div></div></div>
+      <div class="stat-card"><div class="stat-dot yellow"></div><div><div class="stat-num">${counts.pending}</div><div class="stat-label">Pending</div></div></div>
+      <div class="stat-card"><div class="stat-dot red"></div><div><div class="stat-num">${counts.archived}</div><div class="stat-label">Archived</div></div></div>
+      ` : ""}
+    </div>
+    <div class="overview-list">${overviewHeaderRow}${perTeamRows}</div>
+  </div>
+
+  <div class="welcome-card" style="margin-top:20px; max-width:none">
+    <div class="welcome-card-header">
+      <h2 style="display:flex; align-items:center; gap:10px;">
+        <span><span class="guideline-chevron" style="transform:rotate(${showGuidelineBody ? "90deg" : "0deg"})">&#9656;</span> Repository Guideline</span>
+        <button class="btn btn-secondary btn-sm" onclick="toggleGuidelineSection()">${showGuidelineBody ? "Collapse" : "Expand"}</button>
+      </h2>
+      <div style="display:flex; gap:8px;">
+        ${(canEdit && !guideEditing) ? `<button class="btn btn-secondary btn-sm" onclick="startGuideEdit()">&#9998; Edit Guide</button>` : ""}
+      </div>
+    </div>
+    ${showGuidelineBody ? guidelineInner : ""}
+  </div>`;
+}
+
+function toggleGuidelineSection() {
+  guidelineExpanded = !guidelineExpanded;
+  renderContent();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Overview page: company org chart (unchanged) + a personal dashboard — greeting,
+// "My Schedule" (placeholders pending the Shifts-app / leave / meeting integrations),
+// "My Tasks of the Week", and the "Elite News" board.
+// ═══════════════════════════════════════════════════════════════════════════
+function greetingTimeOfDay() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good Morning";
+  if (h < 18) return "Good Afternoon";
+  return "Good Evening";
+}
+function renderGreeting() {
+  const me = myEmployeeRecord();
+  const firstName = me && me.name ? me.name.split(" ")[0] : null;
+  return `<div style="font-size:22px; font-weight:700; margin-bottom:4px;">Hello${firstName ? ", " + escapeHtml(firstName) : ""} &#128075;</div>
+    <div style="font-size:14px; color:var(--text2); margin-bottom:20px;">${greetingTimeOfDay()}</div>`;
+}
+
+function scheduleComingSoonBox(icon, title, desc) {
+  return `<div class="req-card soon" style="margin-bottom:0;">
+    <div class="req-title"><span>${icon}</span><span>${escapeHtml(title)}</span><span class="req-tag">Coming soon</span></div>
+    <div class="req-desc">${escapeHtml(desc)}</div>
+  </div>`;
+}
+function renderMySchedule() {
+  return `<div class="welcome-card">
+    <div class="welcome-card-header"><h2>My Schedule</h2></div>
+    <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
+      ${scheduleComingSoonBox("&#128197;", "Work Hours", "Your working days and hours, and whether you're currently on or off the clock. Will sync automatically once the Shifts app is connected.")}
+      ${scheduleComingSoonBox("&#127796;", "Leave & Time Off", "Approved and upcoming leave will appear here automatically.")}
+      ${scheduleComingSoonBox("&#128198;", "This Week's Meetings", "Your meetings for the next 7 days will appear here once meeting scheduling is added.")}
+    </div>
+  </div>`;
+}
+
+// ── "My Tasks of the Week": merges Weekly PM Report / Attendance Dashboard, General Task
+// assignments, and the Quarterly Feedback quota into one due-today/overdue vs due-this-week view.
+let myWeekExpanded = { today: false, week: false };
+function toggleMyWeekSection(key) { myWeekExpanded[key] = !myWeekExpanded[key]; renderContent(); }
+function myWeekTaskItems() {
+  const items = [];
+  if (recurringTasksCollapsedView()) {
+    collapsedRecurringTaskGroups().filter(g => g.done < g.total).forEach(g => {
+      items.push({ title: `${g.title} — ${g.done}/${g.total} teams submitted`, sub: "", dueMs: new Date(g.dueDate + "T23:59:59").getTime(), onclick: "scrollToReportsOverview()" });
+    });
+  } else {
+    visibleRecurringTasks().filter(t => t.status === "Open").forEach(t => {
+      items.push({ title: `${t.title} — ${t.team}`, sub: t.cluster, dueMs: new Date(t.dueDate + "T23:59:59").getTime(), onclick: `openRecurringTask('${t.itemId}')` });
+    });
+  }
+  myGeneralTaskAssignments().filter(({ a }) => a.status === "Pending" || a.status === "Acknowledged").forEach(({ t }) => {
+    items.push({ title: t.content.slice(0, 50) + (t.content.length > 50 ? "…" : ""), sub: t.refNo, dueMs: genTaskDueMs(t), onclick: `openGeneralTaskDetail('${t.itemId}')` });
+  });
+  const qp = qfMyProgress();
+  if (qp && qp.remaining.length) {
+    items.push({ title: `Quarterly Feedback — ${qp.doneCount}/${qp.total} done`, sub: quarterLabel(qp.quarter, qp.year), dueMs: new Date(qp.due + "T23:59:59").getTime(), onclick: `openQuarterlyFeedbackList(true)` });
+  }
+  return items.sort((a, b) => a.dueMs - b.dueMs);
+}
+function renderMyWeekList(items, emptyLabel) {
+  if (!items.length) return `<div style="font-size:12px; color:var(--text3); padding:4px 0 2px;">${escapeHtml(emptyLabel)}</div>`;
+  return `<div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+    ${items.map(x => `<div onclick="closeHRModal(); ${x.onclick}" style="cursor:pointer; display:flex; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+      <span style="font-size:12.5px;">${escapeHtml(x.title)}</span>
+      <span style="font-size:11px; color:var(--text3); white-space:nowrap;">${escapeHtml(x.sub)}</span>
+    </div>`).join("")}
+  </div>`;
+}
+function renderMyTasksOfWeek() {
+  const items = myWeekTaskItems();
+  const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+  const weekEnd = new Date(todayEnd.getTime() + 7 * 86400000);
+  const dueTodayOrOverdue = items.filter(x => x.dueMs <= todayEnd.getTime());
+  const dueThisWeek = items.filter(x => x.dueMs > todayEnd.getTime() && x.dueMs <= weekEnd.getTime());
+  const box = (key, label, color, list) => `<div>
+    <div onclick="toggleMyWeekSection('${key}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+      <span style="font-size:13px; font-weight:600;">${escapeHtml(label)}</span>
+      <span style="font-size:18px; font-weight:800; color:${color};">${list.length}</span>
+    </div>
+    ${myWeekExpanded[key] ? renderMyWeekList(list, "Nothing here.") : ""}
+  </div>`;
+  return `<div class="welcome-card">
+    <div class="welcome-card-header"><h2>My Tasks of the Week</h2></div>
+    <div style="font-size:12px; color:var(--text3); margin: 2px 0 14px;">Click a number to see what's behind it.</div>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+      ${box("today", "Due Today / Overdue", "var(--red, #ef4444)", dueTodayOrOverdue)}
+      ${box("week", "Due Within 7 Days", "var(--yellow)", dueThisWeek)}
+    </div>
+  </div>`;
+}
+
+// ── Elite News: birthdays (today highlighted), announcements, upcoming events (placeholder),
+// and holidays in the next 30 days.
+function upcomingHolidaysWithin(days) {
+  const out = [];
+  const today = new Date();
+  for (let i = 0; i <= days; i++) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+    const ymd = toLocalYMD(d);
+    calendarHolidaysFor(ymd).forEach(h => out.push({ date: ymd, name: h.title }));
+  }
+  return out;
+}
+function renderEliteNewsBirthdays() {
+  if (!employeesListId) return "";
+  const list = thisMonthBirthdays();
+  if (!list.length) return "";
+  const monthName = new Date().toLocaleString("en-US", { month: "long" });
+  const today = new Date();
+  return `<div style="margin-bottom:20px;">
+    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127874; ${escapeHtml(monthName)} Birthdays</div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${list.map(b => {
+        const isToday = b.month === today.getMonth() + 1 && b.day === today.getDate();
+        return `<div style="display:flex; justify-content:space-between; align-items:center; background:${isToday ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "var(--surface2)"}; border:1px solid ${isToday ? "var(--accent)" : "var(--border)"}; border-radius:8px; padding:8px 12px;">
+          <span style="font-size:13px; font-weight:${isToday ? "700" : "400"};">${isToday ? "&#127881; " : ""}${escapeHtml(b.name)}${b.team ? ` <span style="color:var(--text3); font-weight:400;">· ${escapeHtml(b.team)}</span>` : ""}</span>
+          <span style="font-size:12px; color:${isToday ? "var(--accent)" : "var(--text2)"}; font-weight:${isToday ? "700" : "400"};">${isToday ? "Today!" : monthDayLabel(`2000-${String(b.month).padStart(2, "0")}-${String(b.day).padStart(2, "0")}`)}</span>
+        </div>`;
+      }).join("")}
+    </div>
+  </div>`;
+}
+function renderEliteNewsAnnouncements() {
   const announcementInner = announcementEditing ? `
       <div class="rte-toolbar">
         <button type="button" class="rte-btn" onclick="rteExec('bold', null, 'announcementEditArea')" title="Bold"><b>B</b></button>
@@ -9123,59 +9327,62 @@ function renderWelcome() {
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="cancelAnnouncementEdit()">Cancel</button>
         <button class="btn btn-primary" onclick="saveAnnouncement()">Save Announcement</button>
-      </div>` : (announcementContent ? `<div class="welcome-body">${sanitizeGuideHtml(announcementContent)}</div>` : `<p style="color:var(--text3); font-size:13px; margin-top:8px;">${canEdit ? "No announcements right now. Click Edit to post one." : "No announcements right now."}</p>`);
-
-  return `
-  <div class="welcome-grid">
-  ${renderOrgChart()}
-
-  <div style="display:flex; flex-direction:column; gap:20px;">
-  <div class="welcome-card">
-    <div class="welcome-card-header"><h2>Overall Document Status</h2></div>
-    <div class="stats" style="margin-top:16px">
-      <div class="stat-card"><div class="stat-dot blue"></div><div><div class="stat-num">${totalAll}</div><div class="stat-label">Total</div></div></div>
-      ${sCol ? `
-      <div class="stat-card"><div class="stat-dot green"></div><div><div class="stat-num">${counts.active}</div><div class="stat-label">Active</div></div></div>
-      <div class="stat-card"><div class="stat-dot yellow"></div><div><div class="stat-num">${counts.pending}</div><div class="stat-label">Pending</div></div></div>
-      <div class="stat-card"><div class="stat-dot red"></div><div><div class="stat-num">${counts.archived}</div><div class="stat-label">Archived</div></div></div>
-      ` : ""}
-    </div>
-    <div class="overview-list">${overviewHeaderRow}${perTeamRows}</div>
-  </div>
-
-  <div class="welcome-card">
-    <div class="welcome-card-header">
-      <h2>&#128226; Announcements</h2>
+      </div>` : (announcementContent ? `<div class="welcome-body">${sanitizeGuideHtml(announcementContent)}</div>` : `<p style="color:var(--text3); font-size:13px; margin-top:4px;">${canEdit ? "No announcements right now. Click Edit to post one." : "No announcements right now."}</p>`);
+  return `<div style="margin-bottom:20px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <div style="font-size:13px; font-weight:700;">&#128226; Announcements</div>
       <div style="display:flex; gap:8px;">
         ${(canEdit && !announcementEditing) ? `<button class="btn btn-secondary btn-sm" onclick="startAnnouncementEdit()">&#9998; ${announcementContent ? "Edit" : "Post"}</button>` : ""}
         ${(canEdit && !announcementEditing && announcementContent) ? `<button class="btn btn-secondary btn-sm" onclick="clearAnnouncement()">Clear</button>` : ""}
       </div>
     </div>
     ${announcementInner}
-  </div>
-
-  ${renderBirthdayBoard()}
-  </div>
-  </div>
-
-  <div class="welcome-card" style="margin-top:20px; max-width:none">
-    <div class="welcome-card-header">
-      <h2 style="display:flex; align-items:center; gap:10px;">
-        <span><span class="guideline-chevron" style="transform:rotate(${showGuidelineBody ? "90deg" : "0deg"})">&#9656;</span> Repository Guideline</span>
-        <button class="btn btn-secondary btn-sm" onclick="toggleGuidelineSection()">${showGuidelineBody ? "Collapse" : "Expand"}</button>
-      </h2>
-      <div style="display:flex; gap:8px;">
-        ${(canEdit && !guideEditing) ? `<button class="btn btn-secondary btn-sm" onclick="startGuideEdit()">&#9998; Edit Guide</button>` : ""}
-      </div>
+  </div>`;
+}
+function renderEliteNewsEvents() {
+  return `<div style="margin-bottom:20px;">
+    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127881; Elite Company Events</div>
+    ${scheduleComingSoonBox("&#127881;", "Upcoming Events (next 30 days)", "Company events will be listed here once event scheduling is added.")}
+  </div>`;
+}
+function renderEliteNewsHolidays() {
+  const holidays = upcomingHolidaysWithin(30);
+  return `<div>
+    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127465; Holidays (next 30 days)</div>
+    ${holidays.length ? `<div style="display:flex; flex-direction:column; gap:6px;">
+      ${holidays.map(h => `<div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+        <span style="font-size:13px;">${escapeHtml(h.name)}</span>
+        <span style="font-size:12px; color:var(--text2);">${escapeHtml(dateOnly(h.date))}</span>
+      </div>`).join("")}
+    </div>` : `<div style="font-size:12px; color:var(--text3);">No holidays in the next 30 days.</div>`}
+  </div>`;
+}
+function renderEliteNews() {
+  return `<div class="welcome-card">
+    <div class="welcome-card-header"><h2>Elite News</h2></div>
+    <div style="margin-top:14px;">
+      ${renderEliteNewsBirthdays()}
+      ${renderEliteNewsAnnouncements()}
+      ${renderEliteNewsEvents()}
+      ${renderEliteNewsHolidays()}
     </div>
-    ${showGuidelineBody ? guidelineInner : ""}
   </div>`;
 }
 
-function toggleGuidelineSection() {
-  guidelineExpanded = !guidelineExpanded;
-  renderContent();
+function renderWelcome() {
+  return `
+  <div class="welcome-grid">
+  ${renderOrgChart()}
+
+  <div style="display:flex; flex-direction:column; gap:20px;">
+    ${renderGreeting()}
+    ${renderMySchedule()}
+    ${renderMyTasksOfWeek()}
+    ${renderEliteNews()}
+  </div>
+  </div>`;
 }
+
 
 function orgLeafBox(label, team, col) {
   const rosterIcon = employeesListId
