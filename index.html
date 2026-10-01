@@ -487,7 +487,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-09-30-01";
+const BUILD_ID = "2026-09-30-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -515,6 +515,7 @@ const CONFIG = {
   recurringTaskSettingsListDisplayName: "HR Recurring Task Settings",
   generalTasksListDisplayName: "HR General Tasks",
   holidaysListDisplayName: "HR Holidays",
+  quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -976,6 +977,8 @@ let reportsView = null; // { mode:'list' } | { mode:'new' } | { mode:'detail', r
 // Lead picks an outcome; auto-logs to HR Incidents with a link back via NTECaseId).
 // ═══════════════════════════════════════════════════════════════════════════
 let recurringTasksListId = null;
+let quarterlyFeedbackListId = null;
+let quarterlyFeedback = []; // see Quarterly Feedback module below
 let holidaysListId = null;
 let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclamations) — see loadHolidayOverrides()
 let generalTasksListId = null;
@@ -1004,7 +1007,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1075,6 +1078,8 @@ async function resolveSiteAndLists() {
   generalTasksListId = generalTasksMatch ? generalTasksMatch.id : null; // optional — General Task Request card stays "Coming soon" if missing
   const holidaysMatch = (lists.value || []).find(l => l.displayName === CONFIG.holidaysListDisplayName);
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
+  const qfMatch = (lists.value || []).find(l => l.displayName === CONFIG.quarterlyFeedbackListDisplayName);
+  quarterlyFeedbackListId = qfMatch ? qfMatch.id : null; // optional — Quarterly Feedback cards stay "Coming soon" if missing
 }
 
 // Checks whether the signed-in user has Edit permission on the list, so we can hide
@@ -5604,7 +5609,9 @@ function unifiedTaskAlerts() {
     title: t.content.slice(0, 50) + (t.content.length > 50 ? "…" : ""), sub: t.refNo, dueLabel: `Due ${fmtDueDateTime(t.dueDateTime)}`,
     badge: level === "due" ? "Due now" : level === "d1" ? "D-1" : "D-3"
   }));
-  return [...weekly, ...general].sort((a, b) => a.sortMs - b.sortMs);
+  const qa = qfAlert();
+  const quarterly = qa ? [qa] : [];
+  return [...weekly, ...general, ...quarterly].sort((a, b) => a.sortMs - b.sortMs);
 }
 function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -6284,6 +6291,392 @@ function renderGeneralTaskDetail(box) {
     ${myEntry ? gtOwnActionsHtml(t, myEntry) : ""}
     ${isRequester && !myEntry && canRequestTaskExtension(t) ? gtExtensionBlockHtml(t) : ""}
   `;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Quarterly Feedback module (Recommendation side is a separate, not-yet-built feature)
+// A single-step form: the facilitator (APM+) fills it out in one sitting for an eligible
+// employee — no acknowledge/response cycle. Who can write for whom:
+//   - Cluster Lead: anyone SPM-or-below, anywhere in their own cluster
+//   - SPM / PM / APM: anyone at their own rank or below, on their own team
+// Deadline each quarter: last Friday of Mar/Jun/Sep, last Monday of Dec (pulled earlier —
+// December is busy). The "quarter" a session belongs to is its calendar quarter.
+// ═══════════════════════════════════════════════════════════════════════════
+const QF_RECOMMENDATIONS = ["No Recommendation", "Promotion", "Salary Increase"];
+let qfNewEmployeeId = null;
+
+function qfMapItem(it) {
+  const f = it.fields;
+  return {
+    itemId: it.id, sessionDate: f["SessionDate"] || null, facilitatedBy: f["FacilitatedBy"] || "", facilitatorName: f["FacilitatorName"] || "",
+    employeeId: f["EmployeeId"] || "", employeeName: f["Title"] || "", position: f["Position"] || "", team: f["Team"] || "", cluster: f["Cluster"] || "",
+    dateHired: f["DateHired"] || null, lastSalaryIncreaseDate: f["LastSalaryIncreaseDate"] || null,
+    recommendation: f["Recommendation"] || "No Recommendation", recommendationReason: f["RecommendationReason"] || "",
+    employeeFeedback: f["EmployeeFeedback"] || "", facilitatorFeedback: f["FacilitatorFeedback"] || "",
+    satisfactionRating: f["SatisfactionRating"] != null ? parseFloat(f["SatisfactionRating"]) : null,
+    willingMoreResponsibility: f["WillingMoreResponsibility"] || "", quarter: parseInt(f["Quarter"], 10) || null, year: parseInt(f["Year"], 10) || null
+  };
+}
+// Privacy boundary: HR/Admin sees everything. Everyone else's browser only ever receives (a)
+// feedback written ABOUT themselves (self-transparency) and, if they're an eligible evaluator,
+// (b) feedback within their own write-eligible scope (own team, or own cluster for a Cluster
+// Lead) — trimmed client-side to drop anyone ranked above them. A GM/SGM has no write scope, so
+// they only ever get their own record(s) — never a list of other employees' sessions.
+async function loadQuarterlyFeedback() {
+  quarterlyFeedback = [];
+  if (!quarterlyFeedbackListId) return;
+  try {
+    if (canAccessHR || isPermissionAdmin) {
+      let url = `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$top=1000`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => quarterlyFeedback.push(qfMapItem(it)));
+        url = data["@odata.nextLink"] || null;
+      }
+      return;
+    }
+    const me = myEmployeeRecord();
+    if (!me) return;
+    const seen = new Set();
+    const pushUnique = items => items.forEach(it => { if (!seen.has(it.id)) { seen.add(it.id); quarterlyFeedback.push(qfMapItem(it)); } });
+    const esc = v => String(v).replace(/'/g, "''");
+    const selfUrl = `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/EmployeeId eq '${esc(me.id)}'&$top=200`;
+    const selfData = await graphFetch(selfUrl, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+    pushUnique(selfData.value || []);
+    if (canWriteQuarterlyFeedback()) {
+      const scopeUrl = (me.position === "Cluster Lead" && me.cluster)
+        ? `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/Cluster eq '${esc(me.cluster)}'&$top=1000`
+        : `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/Team eq '${esc(me.team)}' and fields/Cluster eq '${esc(me.cluster || "")}'&$top=1000`;
+      const scopeData = await graphFetch(scopeUrl, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+      pushUnique(scopeData.value || []);
+      const myRank = positionRankIndex(me.position);
+      const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+      quarterlyFeedback = quarterlyFeedback.filter(f =>
+        String(f.employeeId) === String(me.id) ||
+        (f.facilitatedBy && f.facilitatedBy.toLowerCase() === myEmail) ||
+        positionRankIndex(f.position) >= myRank
+      );
+    }
+  } catch (e) {
+    console.warn("Could not load HR Quarterly Feedback (list may not exist yet):", e);
+    quarterlyFeedback = [];
+  }
+}
+
+// ── quarter / deadline math ──────────────────────────────────────────────────
+function lastWeekdayOfMonth(year, monthIndex, weekday) {
+  const d = new Date(year, monthIndex + 1, 0); // last calendar day of the month
+  const diff = (d.getDay() - weekday + 7) % 7;
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+// quarter: 1-4. Q1/Q2/Q3 due the last Friday of Mar/Jun/Sep; Q4 due the last Monday of
+// December (moved earlier, inside the quarter, since December is busy).
+function quarterlyFeedbackDeadline(year, quarter) {
+  if (quarter === 1) return lastWeekdayOfMonth(year, 2, 5);   // last Friday of March
+  if (quarter === 2) return lastWeekdayOfMonth(year, 5, 5);   // last Friday of June
+  if (quarter === 3) return lastWeekdayOfMonth(year, 8, 5);   // last Friday of September
+  return lastWeekdayOfMonth(year, 11, 1);                      // last Monday of December
+}
+function currentQuarterInfo() {
+  const now = new Date();
+  const quarter = Math.floor(now.getMonth() / 3) + 1;
+  const year = now.getFullYear();
+  return { quarter, year, due: quarterlyFeedbackDeadline(year, quarter) };
+}
+function quarterLabel(quarter, year) { return `Q${quarter} ${year}`; }
+
+// ── permissions ──────────────────────────────────────────────────────────────
+function canWriteQuarterlyFeedback() { return canDraftNte(); } // APM or higher
+// Everyone this signed-in facilitator is allowed to write a session for, right now.
+function qfEligibleTargets() {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  const myRank = positionRankIndex(me.position);
+  if (me.position === "Cluster Lead" && me.cluster) {
+    return employees.filter(e => e.status !== "Resigned" && e.cluster === me.cluster && positionRankIndex(e.position) >= positionRankIndex("Senior Product Manager"));
+  }
+  return employees.filter(e => e.status !== "Resigned" && e.team === me.team && (e.cluster || "") === (me.cluster || "") && positionRankIndex(e.position) >= myRank);
+}
+function canViewAllQuarterlyFeedback() { return canAccessHR || isPermissionAdmin; }
+
+// ── progress / alert for the current quarter ─────────────────────────────────
+function qfDoneEmployeeIds(quarter, year) {
+  return new Set(quarterlyFeedback.filter(f => f.quarter === quarter && f.year === year).map(f => String(f.employeeId)));
+}
+function qfMyProgress() {
+  if (!canWriteQuarterlyFeedback()) return null;
+  const targets = qfEligibleTargets();
+  if (!targets.length) return null;
+  const { quarter, year, due } = currentQuarterInfo();
+  const done = qfDoneEmployeeIds(quarter, year);
+  const remaining = targets.filter(e => !done.has(String(e.id)));
+  return { quarter, year, due: toLocalYMD(due), total: targets.length, doneCount: targets.length - remaining.length, remaining };
+}
+function qfAlert() {
+  const p = qfMyProgress();
+  if (!p || !p.remaining.length) return null;
+  const level = alertLevelForDueMs(new Date(p.due + "T23:59:59").getTime());
+  if (!level) return null;
+  return { level, sortMs: new Date(p.due + "T23:59:59").getTime(), onclick: "openQuarterlyFeedbackList(true)",
+    title: `Quarterly Feedback — ${p.doneCount}/${p.total} done`, sub: quarterLabel(p.quarter, p.year), dueLabel: `Due ${p.due}` };
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openQuarterlyFeedbackNewForm() {
+  if (!canWriteQuarterlyFeedback()) return;
+  qfNewEmployeeId = null;
+  hrView = { mode: "qfNew" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openQuarterlyFeedbackNewFromRequests() { openQuarterlyFeedbackNewForm(); }
+function openQuarterlyFeedbackList(mine) {
+  if (!quarterlyFeedbackListId) return;
+  hrView = { mode: "qfList", mine: !!mine };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openQuarterlyFeedbackDetail(itemId, back) {
+  hrView = { mode: "qfDetail", caseId: itemId, back: back || "close" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function qfBack() {
+  const b = hrView && hrView.back;
+  if (b === "all") openQuarterlyFeedbackList(false);
+  else if (b === "mine") openQuarterlyFeedbackList(true);
+  else closeHRModal();
+}
+
+// ── new-session employee picker ──────────────────────────────────────────────
+function filterQfEmployees() {
+  const q = document.getElementById("qfSearch").value.trim().toLowerCase();
+  const box = document.getElementById("qfOptions");
+  document.getElementById("qfEmployeeId").value = "";
+  ["qfPosition", "qfDateHired", "qfLastSalaryIncrease"].forEach(id => { document.getElementById(id).value = ""; });
+  if (!q) { box.style.display = "none"; return; }
+  const matches = qfEligibleTargets().filter(e => e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="selectQfEmployee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function selectQfEmployee(id) {
+  const e = employees.find(x => String(x.id) === String(id));
+  if (!e) return;
+  qfNewEmployeeId = String(id);
+  document.getElementById("qfEmployeeId").value = id;
+  document.getElementById("qfSearch").value = e.name;
+  document.getElementById("qfOptions").style.display = "none";
+  document.getElementById("qfPosition").value = e.position || "";
+  document.getElementById("qfDateHired").value = e.hireDate ? dateOnly(e.hireDate) : "—";
+  document.getElementById("qfLastSalaryIncrease").value = e.lastSalaryChangeDate ? dateOnly(e.lastSalaryChangeDate) : "—";
+}
+function toggleQfReasonField() {
+  const rec = document.querySelector('input[name="qfRec"]:checked');
+  const wrap = document.getElementById("qfReasonWrap");
+  const label = document.getElementById("qfReasonLabel");
+  if (!rec || !wrap) return;
+  const required = rec.value === "Promotion" || rec.value === "Salary Increase";
+  wrap.style.display = "";
+  if (label) label.textContent = "Reason" + (required ? " *" : " (optional)");
+}
+
+// ── submit ────────────────────────────────────────────────────────────────────
+async function submitQuarterlyFeedback() {
+  if (!canWriteQuarterlyFeedback()) return;
+  const emp = employees.find(e => String(e.id) === String(qfNewEmployeeId));
+  if (!emp) { toast("Search and select an employee.", "error"); return; }
+  const sessionDate = document.getElementById("qfSessionDate").value;
+  if (!sessionDate) { toast("Enter the session date.", "error"); return; }
+  const recEl = document.querySelector('input[name="qfRec"]:checked');
+  if (!recEl) { toast("Choose a recommendation.", "error"); return; }
+  const recommendation = recEl.value;
+  const recommendationReason = document.getElementById("qfReason").value.trim();
+  if ((recommendation === "Promotion" || recommendation === "Salary Increase") && !recommendationReason) {
+    toast("Enter the reason for this recommendation.", "error"); return;
+  }
+  const employeeFeedback = document.getElementById("qfEmployeeFeedback").value.trim();
+  const facilitatorFeedback = document.getElementById("qfFacilitatorFeedback").value.trim();
+  const ratingRaw = document.getElementById("qfRating").value;
+  const rating = ratingRaw === "" ? null : Math.round(parseFloat(ratingRaw) * 10) / 10;
+  if (rating === null || isNaN(rating) || rating < 1 || rating > 5) { toast("Enter a satisfaction rating between 1.0 and 5.0.", "error"); return; }
+  const willingEl = document.querySelector('input[name="qfWilling"]:checked');
+  if (!willingEl) { toast("Choose Yes or No.", "error"); return; }
+  const willingMoreResponsibility = willingEl.value;
+
+  const me = myEmployeeRecord();
+  const facilitatedBy = (currentAccount && currentAccount.username) || "";
+  const facilitatorName = (me && me.name) || facilitatedBy;
+  const quarter = Math.floor(new Date(sessionDate + "T00:00:00").getMonth() / 3) + 1;
+  const year = new Date(sessionDate + "T00:00:00").getFullYear();
+  const fields = {
+    Title: emp.name, SessionDate: sessionDate, FacilitatedBy: facilitatedBy, FacilitatorName: facilitatorName,
+    EmployeeId: String(emp.id), Position: emp.position || "", Team: emp.team || "", Cluster: emp.cluster || "",
+    DateHired: emp.hireDate || null, LastSalaryIncreaseDate: emp.lastSalaryChangeDate || null,
+    Recommendation: recommendation, RecommendationReason: recommendationReason,
+    EmployeeFeedback: employeeFeedback, FacilitatorFeedback: facilitatorFeedback,
+    SatisfactionRating: String(rating), WillingMoreResponsibility: willingMoreResponsibility,
+    Quarter: String(quarter), Year: String(year)
+  };
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${quarterlyFeedbackListId}/items`, { method: "POST", body: JSON.stringify({ fields } ) });
+    quarterlyFeedback.unshift({
+      itemId: created.id, sessionDate, facilitatedBy, facilitatorName, employeeId: String(emp.id), employeeName: emp.name,
+      position: emp.position || "", team: emp.team || "", cluster: emp.cluster || "", dateHired: emp.hireDate || null,
+      lastSalaryIncreaseDate: emp.lastSalaryChangeDate || null, recommendation, recommendationReason, employeeFeedback,
+      facilitatorFeedback, satisfactionRating: rating, willingMoreResponsibility, quarter, year
+    });
+    setSyncing(false, true);
+    toast("Quarterly feedback saved ✓", "success");
+    openQuarterlyFeedbackDetail(created.id, "mine");
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
+async function deleteQuarterlyFeedback(itemId) {
+  const f = quarterlyFeedback.find(x => x.itemId === itemId);
+  if (!f) return;
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  if (!(canViewAllQuarterlyFeedback() || (f.facilitatedBy && f.facilitatedBy.toLowerCase() === myEmail))) return;
+  if (!confirm("Delete this feedback session? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${quarterlyFeedbackListId}/items/${itemId}`, { method: "DELETE" });
+    quarterlyFeedback = quarterlyFeedback.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Deleted", "success");
+    if (hrView && hrView.mode === "qfDetail" && hrView.caseId === itemId) hrView = { mode: "qfList", mine: true };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function qfRatingStars(rating) {
+  return `<span style="font-weight:700;">${rating.toFixed(1)}</span><span style="color:var(--text3);"> / 5.0</span>`;
+}
+function renderQuarterlyFeedbackNewForm(box) {
+  box.style.width = "min(640px, 94vw)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">New Quarterly Feedback</h3>
+        <div style="font-size:12px; color:var(--text2);">${quarterLabel(currentQuarterInfo().quarter, currentQuarterInfo().year)} — due ${escapeHtml(toLocalYMD(currentQuarterInfo().due))}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="margin-top:14px;"><label>Session Date *</label><input id="qfSessionDate" type="date" value="${escapeHtml(toLocalYMD(new Date()))}" max="${escapeHtml(toLocalYMD(new Date()))}" /></div>
+    <div class="form-group"><label>Facilitator</label><input type="text" readonly value="${escapeHtml((myEmployeeRecord() && myEmployeeRecord().name) || "")}" style="opacity:.7;" /></div>
+    <div class="form-group" style="position:relative;">
+      <label>Employee Name *</label>
+      <input id="qfSearch" type="text" placeholder="Type a name…" oninput="filterQfEmployees()" autocomplete="off" />
+      <div id="qfOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+      <input type="hidden" id="qfEmployeeId" />
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Position</label><input id="qfPosition" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Date Hired</label><input id="qfDateHired" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Last Salary Increase</label><input id="qfLastSalaryIncrease" type="text" readonly style="opacity:.7;" /></div>
+    </div>
+    <div class="form-group">
+      <label>Recommendation *</label>
+      <div style="display:flex; flex-direction:column; gap:6px; font-size:13px;">
+        ${QF_RECOMMENDATIONS.map((r, i) => `<label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="qfRec" value="${escapeAttr(r)}" onchange="toggleQfReasonField()" ${i === 0 ? "checked" : ""} /> ${escapeHtml(r)}</label>`).join("")}
+      </div>
+      <div id="qfReasonWrap" style="margin-top:8px;">
+        <label id="qfReasonLabel" style="font-size:12px;">Reason (optional)</label>
+        <textarea id="qfReason" style="min-height:60px;" placeholder="Reason for this recommendation…"></textarea>
+      </div>
+    </div>
+    <div class="form-group"><label>Employee Feedback</label><textarea id="qfEmployeeFeedback" style="min-height:80px;" placeholder="What the employee shared during the session…"></textarea></div>
+    <div class="form-group"><label>Facilitator's Feedback</label><textarea id="qfFacilitatorFeedback" style="min-height:80px;" placeholder="Your own observations and feedback…"></textarea></div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Employee Satisfaction Rating (1.0–5.0) *</label><input id="qfRating" type="number" min="1" max="5" step="0.1" placeholder="e.g. 4.5" /></div>
+      <div class="form-group" style="flex:1;">
+        <label>Willing to Take on More Responsibility? *</label>
+        <div style="display:flex; gap:16px; font-size:13px; margin-top:6px;">
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="qfWilling" value="Yes" /> Yes</label>
+          <label style="display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="qfWilling" value="No" /> No</label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitQuarterlyFeedback()">Save</button>
+    </div>`;
+  toggleQfReasonField();
+}
+
+function renderQuarterlyFeedbackList(box) {
+  box.style.width = "min(760px, 95vw)";
+  const mine = !!hrView.mine;
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const list = (mine ? quarterlyFeedback.filter(f => f.facilitatedBy && f.facilitatedBy.toLowerCase() === myEmail) : quarterlyFeedback)
+    .slice().sort((a, b) => (b.sessionDate || "").localeCompare(a.sessionDate || ""));
+  const canDeleteAny = canViewAllQuarterlyFeedback();
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${mine ? "My Quarterly Feedback" : "Quarterly Feedback — All"}</h3>
+        <div style="font-size:12px; color:var(--text2);">${list.length} session${list.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${canWriteQuarterlyFeedback() ? `<button class="btn btn-primary" onclick="openQuarterlyFeedbackNewForm()" style="margin:14px 0;">&#65291; New Feedback</button>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${list.length ? list.map(f => `<div onclick="openQuarterlyFeedbackDetail('${f.itemId}', '${mine ? "mine" : "all"}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+        <div style="min-width:0;">
+          <div style="font-size:13px; color:var(--accent);">${escapeHtml(f.employeeName)} <span style="color:var(--text3); font-weight:400;">· ${escapeHtml(f.position)}</span></div>
+          <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(quarterLabel(f.quarter, f.year))} · ${escapeHtml(dateOnly(f.sessionDate))}${mine ? "" : " · by " + escapeHtml(f.facilitatorName)}</div>
+        </div>
+        <span style="font-size:12px; font-weight:600; color:${f.recommendation === "No Recommendation" ? "var(--text3)" : "var(--green)"}; white-space:nowrap;">${escapeHtml(f.recommendation)}</span>
+      </div>`).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No sessions yet.</div>`}
+    </div>`;
+}
+
+function renderQuarterlyFeedbackDetail(box) {
+  box.style.width = "min(640px, 94vw)";
+  const f = quarterlyFeedback.find(x => x.itemId === hrView.caseId);
+  if (!f) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Session not found.</div>`; return; }
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const canDelete = canViewAllQuarterlyFeedback() || (f.facilitatedBy && f.facilitatedBy.toLowerCase() === myEmail);
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="qfBack()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">&larr; Back</div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(f.employeeName)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(quarterLabel(f.quarter, f.year))} · ${escapeHtml(dateOnly(f.sessionDate))}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deleteQuarterlyFeedback('${f.itemId}')" title="Delete">&#128465;</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
+        <div><span style="color:var(--text3);">Facilitator:</span> ${escapeHtml(f.facilitatorName)}</div>
+        <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(f.position)}</div>
+        <div><span style="color:var(--text3);">Date Hired:</span> ${escapeHtml(dateOnly(f.dateHired) || "—")}</div>
+        <div><span style="color:var(--text3);">Last Salary Increase:</span> ${escapeHtml(dateOnly(f.lastSalaryIncreaseDate) || "—")}</div>
+      </div>
+      <div style="font-weight:600; margin-bottom:4px;">Recommendation</div>
+      <p style="margin-bottom:4px;">${escapeHtml(f.recommendation)}</p>
+      ${f.recommendationReason ? `<p style="color:var(--text2); margin-bottom:14px;">${escapeHtml(f.recommendationReason)}</p>` : `<div style="margin-bottom:14px;"></div>`}
+      <div style="font-weight:600; margin-bottom:4px;">Employee Feedback</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${f.employeeFeedback ? escapeHtml(f.employeeFeedback) : "—"}</p>
+      <div style="font-weight:600; margin-bottom:4px;">Facilitator's Feedback</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${f.facilitatorFeedback ? escapeHtml(f.facilitatorFeedback) : "—"}</p>
+      <div style="display:flex; gap:24px;">
+        <div><div style="font-size:12px; color:var(--text3);">Satisfaction</div>${qfRatingStars(f.satisfactionRating)}</div>
+        <div><div style="font-size:12px; color:var(--text3);">Wants more responsibility</div><div style="font-weight:700;">${escapeHtml(f.willingMoreResponsibility)}</div></div>
+      </div>
+    </div>`;
 }
 
 function toLocalYMD(d) {
@@ -7048,6 +7441,9 @@ function renderHRModal() {
   if (hrView.mode === "gtNew") { renderGeneralTaskNewForm(box); return; }
   if (hrView.mode === "gtList") { renderGeneralTaskList(box); return; }
   if (hrView.mode === "gtDetail") { renderGeneralTaskDetail(box); return; }
+  if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
+  if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
+  if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
   if (hrView.mode === "dayEvents") { renderDayEvents(box); return; }
 
   if (hrView.mode === "detail") {
@@ -7624,7 +8020,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -7910,7 +8306,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0);
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -7958,6 +8354,7 @@ function renderRequestsTodo() {
   myPendingCoachingCases().forEach(c => rows.push({ label: "Coaching form — please review and acknowledge", sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myCoachingTodo().forEach(c => rows.push({ label: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
+  { const qa = qfAlert(); if (qa) rows.push({ label: qa.title, sub: qa.sub, click: qa.onclick }); }
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -7991,7 +8388,8 @@ function renderRequests() {
     { icon: "&#128203;", title: "General Task Request", desc: "Assign a one-off task with a deadline and track it to submission.",
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
-    { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }
+    { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Write a session for anyone eligible on your team — recognition requests are separate.",
+      actions: quarterlyFeedbackListId ? [{ label: "New Feedback", onclick: "openQuarterlyFeedbackNewForm()" }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }] : undefined }
   ];
   const hr = [
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
@@ -8006,7 +8404,7 @@ function renderRequests() {
       ] },
     { icon: "&#128260;", title: "Manpower Change", desc: "New hire · Transfer · Promotion · Salary change" },
     { icon: "&#128340;", title: "Attendance Adjustment", desc: "" },
-    { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }
+    ...(quarterlyFeedbackListId ? [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Browse every submitted session across the company.", onclick: "openQuarterlyFeedbackList(false)" }] : [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }])
   ];
   return `<div style="max-width:1100px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">Requests</h2>
