@@ -5183,7 +5183,12 @@ function canManageRecurringTask(t) { return isTeamManager(t.team, t.cluster) || 
 function myRecurringTaskTeams() {
   if (canAccessHR || isPermissionAdmin) return allClusterSubteams();
   const me = myEmployeeRecord();
-  return (me && me.cluster && canDraftNte()) ? [{ team: me.team, cluster: me.cluster }] : [];
+  if (!me || !me.cluster) return [];
+  // SPM and Cluster Lead oversee the whole cluster (same boundary as cross-team General Task
+  // assignment), not just their own team — see recurringTasksCollapsedView() for how that's
+  // bundled into one row per report type instead of one per team.
+  if (canAssignAcrossTeams()) return allClusterSubteams().filter(p => p.cluster === me.cluster);
+  return canDraftNte() ? [{ team: me.team, cluster: me.cluster }] : [];
 }
 function visibleRecurringTasks() {
   const keys = new Set(myRecurringTaskTeams().map(p => subteamKey(p.team, p.cluster)));
