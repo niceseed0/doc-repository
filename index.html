@@ -80,6 +80,9 @@
   .logo-text p { font-size: 12px; color: var(--text3); margin-top: 2px; }
   .trash-icon-btn { position: relative; background: none; border: none; cursor: pointer; font-size: 20px; padding: 4px; border-radius: 8px; line-height: 1; color: var(--text2); transition: background .15s; }
   .trash-icon-btn:hover { background: var(--surface2); }
+  #testModeBanner { display: flex; align-items: center; justify-content: center; gap: 14px; background: linear-gradient(90deg, #7c3aed, #a855f7); color: #fff; padding: 8px 16px; font-size: 13px; font-weight: 600; flex-wrap: wrap; }
+  #testModeBanner .btn { background: rgba(255,255,255,.2); color: #fff; border: 1px solid rgba(255,255,255,.4); }
+  #testModeBanner .btn:hover { background: rgba(255,255,255,.3); }
   .trash-icon-btn.active { background: var(--accent); color: #fff; }
   .trash-icon-btn .tab-count { position: absolute; top: -4px; right: -6px; font-size: 10px; padding: 1px 5px; }
   .header-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -376,6 +379,7 @@
 </div>
 
 <div id="app" style="display:none">
+  <div id="testModeBanner" style="display:none"></div>
   <div class="sticky-top-group">
   <div class="header">
     <div class="header-inner">
@@ -390,6 +394,9 @@
         <button class="trash-icon-btn" onclick="openFormerEmployeesList()" id="formerEmployeesBtn" style="display:none" title="Former Employees">
           &#128100;&#128683;
           <span class="tab-count" id="formerEmployeesCount" style="display:none"></span>
+        </button>
+        <button class="trash-icon-btn" onclick="openTestModePicker()" id="testModeBtn" style="display:none" title="Test Mode">
+          &#129514;
         </button>
         <button class="trash-icon-btn" onclick="showTrash()" id="trashBtn" style="display:none" title="Trash">
           &#128465;
@@ -487,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-01-02";
+const BUILD_ID = "2026-10-03-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -514,6 +521,8 @@ const CONFIG = {
   recurringTasksListDisplayName: "HR Recurring Tasks",
   recurringTaskSettingsListDisplayName: "HR Recurring Task Settings",
   generalTasksListDisplayName: "HR General Tasks",
+  announcementPostsListDisplayName: "HR Announcement Posts",
+  announcementCommentsListDisplayName: "HR Announcement Comments",
   holidaysListDisplayName: "HR Holidays",
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   groupFieldCandidates: ["Team"],
@@ -921,6 +930,11 @@ let editingItemId = null;
 let isApprover = false;
 let canAccessTrash = false;
 let isPermissionAdmin = false;
+let realIsPermissionAdmin = false; // the REAL signed-in user's admin status — never touched by Test Mode, gates the Test Mode button itself
+let testModeActive = false;
+let testModePersona = null; // the tester employee object currently being viewed as
+let testRealAccount = null; // backup of the real currentAccount while impersonating
+let testRealFlags = null;   // backup of the real access flags while impersonating
 let permissionsListId = null;
 let permissionRows = []; // [{ itemId, userEmail, team }]
 let revisionsListId = null;
@@ -981,6 +995,11 @@ let quarterlyFeedbackListId = null;
 let quarterlyFeedback = []; // see Quarterly Feedback module below
 let holidaysListId = null;
 let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclamations) — see loadHolidayOverrides()
+let announcementPostsListId = null;
+let announcementCommentsListId = null;
+let announcementPosts = []; // see Announcement Board module below
+let expandedAnnouncementPosts = new Set();
+let showScheduledAnnouncements = false;
 let generalTasksListId = null;
 let generalTasks = []; // see General Task Request module below
 let recurringTaskSettingsListId = null;
@@ -997,6 +1016,7 @@ let nteCases = []; // [{ itemId, title, employeeId, position, department, refNo,
 async function startApp() {
   isPermissionAdmin = !!(currentAccount && currentAccount.username &&
     ADMIN_EMAILS.map(e => e.toLowerCase()).includes(currentAccount.username.toLowerCase()));
+  realIsPermissionAdmin = isPermissionAdmin; // snapshot before Test Mode can ever touch isPermissionAdmin
   checkHRAccess();
   document.getElementById("authCard").innerHTML = `
     <div class="spinner"></div>
@@ -1007,7 +1027,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1078,6 +1098,10 @@ async function resolveSiteAndLists() {
   generalTasksListId = generalTasksMatch ? generalTasksMatch.id : null; // optional — General Task Request card stays "Coming soon" if missing
   const holidaysMatch = (lists.value || []).find(l => l.displayName === CONFIG.holidaysListDisplayName);
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
+  const annPostsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementPostsListDisplayName);
+  announcementPostsListId = annPostsMatch ? annPostsMatch.id : null; // optional — Announcement board stays empty if missing
+  const annCommentsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementCommentsListDisplayName);
+  announcementCommentsListId = annCommentsMatch ? annCommentsMatch.id : null; // optional — comments just won't save if missing
   const qfMatch = (lists.value || []).find(l => l.displayName === CONFIG.quarterlyFeedbackListDisplayName);
   quarterlyFeedbackListId = qfMatch ? qfMatch.id : null; // optional — Quarterly Feedback cards stay "Coming soon" if missing
 }
@@ -2120,6 +2144,182 @@ function updatePositionOptions(positionSelectId, presetValue) {
     + `<option value="__new__">+ Add new position…</option>`;
   sel.value = presetValue && options.includes(presetValue) ? presetValue : (options[0] || "__new__");
   onHRTeamSelectChange(positionSelectId, positionSelectId + "NewWrap");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test Mode — lets an admin preview the app as a given position (SPM/PM/APM/SGM/GM) without
+// signing in separately. Swaps the module-level `currentAccount` (used everywhere for
+// myEmployeeRecord()/permissions/display name) to a synthetic tester identity; actual Graph API
+// auth is untouched since it goes through msalInstance.getActiveAccount(), not this variable, so
+// real writes still succeed under the real signed-in admin's SharePoint permissions.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEST_TEAM = "TESTER";
+const TEST_CLUSTER = "John's Cluster";
+const TEST_PERSONAS = [
+  { suffix: "SPM", position: "Senior Product Manager" },
+  { suffix: "PM", position: "Product Manager" },
+  { suffix: "APM", position: "Assistant Product Manager" },
+  { suffix: "SGM", position: "Senior Game Master" },
+  { suffix: "GM", position: "Game Master" }
+];
+function testerEmployees() {
+  return employees.filter(e => e.team === TEST_TEAM && e.cluster === TEST_CLUSTER)
+    .sort((a, b) => TEST_PERSONAS.findIndex(p => p.position === a.position) - TEST_PERSONAS.findIndex(p => p.position === b.position));
+}
+function openTestModePicker() {
+  if (!realIsPermissionAdmin) return;
+  hrView = { mode: "testMode" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+async function createTestTeam() {
+  if (!realIsPermissionAdmin || !employeesListId) return;
+  const existing = new Set(testerEmployees().map(e => e.position));
+  const toCreate = TEST_PERSONAS.filter(p => !existing.has(p.position));
+  if (!toCreate.length) { toast("Testers already exist.", "success"); return; }
+  setSyncing(true);
+  try {
+    for (const p of toCreate) {
+      const name = `Tester - ${p.suffix}`;
+      const email = `tester.${p.suffix.toLowerCase()}@elitegsl.test`;
+      const hireDate = toLocalYMD(new Date());
+      const fields = { Title: name, Team: TEST_TEAM, Cluster: TEST_CLUSTER, Position: p.position, Status: "Regular", Email: email, HireDate: hireDate };
+      const created = await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+      employees.push({ id: created.id, name, photo: "", team: TEST_TEAM, cluster: TEST_CLUSTER, position: p.position, status: "Regular", hireDate, email, birthday: null, resumeUrl: "", separationDate: null, separationReason: "" });
+    }
+    setSyncing(false, true);
+    toast("Test testers created ✓", "success");
+    renderHRModal();
+    renderTabs();
+  } catch (err) { setSyncing(false, false); toast("Could not create testers: " + err.message, "error"); }
+}
+async function deleteTester(id) {
+  if (!realIsPermissionAdmin) return;
+  const t = employees.find(e => e.id === id && e.team === TEST_TEAM);
+  if (!t) return;
+  if (!confirm(`Delete ${t.name}?`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${id}`, { method: "DELETE" });
+    employees = employees.filter(e => e.id !== id);
+    if (testModeActive && testModePersona && testModePersona.id === id) await exitTestMode();
+    setSyncing(false, true);
+    toast("Deleted", "success");
+    renderHRModal();
+    renderTabs();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+async function deleteTestTeam() {
+  if (!realIsPermissionAdmin) return;
+  if (!confirm("Delete all test testers? This can't be undone.")) return;
+  const testers = testerEmployees();
+  setSyncing(true);
+  try {
+    for (const t of testers) {
+      await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${t.id}`, { method: "DELETE" });
+    }
+    const ids = new Set(testers.map(t => t.id));
+    employees = employees.filter(e => !ids.has(e.id));
+    if (testModeActive && testModePersona && ids.has(testModePersona.id)) await exitTestMode();
+    setSyncing(false, true);
+    toast("Test testers deleted", "success");
+    renderHRModal();
+    renderTabs();
+  } catch (err) { setSyncing(false, false); toast("Could not delete testers: " + err.message, "error"); }
+}
+// Privacy-scoped lists (NTE/Coaching/Recognition/Quarterly Feedback) query the server with the
+// signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
+// General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
+async function reloadIdentityScopedLists() {
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback()]);
+}
+async function enterTestMode(employeeId) {
+  if (!realIsPermissionAdmin) return;
+  const tester = employees.find(e => e.id === employeeId && e.team === TEST_TEAM);
+  if (!tester) return;
+  if (!testModeActive) {
+    testRealAccount = currentAccount;
+    testRealFlags = { isPermissionAdmin, canAccessHR, canAccessSalary, canAccessIncidents, isApprover, canAccessTrash, managedTeams };
+  }
+  currentAccount = { username: tester.email, name: tester.name };
+  isPermissionAdmin = false;
+  checkHRAccess(); // the fake account has no idTokenClaims, so this fails closed as intended
+  refreshAccessFlags();
+  testModeActive = true;
+  testModePersona = tester;
+  closeHRModal();
+  setSyncing(true);
+  try { await reloadIdentityScopedLists(); } catch (e) { console.warn("Could not reload scoped lists for test mode:", e); }
+  setSyncing(false, true);
+  renderUserPill();
+  renderTestModeBanner();
+  renderTabs();
+  switchSection("overview");
+}
+async function exitTestMode() {
+  if (!testModeActive) return;
+  currentAccount = testRealAccount;
+  isPermissionAdmin = testRealFlags.isPermissionAdmin;
+  canAccessHR = testRealFlags.canAccessHR;
+  canAccessSalary = testRealFlags.canAccessSalary;
+  canAccessIncidents = testRealFlags.canAccessIncidents;
+  isApprover = testRealFlags.isApprover;
+  canAccessTrash = testRealFlags.canAccessTrash;
+  managedTeams = testRealFlags.managedTeams;
+  testModeActive = false;
+  testModePersona = null;
+  testRealAccount = null; testRealFlags = null;
+  closeHRModal();
+  setSyncing(true);
+  try { await reloadIdentityScopedLists(); } catch (e) { console.warn("Could not reload scoped lists after exiting test mode:", e); }
+  setSyncing(false, true);
+  renderUserPill();
+  renderTestModeBanner();
+  renderTabs();
+  switchSection("overview");
+}
+function renderTestModeBanner() {
+  const el = document.getElementById("testModeBanner");
+  if (!el) return;
+  if (testModeActive && testModePersona) {
+    el.style.display = "flex";
+    el.innerHTML = `<span>&#129514; <strong>Test Mode</strong> — viewing as <strong>${escapeHtml(testModePersona.name)}</strong> (${escapeHtml(testModePersona.position)})</span><button class="btn btn-sm" onclick="exitTestMode()">Exit Test Mode</button>`;
+  } else {
+    el.style.display = "none";
+    el.innerHTML = "";
+  }
+}
+function renderTestModePicker(box) {
+  box.style.width = "min(480px, 92vw)";
+  const testers = testerEmployees();
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Test Mode</h3>
+        <div style="font-size:12px; color:var(--text2);">Preview the app as a given position — no separate sign-in needed.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${testModeActive ? `<div style="background:var(--surface2); border:1px solid var(--accent); border-radius:8px; padding:10px 14px; margin:14px 0; font-size:13px;">
+      Currently viewing as <strong>${escapeHtml(testModePersona.name)}</strong>.
+      <button class="btn btn-secondary btn-sm" onclick="exitTestMode()" style="margin-left:8px;">Exit Test Mode</button>
+    </div>` : ""}
+    <div style="display:flex; flex-direction:column; gap:6px; margin:14px 0;">
+      ${testers.length ? testers.map(t => `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+        <div onclick="enterTestMode('${t.id}')" style="cursor:pointer; flex:1; min-width:0;">
+          <div style="font-size:13px; font-weight:600; color:var(--accent);">${escapeHtml(t.name)}${testModeActive && testModePersona.id === t.id ? " (current)" : ""}</div>
+          <div style="font-size:11px; color:var(--text3);">${escapeHtml(t.position)} · ${escapeHtml(t.team)}</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="enterTestMode('${t.id}')">View as</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteTester('${t.id}')" title="Delete this tester">&#128465;</button>
+      </div>`).join("") : `<div style="font-size:12px; color:var(--text3);">No test personas yet — create the set below.</div>`}
+    </div>
+    <div style="display:flex; gap:8px; border-top:1px solid var(--border); padding-top:14px; flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="createTestTeam()">&#65291; Create Test Team &amp; Testers</button>
+      ${testers.length ? `<button class="btn btn-danger" onclick="deleteTestTeam()">&#128465; Delete Test Team &amp; Testers</button>` : ""}
+    </div>
+    <div style="font-size:11px; color:var(--text3); margin-top:12px;">Testers live in the "${TEST_CLUSTER}" cluster under a "${TEST_TEAM}" team. Test Mode resets if the page is reloaded.</div>
+  `;
 }
 
 function openAddEmployeeForm() {
@@ -5767,14 +5967,13 @@ function myRequestedGeneralTasks() {
   return generalTasks.filter(t => t.requestedBy && t.requestedBy.toLowerCase() === myEmail);
 }
 function genTasksNeedingMyApproval() {
-  return myRequestedGeneralTasks().filter(t => (t.assignees || []).some(a => a.status === "DeclinePending" || a.status === "ChangePending"));
+  return myRequestedGeneralTasks().filter(t => (t.assignees || []).some(a => a.status === "DeclinePending"));
 }
 function assigneeStatusLabel(status) {
   const map = {
     Pending: { text: "Awaiting response", color: "var(--text3)" },
     Acknowledged: { text: "Acknowledged", color: "var(--accent)" },
     DeclinePending: { text: "Decline — awaiting your approval", color: "var(--yellow)" },
-    ChangePending: { text: "Reassignment requested — awaiting your approval", color: "var(--yellow)" },
     Declined: { text: "Declined", color: "var(--red, #ef4444)" },
     Submitted: { text: "Submitted", color: "var(--green)" }
   };
@@ -5931,42 +6130,43 @@ async function gtDecline(itemId) {
     openGeneralTaskDetail(itemId);
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
 }
-function gtChangeCandidates() {
+// Any active assignee (not yet Submitted/Declined) can bring in help by adding someone else —
+// no approval needed, and the existing assignee can't drop or hand off their own spot this way.
+function gtAddCandidates(t) {
   const me = myEmployeeRecord();
-  return employees.filter(e => e.status !== "Resigned" && !(me && String(me.id) === String(e.id)));
+  const already = new Set((t.assignees || []).map(a => String(a.id)));
+  return employees.filter(e => e.status !== "Resigned" && !already.has(String(e.id)));
 }
-function filterGtChangeCandidate() {
-  const q = document.getElementById("gtChangeSearch").value.trim().toLowerCase();
-  const box = document.getElementById("gtChangeOptions");
-  document.getElementById("gtChangeToId").value = "";
+function filterGtAddCandidate(itemId) {
+  const q = document.getElementById("gtAddSearch").value.trim().toLowerCase();
+  const box = document.getElementById("gtAddOptions");
+  document.getElementById("gtAddToId").value = "";
   if (!q) { box.style.display = "none"; return; }
-  const matches = gtChangeCandidates().filter(e => e.name.toLowerCase().includes(q)).slice(0, 8);
+  const t = generalTasks.find(x => x.itemId === itemId);
+  const matches = (t ? gtAddCandidates(t) : []).filter(e => e.name.toLowerCase().includes(q)).slice(0, 8);
   if (!matches.length) { box.style.display = "none"; return; }
-  box.innerHTML = matches.map(e => `<div onclick="pickGtChangeCandidate('${e.id}','${jsAttrEscape(e.name)}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.innerHTML = matches.map(e => `<div onclick="pickGtAddCandidate('${e.id}','${jsAttrEscape(e.name)}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
   box.style.display = "";
 }
-function pickGtChangeCandidate(id, name) {
-  document.getElementById("gtChangeToId").value = id;
-  document.getElementById("gtChangeSearch").value = name;
-  document.getElementById("gtChangeOptions").style.display = "none";
+function pickGtAddCandidate(id, name) {
+  document.getElementById("gtAddToId").value = id;
+  document.getElementById("gtAddSearch").value = name;
+  document.getElementById("gtAddOptions").style.display = "none";
 }
-async function gtRequestChange(itemId) {
+async function gtAddAssignee(itemId) {
   const t = generalTasks.find(x => x.itemId === itemId);
-  const a = t && myAssigneeEntry(t);
-  if (!t || !a || a.status !== "Pending") return;
-  const toId = document.getElementById("gtChangeToId").value;
+  const myEntry = t && myAssigneeEntry(t);
+  if (!t || !myEntry || (myEntry.status !== "Pending" && myEntry.status !== "Acknowledged")) return;
+  const toId = document.getElementById("gtAddToId").value;
   const candidate = employees.find(e => String(e.id) === String(toId));
-  if (!candidate) { toast("Search and select who should take this over.", "error"); return; }
-  const reason = document.getElementById("gtChangeReason").value.trim();
-  if (!reason) { toast("Enter the reason for the change.", "error"); return; }
-  a.status = "ChangePending";
-  a.changeToId = String(candidate.id); a.changeToName = candidate.name; a.changeToPosition = candidate.position || ""; a.changeToTeam = candidate.team || "";
-  a.changeReason = reason; a.respondedDate = new Date().toISOString();
+  if (!candidate) { toast("Search and select who should be added.", "error"); return; }
+  if ((t.assignees || []).some(a => String(a.id) === String(candidate.id))) { toast("That person is already on this task.", "error"); return; }
+  t.assignees.push({ id: String(candidate.id), name: candidate.name, position: candidate.position || "", team: candidate.team || "", status: "Pending" });
   setSyncing(true);
   try {
     await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
     setSyncing(false, true);
-    toast("Reassignment request sent to the requester for approval", "success");
+    toast(`${candidate.name} added ✓`, "success");
     openGeneralTaskDetail(itemId);
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
 }
@@ -5979,7 +6179,14 @@ async function gtSubmit(itemId) {
   let safeLink = "";
   if (link) { safeLink = recSafeUrl(link); if (!safeLink) { toast("That link doesn't look valid.", "error"); return; } }
   if (!content && !safeLink) { toast("Write a short note or attach a link — at least one.", "error"); return; }
-  a.status = "Submitted"; a.submittedContent = content; a.submittedLink = safeLink; a.submittedDate = new Date().toISOString();
+  const now = new Date().toISOString();
+  a.status = "Submitted"; a.submittedContent = content; a.submittedLink = safeLink; a.submittedDate = now;
+  // It's a shared task — whoever finishes it first closes it for every other still-open assignee too.
+  (t.assignees || []).forEach(other => {
+    if (other !== a && (other.status === "Pending" || other.status === "Acknowledged")) {
+      other.status = "Submitted"; other.submittedDate = now; other.completedByOther = true; other.completedByName = a.name;
+    }
+  });
   setSyncing(true);
   try {
     await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
@@ -6016,40 +6223,6 @@ async function gtReturnDecline(itemId, assigneeId) {
     await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
     setSyncing(false, true);
     toast("Sent back to the assignee", "success");
-    openGeneralTaskDetail(itemId);
-  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
-}
-async function gtApproveChange(itemId, assigneeId) {
-  const t = generalTasks.find(x => x.itemId === itemId);
-  if (!t || !isGeneralTaskRequester(t)) return;
-  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
-  if (!a || a.status !== "ChangePending") return;
-  if (!confirm(`Reassign this task to ${a.changeToName}?`)) return;
-  a.id = a.changeToId; a.name = a.changeToName; a.position = a.changeToPosition; a.team = a.changeToTeam;
-  a.status = "Pending";
-  a.reassignedFrom = a.reassignedFrom || []; a.reassignedFrom.push({ name: a.name, date: new Date().toISOString() });
-  delete a.changeToId; delete a.changeToName; delete a.changeToPosition; delete a.changeToTeam; delete a.changeReason;
-  a.declineReason = ""; a.respondedDate = null;
-  setSyncing(true);
-  try {
-    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
-    setSyncing(false, true);
-    toast("Reassigned ✓", "success");
-    openGeneralTaskDetail(itemId);
-  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
-}
-async function gtReturnChange(itemId, assigneeId) {
-  const t = generalTasks.find(x => x.itemId === itemId);
-  if (!t || !isGeneralTaskRequester(t)) return;
-  const a = (t.assignees || []).find(x => String(x.id) === String(assigneeId));
-  if (!a || a.status !== "ChangePending") return;
-  a.status = "Pending";
-  delete a.changeToId; delete a.changeToName; delete a.changeToPosition; delete a.changeToTeam; delete a.changeReason;
-  setSyncing(true);
-  try {
-    await saveGeneralTask(t, { Assignees: JSON.stringify(t.assignees) });
-    setSyncing(false, true);
-    toast("Reassignment request declined", "success");
     openGeneralTaskDetail(itemId);
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
 }
@@ -6183,6 +6356,15 @@ function fmtDueDateTime(iso) {
   const d = new Date(iso);
   return d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
+function gtAddAssigneeBlockHtml(t) {
+  return `<div style="position:relative;">
+    <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Add Assignee <span style="font-weight:400; color:var(--text3);">(bring in help — no approval needed)</span></div>
+    <input id="gtAddSearch" type="text" placeholder="Search a name…" oninput="filterGtAddCandidate('${t.itemId}')" autocomplete="off" />
+    <div id="gtAddOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:160px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+    <input type="hidden" id="gtAddToId" />
+    <button class="btn btn-secondary" onclick="gtAddAssignee('${t.itemId}')" style="margin-top:6px;">Add</button>
+  </div>`;
+}
 function gtOwnActionsHtml(t, a) {
   if (a.status === "Pending") {
     return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
@@ -6196,14 +6378,7 @@ function gtOwnActionsHtml(t, a) {
           <textarea id="gtDeclineReason" style="min-height:60px;" placeholder="Reason…"></textarea>
           <button class="btn btn-secondary" onclick="gtDecline('${t.itemId}')" style="margin-top:6px;">Decline</button>
         </div>
-        <div style="position:relative;">
-          <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Request a different assignee</div>
-          <input id="gtChangeSearch" type="text" placeholder="Search a name…" oninput="filterGtChangeCandidate()" autocomplete="off" />
-          <div id="gtChangeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:160px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
-          <input type="hidden" id="gtChangeToId" />
-          <textarea id="gtChangeReason" style="min-height:60px; margin-top:6px;" placeholder="Reason…"></textarea>
-          <button class="btn btn-secondary" onclick="gtRequestChange('${t.itemId}')" style="margin-top:6px;">Request Change</button>
-        </div>
+        ${gtAddAssigneeBlockHtml(t)}
       </div>
     </div>`;
   }
@@ -6213,12 +6388,13 @@ function gtOwnActionsHtml(t, a) {
       <div class="form-group"><label>Note <span style="font-weight:400; color:var(--text3);">(text or link — at least one)</span></label><textarea id="gtSubmitContent" style="min-height:70px;" placeholder="What was done…"></textarea></div>
       <div class="form-group"><label>Link (optional)</label><input id="gtSubmitLink" type="text" placeholder="https://…" /></div>
       <button class="btn btn-primary" onclick="gtSubmit('${t.itemId}')">Submit</button>
+      <div style="border-top:1px solid var(--border); margin:16px 0 12px;"></div>
+      ${gtAddAssigneeBlockHtml(t)}
       ${gtExtensionBlockHtml(t)}
     </div>`;
   }
   if (a.status === "DeclinePending") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for ${escapeHtml(t.requesterName)} to review your decline.</div>`;
-  if (a.status === "ChangePending") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for ${escapeHtml(t.requesterName)} to approve reassigning this to ${escapeHtml(a.changeToName)}.</div>`;
-  if (a.status === "Submitted") return `<div style="font-size:12px; color:var(--green); margin-top:12px;">Submitted on ${escapeHtml(fmtDueDateTime(a.submittedDate))}.</div>`;
+  if (a.status === "Submitted") return a.completedByOther ? `<div style="font-size:12px; color:var(--green); margin-top:12px;">Completed by ${escapeHtml(a.completedByName)} on ${escapeHtml(fmtDueDateTime(a.submittedDate))}.</div>` : `<div style="font-size:12px; color:var(--green); margin-top:12px;">Submitted on ${escapeHtml(fmtDueDateTime(a.submittedDate))}.</div>`;
   if (a.status === "Declined") return `<div style="font-size:12px; color:var(--text3); margin-top:12px;">You declined this task.</div>`;
   return "";
 }
@@ -6235,10 +6411,10 @@ function gtAssigneeCardHtml(t, a, forRequester) {
   const s = assigneeStatusLabel(a.status);
   let extra = "";
   if (a.status === "DeclinePending") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">"${escapeHtml(a.declineReason)}"</div>`;
-  if (a.status === "ChangePending") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">Proposes ${escapeHtml(a.changeToName)} — "${escapeHtml(a.changeReason)}"</div>`;
-  if (a.status === "Submitted") extra = `<div style="font-size:12px; color:var(--text2); margin-top:4px;">${a.submittedContent ? escapeHtml(a.submittedContent) : ""}${a.submittedLink ? `${a.submittedContent ? "<br>" : ""}<a href="${escapeAttr(a.submittedLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">${escapeHtml(a.submittedLink)}</a>` : ""}</div>`;
+  if (a.status === "Submitted") extra = a.completedByOther
+    ? `<div style="font-size:12px; color:var(--text3); margin-top:4px;">Completed by ${escapeHtml(a.completedByName)}</div>`
+    : `<div style="font-size:12px; color:var(--text2); margin-top:4px;">${a.submittedContent ? escapeHtml(a.submittedContent) : ""}${a.submittedLink ? `${a.submittedContent ? "<br>" : ""}<a href="${escapeAttr(a.submittedLink)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">${escapeHtml(a.submittedLink)}</a>` : ""}</div>`;
   const actions = forRequester && a.status === "DeclinePending" ? `<div style="display:flex; gap:6px; margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="gtApproveDecline('${t.itemId}','${a.id}')">Approve Decline</button><button class="btn btn-secondary btn-sm" onclick="gtReturnDecline('${t.itemId}','${a.id}')">Ask to Reconsider</button></div>`
-    : forRequester && a.status === "ChangePending" ? `<div style="display:flex; gap:6px; margin-top:8px;"><button class="btn btn-primary btn-sm" onclick="gtApproveChange('${t.itemId}','${a.id}')">Approve Reassignment</button><button class="btn btn-secondary btn-sm" onclick="gtReturnChange('${t.itemId}','${a.id}')">Decline Reassignment</button></div>`
     : "";
   return `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
     <div style="display:flex; justify-content:space-between; gap:10px;">
@@ -6296,7 +6472,7 @@ function renderGeneralTaskList(box) {
     <div style="display:flex; flex-direction:column; gap:6px;">
       ${list.length ? list.map(t => {
         const done = genTaskOverallDone(t);
-        const needsApproval = (t.assignees || []).some(a => a.status === "DeclinePending" || a.status === "ChangePending");
+        const needsApproval = (t.assignees || []).some(a => a.status === "DeclinePending");
         return `<div onclick="openGeneralTaskDetail('${t.itemId}')" style="cursor:pointer; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
           <div style="display:flex; justify-content:space-between; gap:10px;">
             <div style="font-size:13px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.content.slice(0, 60))}</div>
@@ -7563,6 +7739,8 @@ function renderHRModal() {
     renderHRChangeSeparationFields();
   }
 
+  if (hrView.mode === "testMode") { renderTestModePicker(box); return; }
+
   if (hrView.mode === "addEmployee") {
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
@@ -8068,7 +8246,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -8149,10 +8327,11 @@ function tabLabel(key) { return key === "Welcome" ? "Overview" : key === "__DOCC
 
 // Tabs that are not part of the Document Repository (no Add Entry / Export CSV etc.)
 function isNonDocTab(key) {
-  return key === "Welcome" || key === "__MYTASKS__" || key === "__REQUESTS__" || key === "__DOCCENTER__";
+  return key === "Welcome" || key === "__ORG__" || key === "__MYTASKS__" || key === "__REQUESTS__" || key === "__DOCCENTER__";
 }
 function currentSection() {
   if (activeTab === "Welcome") return "overview";
+  if (activeTab === "__ORG__") return "org";
   if (activeTab === "__MYTASKS__") return "tasks";
   if (activeTab === "__REQUESTS__") return "requests";
   return "docs";
@@ -8160,6 +8339,7 @@ function currentSection() {
 let lastDocTab = null;
 function switchSection(key) {
   if (key === "overview") return switchTab("Welcome");
+  if (key === "org") return switchTab("__ORG__");
   if (key === "tasks") return switchTab("__MYTASKS__");
   if (key === "requests") return switchTab("__REQUESTS__");
   if (key === "docs") {
@@ -8188,7 +8368,8 @@ function renderTabs() {
   const section = currentSection();
   const badge = requestsBadgeCount();
   const navItems = [
-    { key: "overview", label: "Overview", click: "switchSection('overview')" },
+    { key: "overview", label: "Home", click: "switchSection('overview')" },
+    { key: "org", label: "Organization", click: "switchSection('org')", hidden: !employeesListId },
     { key: "profile", label: "My Profile", click: "openMyProfile()", hidden: !employeesListId },
     { key: "team", label: "My Team", click: "openMyTeam()", hidden: !employeesListId },
     { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: taskAlertBadgeCount() },
@@ -8229,6 +8410,9 @@ function renderTabs() {
   trashBtn.className = "trash-icon-btn" + (isTrash ? " active" : "");
   const formerEmployeesBtn = document.getElementById("formerEmployeesBtn");
   formerEmployeesBtn.style.display = canAccessHR ? "" : "none";
+  const testModeBtn = document.getElementById("testModeBtn");
+  testModeBtn.style.display = realIsPermissionAdmin ? "" : "none";
+  testModeBtn.style.color = testModeActive ? "#a855f7" : "";
   const approvalsCount = document.getElementById("approvalsCount");
   const pendingCount = pendingApprovalItems().length;
   approvalsCount.style.display = pendingCount > 0 ? "" : "none";
@@ -8585,6 +8769,7 @@ function renderMyTasks() {
 function renderContent() {
   const main = document.getElementById("mainContent");
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
+  else if (activeTab === "__ORG__") main.innerHTML = renderOrganization();
   else if (activeTab === "__DOCCENTER__") main.innerHTML = renderDocumentCenter();
   else if (activeTab === "__MYTASKS__") main.innerHTML = renderMyTasks();
   else if (activeTab === "__REQUESTS__") main.innerHTML = renderRequests();
@@ -9180,11 +9365,27 @@ function greetingTimeOfDay() {
   if (h < 18) return "Good Afternoon";
   return "Good Evening";
 }
+// Hook for the future Shifts-app / leave integration: once wired, return "working" during the
+// person's scheduled hours, "off" outside them, or "leave" on an approved leave day. Returns
+// null until that data exists, in which case the greeting simply omits the status line.
+function myCurrentScheduleStatus() {
+  return null; // TODO: wire to work schedule + leave records once available
+}
+function scheduleStatusLabel(status) {
+  const map = {
+    working: { text: "You're currently within working hours.", color: "var(--green)" },
+    off: { text: "You're currently outside working hours.", color: "var(--text3)" },
+    leave: { text: "You're currently on leave.", color: "var(--yellow)" }
+  };
+  return map[status] || null;
+}
 function renderGreeting() {
   const me = myEmployeeRecord();
   const firstName = me && me.name ? me.name.split(" ")[0] : null;
+  const status = scheduleStatusLabel(myCurrentScheduleStatus());
   return `<div style="font-size:22px; font-weight:700; margin-bottom:4px;">Hello${firstName ? ", " + escapeHtml(firstName) : ""} &#128075;</div>
-    <div style="font-size:14px; color:var(--text2); margin-bottom:20px;">${greetingTimeOfDay()}</div>`;
+    <div style="font-size:14px; color:var(--text2); margin-bottom:${status ? "4px" : "20px"};">${greetingTimeOfDay()}</div>
+    ${status ? `<div style="font-size:13px; font-weight:600; color:${status.color}; margin-bottom:20px;">${escapeHtml(status.text)}</div>` : ""}`;
 }
 
 function scheduleComingSoonBox(icon, title, desc) {
@@ -9206,7 +9407,18 @@ function renderMySchedule() {
 
 // ── "My Tasks of the Week": merges Weekly PM Report / Attendance Dashboard, General Task
 // assignments, and the Quarterly Feedback quota into one due-today/overdue vs due-this-week view.
-let myWeekExpanded = { today: false, week: false };
+let myWeekExpanded = { today: false, week: false, review: false };
+// Things waiting on the signed-in person's review/approval, separate from their own to-do work:
+// NTE approvals/response reviews, coaching declines/follow-ups, recognition requests, and task
+// declines awaiting approval.
+function myReviewQueueItems() {
+  const items = [];
+  nteApprovalQueue().forEach(c => items.push({ title: c.status === "Pending Approval" ? `NTE awaiting approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, onclick: `openNteCaseFromRequests('${c.itemId}')` }));
+  myCoachingTodo().forEach(c => items.push({ title: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, onclick: `openCoachingCaseFromRequests('${c.itemId}')` }));
+  recognitionReviewQueue().forEach(c => items.push({ title: `Recognition awaiting review — ${recRecipientNames(c)}`, sub: c.refNo, onclick: `openRecognitionFromRequests('${c.itemId}')` }));
+  genTasksNeedingMyApproval().forEach(t => items.push({ title: `Task decline needs your approval`, sub: t.refNo, onclick: `openGeneralTaskDetail('${t.itemId}')` }));
+  return items;
+}
 function toggleMyWeekSection(key) { myWeekExpanded[key] = !myWeekExpanded[key]; renderContent(); }
 function myWeekTaskItems() {
   const items = [];
@@ -9243,6 +9455,7 @@ function renderMyTasksOfWeek() {
   const weekEnd = new Date(todayEnd.getTime() + 7 * 86400000);
   const dueTodayOrOverdue = items.filter(x => x.dueMs <= todayEnd.getTime());
   const dueThisWeek = items.filter(x => x.dueMs > todayEnd.getTime() && x.dueMs <= weekEnd.getTime());
+  const reviewItems = myReviewQueueItems();
   const box = (key, label, color, list) => `<div>
     <div onclick="toggleMyWeekSection('${key}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
       <span style="font-size:13px; font-weight:600;">${escapeHtml(label)}</span>
@@ -9256,6 +9469,7 @@ function renderMyTasksOfWeek() {
     <div style="display:flex; flex-direction:column; gap:10px;">
       ${box("today", "Due Today / Overdue", "var(--red, #ef4444)", dueTodayOrOverdue)}
       ${box("week", "Due Within 7 Days", "var(--yellow)", dueThisWeek)}
+      ${reviewItems.length ? box("review", "To Review / Approve", "var(--accent)", reviewItems) : ""}
     </div>
   </div>`;
 }
@@ -9374,17 +9588,17 @@ function renderEliteNews() {
   </div>`;
 }
 
+function renderOrganization() {
+  return `<div class="welcome-grid" style="grid-template-columns:1fr;">${renderOrgChart()}</div>`;
+}
+
 function renderWelcome() {
   return `
-  <div class="welcome-grid">
-  ${renderOrgChart()}
-
-  <div style="display:flex; flex-direction:column; gap:20px;">
+  <div style="max-width:900px; margin:0 auto; display:flex; flex-direction:column; gap:20px;">
     ${renderGreeting()}
     ${renderMySchedule()}
     ${renderMyTasksOfWeek()}
     ${renderEliteNews()}
-  </div>
   </div>`;
 }
 
