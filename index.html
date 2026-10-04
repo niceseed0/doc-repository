@@ -6903,6 +6903,345 @@ function renderQuarterlyFeedbackDetail(box) {
     </div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Announcement Board — replaces the old single rich-text announcement with multiple posts.
+// Posting (create/edit/pin/delete) needs `canEdit`; commenting is open to every signed-in
+// employee. Each post has a publish window (StartDate..EndDate); EndDate is optional (stays up
+// until manually deleted). A post whose EndDate has passed is actually deleted from SharePoint
+// the next time an editor's session loads the list (no server-side cron in this app).
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadAnnouncementPosts() {
+  announcementPosts = [];
+  if (!announcementPostsListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${announcementPostsListId}/items?$expand=fields&$top=500&$orderby=fields/StartDate desc`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields;
+        announcementPosts.push({
+          itemId: it.id, title: f["Title"] || "", content: f["Content"] || "",
+          postedBy: f["PostedBy"] || "", postedByName: f["PostedByName"] || "", postedDate: f["PostedDate"] || null,
+          startDate: f["StartDate"] || null, endDate: f["EndDate"] || null, pinned: f["Pinned"] === "Yes",
+          comments: null, commentsLoaded: false
+        });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+    await cleanupExpiredAnnouncements();
+  } catch (e) {
+    console.warn("Could not load HR Announcement Posts (list may not exist yet):", e);
+    announcementPosts = [];
+  }
+}
+async function cleanupExpiredAnnouncements() {
+  if (!canEdit) return; // only an editor's session performs the actual delete
+  const today = toLocalYMD(new Date());
+  const expired = announcementPosts.filter(p => p.endDate && dateOnly(p.endDate) < today);
+  if (!expired.length) return;
+  for (const p of expired) {
+    try { await graphFetch(`/sites/${siteId}/lists/${announcementPostsListId}/items/${p.itemId}`, { method: "DELETE" }); }
+    catch (e) { console.warn("Could not auto-delete an expired announcement:", e); }
+  }
+  const expiredIds = new Set(expired.map(p => p.itemId));
+  announcementPosts = announcementPosts.filter(p => !expiredIds.has(p.itemId));
+}
+
+function isAnnouncementLive(p) {
+  const today = toLocalYMD(new Date());
+  if (p.startDate && dateOnly(p.startDate) > today) return false; // scheduled, not yet live
+  if (p.endDate && dateOnly(p.endDate) < today) return false;     // expired — hidden immediately even before cleanup runs
+  return true;
+}
+function liveAnnouncementPosts() {
+  return announcementPosts.filter(isAnnouncementLive).sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return (b.startDate || "").localeCompare(a.startDate || "");
+  });
+}
+function scheduledAnnouncementPosts() {
+  const today = toLocalYMD(new Date());
+  return announcementPosts.filter(p => p.startDate && dateOnly(p.startDate) > today).sort((a, b) => a.startDate.localeCompare(b.startDate));
+}
+function isAnnouncementNew(p) {
+  if (!p.startDate) return false;
+  const diffDays = Math.floor((new Date(toLocalYMD(new Date()) + "T00:00:00") - new Date(dateOnly(p.startDate) + "T00:00:00")) / 86400000);
+  return diffDays >= 0 && diffDays < 3;
+}
+
+// ── navigation / editing ──────────────────────────────────────────────────────
+// Dedicated state for the inline new/edit form — deliberately NOT using `hrView`, which drives
+// the separate HR modal system, to avoid any cross-contamination between the two.
+let announcementFormMode = null; // null | { mode: "new" } | { mode: "edit", postId }
+function openAnnouncementNewForm() {
+  if (!canEdit) return;
+  announcementFormMode = { mode: "new" };
+  renderContent();
+}
+function openAnnouncementEditForm(itemId) {
+  if (!canEdit) return;
+  announcementFormMode = { mode: "edit", postId: itemId };
+  renderContent();
+}
+function closeAnnouncementForm() {
+  announcementFormMode = null;
+  renderContent();
+}
+async function submitAnnouncementPost(editItemId) {
+  if (!canEdit) return;
+  const title = document.getElementById("annTitle").value.trim();
+  if (!title) { toast("Enter a title.", "error"); return; }
+  const area = document.getElementById("annPostEditArea");
+  const content = sanitizeGuideHtml(area ? area.innerHTML : "");
+  if (!content || content === "<br>") { toast("Write the announcement content.", "error"); return; }
+  const startDate = document.getElementById("annStartDate").value;
+  if (!startDate) { toast("Set a start date.", "error"); return; }
+  const endDate = document.getElementById("annEndDate").value;
+  if (endDate && endDate < startDate) { toast("The end date must be on or after the start date.", "error"); return; }
+  const pinned = document.getElementById("annPinned").checked;
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const byName = (me && me.name) || by;
+  setSyncing(true);
+  try {
+    if (editItemId) {
+      await graphFetch(`/sites/${siteId}/lists/${announcementPostsListId}/items/${editItemId}/fields`, {
+        method: "PATCH", body: JSON.stringify({ Title: title, Content: content, StartDate: startDate, EndDate: endDate || null, Pinned: pinned ? "Yes" : "No" })
+      });
+      const p = announcementPosts.find(x => x.itemId === editItemId);
+      if (p) Object.assign(p, { title, content, startDate, endDate: endDate || null, pinned });
+    } else {
+      const now = new Date().toISOString();
+      const created = await graphFetch(`/sites/${siteId}/lists/${announcementPostsListId}/items`, {
+        method: "POST", body: JSON.stringify({ fields: { Title: title, Content: content, PostedBy: by, PostedByName: byName, PostedDate: now, StartDate: startDate, EndDate: endDate || null, Pinned: pinned ? "Yes" : "No" } })
+      });
+      announcementPosts.unshift({ itemId: created.id, title, content, postedBy: by, postedByName: byName, postedDate: now, startDate, endDate: endDate || null, pinned, comments: [], commentsLoaded: true });
+    }
+    setSyncing(false, true);
+    toast(editItemId ? "Announcement updated ✓" : "Announcement posted ✓", "success");
+    closeAnnouncementForm();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function toggleAnnouncementPin(itemId) {
+  if (!canEdit) return;
+  const p = announcementPosts.find(x => x.itemId === itemId);
+  if (!p) return;
+  const pinned = !p.pinned;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${announcementPostsListId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify({ Pinned: pinned ? "Yes" : "No" }) });
+    p.pinned = pinned;
+    setSyncing(false, true);
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function deleteAnnouncementPost(itemId) {
+  if (!canEdit) return;
+  if (!confirm("Delete this announcement? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${announcementPostsListId}/items/${itemId}`, { method: "DELETE" });
+    announcementPosts = announcementPosts.filter(p => p.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Deleted", "success");
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+
+// ── comments ──────────────────────────────────────────────────────────────────
+function toggleAnnouncementPost(itemId) {
+  if (expandedAnnouncementPosts.has(itemId)) expandedAnnouncementPosts.delete(itemId);
+  else { expandedAnnouncementPosts.add(itemId); ensurePostComments(itemId); }
+  renderContent();
+}
+async function ensurePostComments(postId) {
+  const p = announcementPosts.find(x => x.itemId === postId);
+  if (!p || p.commentsLoaded || !announcementCommentsListId) { if (p && !announcementCommentsListId) { p.comments = []; p.commentsLoaded = true; } return; }
+  try {
+    const url = `/sites/${siteId}/lists/${announcementCommentsListId}/items?$expand=fields&$filter=fields/PostId eq '${postId}'&$top=500&$orderby=fields/CommentedDate asc`;
+    const data = await graphFetch(url, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+    p.comments = (data.value || []).map(it => ({ itemId: it.id, commentedBy: it.fields["CommentedBy"] || "", commentedByName: it.fields["CommentedByName"] || "", commentedDate: it.fields["CommentedDate"] || null, text: it.fields["Text"] || "" }));
+  } catch (e) {
+    console.warn("Could not load comments:", e);
+    p.comments = [];
+  }
+  p.commentsLoaded = true;
+  renderContent();
+}
+async function submitAnnouncementComment(postId) {
+  if (!announcementCommentsListId) return;
+  const p = announcementPosts.find(x => x.itemId === postId);
+  if (!p) return;
+  const input = document.getElementById(`annCommentInput_${postId}`);
+  const text = input ? input.value.trim() : "";
+  if (!text) { toast("Write a comment first.", "error"); return; }
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const byName = (me && me.name) || by;
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${announcementCommentsListId}/items`, {
+      method: "POST", body: JSON.stringify({ fields: { Title: byName, PostId: String(postId), CommentedBy: by, CommentedByName: byName, CommentedDate: now, Text: text } })
+    });
+    p.comments = p.comments || [];
+    p.comments.push({ itemId: created.id, commentedBy: by, commentedByName: byName, commentedDate: now, text });
+    setSyncing(false, true);
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not post comment: " + err.message, "error"); }
+}
+async function deleteAnnouncementComment(postId, commentItemId) {
+  const p = announcementPosts.find(x => x.itemId === postId);
+  const c = p && (p.comments || []).find(x => x.itemId === commentItemId);
+  if (!p || !c) return;
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  if (!(canEdit || (c.commentedBy && c.commentedBy.toLowerCase() === myEmail))) return;
+  if (!confirm("Delete this comment?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${announcementCommentsListId}/items/${commentItemId}`, { method: "DELETE" });
+    p.comments = p.comments.filter(x => x.itemId !== commentItemId);
+    setSyncing(false, true);
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function announcementPostFormHtml(editPost) {
+  const title = editPost ? editPost.title : "";
+  const content = editPost ? editPost.content : "";
+  const startDate = editPost ? dateOnly(editPost.startDate) : toLocalYMD(new Date());
+  const endDate = editPost ? (editPost.endDate ? dateOnly(editPost.endDate) : "") : "";
+  const pinned = editPost ? !!editPost.pinned : false;
+  return `<div style="margin-bottom:20px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <div style="font-size:13px; font-weight:700;">${editPost ? "Edit Announcement" : "New Announcement"}</div>
+      <button class="btn btn-secondary btn-sm" onclick="closeAnnouncementForm()">Cancel</button>
+    </div>
+    <div class="form-group"><label>Title *</label><input id="annTitle" type="text" value="${escapeAttr(title)}" placeholder="Announcement title…" /></div>
+    <div class="form-group">
+      <label>Content *</label>
+      <div class="rte-toolbar">
+        <button type="button" class="rte-btn" onclick="rteExec('bold', null, 'annPostEditArea')" title="Bold"><b>B</b></button>
+        <button type="button" class="rte-btn" onclick="rteExec('underline', null, 'annPostEditArea')" title="Underline"><u>U</u></button>
+        <button type="button" class="rte-btn" onclick="rteExec('strikeThrough', null, 'annPostEditArea')" title="Strikethrough"><s>S</s></button>
+        <span class="rte-sep"></span>
+        <select class="rte-select" onchange="rteExec('fontSize', this.value, 'annPostEditArea'); this.selectedIndex=0;">
+          <option value="">Size</option><option value="2">Small</option><option value="3">Normal</option><option value="5">Large</option><option value="7">Huge</option>
+        </select>
+        <span class="rte-sep"></span>
+        <select class="rte-select" onchange="rteExec('foreColor', this.value, 'annPostEditArea'); this.selectedIndex=0;">
+          <option value="">Color</option><option value="#e2e8f0">Default</option><option value="#4f7cff">Blue</option><option value="#22c55e">Green</option><option value="#f59e0b">Yellow</option><option value="#ef4444">Red</option><option value="#b197fc">Purple</option>
+        </select>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteExec('insertUnorderedList', null, 'annPostEditArea')" title="Bullet list">&#8226; List</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertImage('annPostEditArea')" title="Insert image">&#128247; Image</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertLink('annPostEditArea')" title="Insert link">&#128279; Link</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyLeft', null, 'annPostEditArea')" title="Align left">&#8676;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyCenter', null, 'annPostEditArea')" title="Align center">&#8596;</button>
+        <button type="button" class="rte-btn" onclick="rteExec('justifyRight', null, 'annPostEditArea')" title="Align right">&#8677;</button>
+        <span class="rte-sep"></span>
+        <button type="button" class="rte-btn" onclick="rteInsertSectionBox('annPostEditArea')" title="Wrap the selected text in a bordered section box">&#128230; Box</button>
+      </div>
+      <div class="welcome-edit-area" id="annPostEditArea" contenteditable="true">${content}</div>
+    </div>
+    <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+      <div class="form-group" style="flex:1; min-width:140px;"><label>Start Date *</label><input id="annStartDate" type="date" value="${escapeAttr(startDate)}" /></div>
+      <div class="form-group" style="flex:1; min-width:140px;"><label>End Date <span style="font-weight:400; color:var(--text3);">(optional)</span></label><input id="annEndDate" type="date" value="${escapeAttr(endDate)}" /></div>
+      <div class="form-group" style="padding-bottom:10px;"><label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input id="annPinned" type="checkbox" ${pinned ? "checked" : ""} /> Pin to top</label></div>
+    </div>
+    <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">Leave End Date empty to keep this up until you delete it manually. If set, it disappears automatically after that date.</div>
+    <button class="btn btn-primary" onclick="submitAnnouncementPost(${editPost ? `'${editPost.itemId}'` : "null"})">${editPost ? "Save Changes" : "Post Announcement"}</button>
+  </div>`;
+}
+function announcementCommentsHtml(p) {
+  if (!p.commentsLoaded) return `<div style="font-size:12px; color:var(--text3); margin-top:10px;">Loading comments…</div>`;
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  const comments = p.comments || [];
+  return `<div style="border-top:1px solid var(--border); margin-top:14px; padding-top:12px;">
+    <div style="font-size:12px; font-weight:600; margin-bottom:8px;">Comments (${comments.length})</div>
+    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
+      ${comments.map(c => `<div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+        <div style="display:flex; justify-content:space-between; gap:8px;">
+          <span style="font-size:12px; font-weight:600;">${escapeHtml(c.commentedByName)}</span>
+          <span style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:10px; color:var(--text3);">${escapeHtml(dateOnly(c.commentedDate))}</span>
+            ${(canEdit || (c.commentedBy && c.commentedBy.toLowerCase() === myEmail)) ? `<span onclick="deleteAnnouncementComment('${p.itemId}','${c.itemId}')" style="cursor:pointer; color:var(--text3); font-size:12px;" title="Delete comment">&times;</span>` : ""}
+          </span>
+        </div>
+        <div style="font-size:13px; margin-top:3px; white-space:pre-wrap;">${escapeHtml(c.text)}</div>
+      </div>`).join("")}
+      ${!comments.length ? `<div style="font-size:12px; color:var(--text3);">No comments yet.</div>` : ""}
+    </div>
+    ${announcementCommentsListId ? `<div style="display:flex; gap:8px;">
+      <input id="annCommentInput_${p.itemId}" type="text" placeholder="Write a comment…" style="flex:1;" onkeydown="if(event.key==='Enter'){submitAnnouncementComment('${p.itemId}');}" />
+      <button class="btn btn-secondary btn-sm" onclick="submitAnnouncementComment('${p.itemId}')">Post</button>
+    </div>` : ""}
+  </div>`;
+}
+function renderAnnouncementPostRow(p) {
+  const open = expandedAnnouncementPosts.has(p.itemId);
+  const isNew = isAnnouncementNew(p);
+  return `<div style="border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden;">
+    <div onclick="toggleAnnouncementPost('${p.itemId}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:var(--surface2);">
+      <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+        ${p.pinned ? `<span title="Pinned">&#128204;</span>` : ""}
+        <span style="font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(p.title)}</span>
+        ${isNew ? `<span style="font-size:10px; font-weight:700; color:#fff; background:var(--accent); border-radius:4px; padding:1px 6px;">NEW</span>` : ""}
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+        <span style="font-size:11px; color:var(--text3);">${escapeHtml(dateOnly(p.startDate))}</span>
+        <span style="font-size:11px; color:var(--text3);">${open ? "&#9650;" : "&#9660;"}</span>
+      </div>
+    </div>
+    ${open ? `<div style="padding:12px 14px; background:var(--surface);">
+      ${canEdit ? `<div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); toggleAnnouncementPin('${p.itemId}')">${p.pinned ? "Unpin" : "Pin to top"}</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openAnnouncementEditForm('${p.itemId}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteAnnouncementPost('${p.itemId}')">Delete</button>
+      </div>` : ""}
+      <div class="welcome-body">${sanitizeGuideHtml(p.content)}</div>
+      <div style="font-size:11px; color:var(--text3); margin-top:8px;">Posted by ${escapeHtml(p.postedByName)}</div>
+      ${announcementCommentsHtml(p)}
+    </div>` : ""}
+  </div>`;
+}
+function renderAnnouncementScheduledPanel() {
+  const scheduled = scheduledAnnouncementPosts();
+  if (!scheduled.length) return "";
+  return `<div style="margin-top:14px;">
+    <div onclick="showScheduledAnnouncements = !showScheduledAnnouncements; renderContent();" style="cursor:pointer; font-size:12px; color:var(--accent);">${showScheduledAnnouncements ? "Hide" : "Show"} Scheduled (${scheduled.length}) ${showScheduledAnnouncements ? "&#9650;" : "&#9660;"}</div>
+    ${showScheduledAnnouncements ? `<div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">
+      ${scheduled.map(p => `<div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+        <span style="font-size:12.5px;">${escapeHtml(p.title)}</span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:var(--text3);">Starts ${escapeHtml(dateOnly(p.startDate))}</span>
+          <button class="btn btn-secondary btn-sm" onclick="openAnnouncementEditForm('${p.itemId}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteAnnouncementPost('${p.itemId}')">Delete</button>
+        </span>
+      </div>`).join("")}
+    </div>` : ""}
+  </div>`;
+}
+function renderAnnouncementBoard() {
+  if (announcementFormMode) {
+    const editPost = announcementFormMode.mode === "edit" ? announcementPosts.find(p => p.itemId === announcementFormMode.postId) : null;
+    return `<div style="margin-bottom:20px;">${announcementPostFormHtml(editPost)}</div>`;
+  }
+  const live = liveAnnouncementPosts();
+  return `<div style="margin-bottom:20px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <div style="font-size:13px; font-weight:700;">&#128226; Announcements</div>
+      ${canEdit ? `<button class="btn btn-secondary btn-sm" onclick="openAnnouncementNewForm()">&#65291; New Post</button>` : ""}
+    </div>
+    ${live.length ? live.map(renderAnnouncementPostRow).join("") : `<p style="color:var(--text3); font-size:13px;">No announcements right now${canEdit ? " — click New Post to add one." : "."}</p>`}
+    ${canEdit ? renderAnnouncementScheduledPanel() : ""}
+  </div>`;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -9581,7 +9920,7 @@ function renderEliteNews() {
     <div class="welcome-card-header"><h2>Elite News</h2></div>
     <div style="margin-top:14px;">
       ${renderEliteNewsBirthdays()}
-      ${renderEliteNewsAnnouncements()}
+      ${renderAnnouncementBoard()}
       ${renderEliteNewsEvents()}
       ${renderEliteNewsHolidays()}
     </div>
