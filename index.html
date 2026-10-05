@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-03-01";
+const BUILD_ID = "2026-10-04-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -9927,16 +9927,87 @@ function renderEliteNews() {
   </div>`;
 }
 
+// ── People Directory: search a name, see team/position and a derived "direct supervisor" ───
+// There's no explicit manager field in the data, so the supervisor is inferred: the closest
+// more-senior teammate by position rank, falling back to the Cluster Lead of their cluster.
+let peopleDirSelectedId = null;
+function directSupervisorFor(emp) {
+  if (!emp) return null;
+  const myRank = positionRankIndex(emp.position);
+  const seniorTeammates = employees.filter(e => e.status !== "Resigned" && e.id !== emp.id && e.team === emp.team && (e.cluster || "") === (emp.cluster || "") && positionRankIndex(e.position) < myRank);
+  if (seniorTeammates.length) {
+    seniorTeammates.sort((a, b) => positionRankIndex(b.position) - positionRankIndex(a.position)); // closest-senior first
+    return seniorTeammates[0];
+  }
+  if (emp.cluster) {
+    const lead = employees.find(e => e.status !== "Resigned" && e.id !== emp.id && e.cluster === emp.cluster && e.position === "Cluster Lead");
+    if (lead) return lead;
+  }
+  return null;
+}
+function filterPeopleDirectory() {
+  const q = document.getElementById("peopleDirSearch").value.trim().toLowerCase();
+  const box = document.getElementById("peopleDirOptions");
+  if (!q) { box.style.display = "none"; return; }
+  const matches = employees.filter(e => e.status !== "Resigned" && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="selectPeopleDirectoryPerson('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function selectPeopleDirectoryPerson(id) {
+  peopleDirSelectedId = id;
+  document.getElementById("peopleDirOptions").style.display = "none";
+  renderContent();
+}
+function renderPeopleDirectoryResult() {
+  if (!peopleDirSelectedId) return "";
+  const e = employees.find(x => String(x.id) === String(peopleDirSelectedId));
+  if (!e) return "";
+  const sup = directSupervisorFor(e);
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:10px; font-size:13px; line-height:1.7;">
+    <div style="font-weight:700; margin-bottom:4px;">${escapeHtml(e.name)}</div>
+    <div><span style="color:var(--text3);">Department / Team:</span> ${escapeHtml(e.team || "—")}${e.cluster ? ` <span style="color:var(--text3);">(${escapeHtml(e.cluster)})</span>` : ""}</div>
+    <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(e.position || "—")}</div>
+    <div><span style="color:var(--text3);">Direct Supervisor:</span> ${sup ? `${escapeHtml(sup.name)} <span style="color:var(--text3);">(${escapeHtml(sup.position)})</span>` : "—"}</div>
+  </div>`;
+}
+// Space reserved for manually-curated emergency contacts (5–7 people), filled in separately later.
+function renderEmergencyContactsPlaceholder() {
+  const rows = Array.from({ length: 6 });
+  return `<div style="margin-top:22px;">
+    <div style="font-weight:700; font-size:13px; margin-bottom:4px;">Emergency Contacts</div>
+    <div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Key people to reach in an emergency — added separately.</div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${rows.map(() => `<div style="border:1px dashed var(--border); border-radius:8px; padding:9px 12px; color:var(--text3); font-size:12px;">— To be added —</div>`).join("")}
+    </div>
+  </div>`;
+}
+function renderPeopleDirectory() {
+  if (!employeesListId) return `<div class="welcome-card"><div class="welcome-card-header"><h2>People Directory</h2></div></div>`;
+  return `<div class="welcome-card">
+    <div class="welcome-card-header"><h2>People Directory</h2></div>
+    <p style="color:var(--text3); font-size:12px; margin-top:6px;">Search a name to see their team, position, and supervisor.</p>
+    <div style="position:relative; margin-top:10px;">
+      <input id="peopleDirSearch" type="text" placeholder="Search a name…" oninput="filterPeopleDirectory()" autocomplete="off" />
+      <div id="peopleDirOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+    </div>
+    ${renderPeopleDirectoryResult()}
+    ${renderEmergencyContactsPlaceholder()}
+  </div>`;
+}
+
 function renderOrganization() {
-  return `<div class="welcome-grid" style="grid-template-columns:1fr;">${renderOrgChart()}</div>`;
+  return `<div class="welcome-grid">${renderOrgChart()}${renderPeopleDirectory()}</div>`;
 }
 
 function renderWelcome() {
   return `
-  <div style="max-width:900px; margin:0 auto; display:flex; flex-direction:column; gap:20px;">
+  <div style="max-width:1300px; margin:0 auto; display:flex; flex-direction:column; gap:20px;">
     ${renderGreeting()}
-    ${renderMySchedule()}
-    ${renderMyTasksOfWeek()}
+    <div class="welcome-grid">
+      ${renderMySchedule()}
+      ${renderMyTasksOfWeek()}
+    </div>
     ${renderEliteNews()}
   </div>`;
 }
