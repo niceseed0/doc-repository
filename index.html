@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-04-01";
+const BUILD_ID = "2026-10-05-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -523,6 +523,7 @@ const CONFIG = {
   generalTasksListDisplayName: "HR General Tasks",
   announcementPostsListDisplayName: "HR Announcement Posts",
   announcementCommentsListDisplayName: "HR Announcement Comments",
+  pipCasesListDisplayName: "HR PIP Cases",
   holidaysListDisplayName: "HR Holidays",
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   groupFieldCandidates: ["Team"],
@@ -995,6 +996,8 @@ let quarterlyFeedbackListId = null;
 let quarterlyFeedback = []; // see Quarterly Feedback module below
 let holidaysListId = null;
 let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclamations) — see loadHolidayOverrides()
+let pipCasesListId = null;
+let pipCases = []; // see PIP module below
 let announcementPostsListId = null;
 let announcementCommentsListId = null;
 let announcementPosts = []; // see Announcement Board module below
@@ -1027,7 +1030,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1100,6 +1103,8 @@ async function resolveSiteAndLists() {
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
   const annPostsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementPostsListDisplayName);
   announcementPostsListId = annPostsMatch ? annPostsMatch.id : null; // optional — Announcement board stays empty if missing
+  const pipMatch = (lists.value || []).find(l => l.displayName === CONFIG.pipCasesListDisplayName);
+  pipCasesListId = pipMatch ? pipMatch.id : null; // optional — PIP card stays "Coming soon" if missing
   const annCommentsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementCommentsListDisplayName);
   announcementCommentsListId = annCommentsMatch ? annCommentsMatch.id : null; // optional — comments just won't save if missing
   const qfMatch = (lists.value || []).find(l => l.displayName === CONFIG.quarterlyFeedbackListDisplayName);
@@ -1518,7 +1523,8 @@ async function loadAllIncidents() {
           notes: it.fields["IncidentNotes"] || "",
           nteCaseId: it.fields["NTECaseId"] || null,
           coachingCaseId: it.fields["CoachingCaseId"] || null,
-          recognitionCaseId: it.fields["RecognitionCaseId"] || null
+          recognitionCaseId: it.fields["RecognitionCaseId"] || null,
+          pipCaseId: it.fields["PIPCaseId"] || null
         });
       });
       url = data["@odata.nextLink"] || null;
@@ -2069,6 +2075,7 @@ function incidentTypeBadge(type) {
     "NTE": ["#2b1f1f", "#f87171"],
     "Sanction": ["#2b1f1f", "#f87171"],
     "Coaching": ["#2a2410", "#fbbf24"],
+    "PIP": ["#2b1f1f", "#f87171"],
     "Personal Issue": ["#1a2440", "#8fb3ff"],
     "Other": ["#22263a", "#94a3b8"]
   };
@@ -7242,6 +7249,511 @@ function renderAnnouncementBoard() {
   </div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Performance Improvement Plan (PIP) module
+// Flow: Manager issues (no draft/approval gate, like Coaching) → Employee reviews & signs →
+// Manager reviews progress & signs (review date auto-stamped, never typed) → PIP ends: Cluster
+// Lead reviews & signs with an outcome, closing the case (that date is auto-stamped too) and
+// logging an HR Incidents entry.
+// ═══════════════════════════════════════════════════════════════════════════
+const PIP_OUTCOMES = ["Successfully Completed", "Not Successful — Further Action Required"];
+let pipNewExpectationRows = [{ expectation: "", indicators: "", strategies: "" }];
+
+async function loadPipCases() {
+  pipCases = [];
+  if (!pipCasesListId) return;
+  const mapItem = it => {
+    const f = it.fields;
+    return {
+      itemId: it.id, refNo: f["PIPRefNo"] || "", employeeId: f["EmployeeId"] || "", title: f["Title"] || "",
+      position: f["Position"] || "", team: f["Team"] || "", cluster: f["Cluster"] || "",
+      issuedBy: f["IssuedBy"] || "", issuedByName: f["IssuedByName"] || "", issuedDate: f["IssuedDate"] || null,
+      periodStart: f["PeriodStart"] || null, periodEnd: f["PeriodEnd"] || null,
+      employeeResponsibilities: f["EmployeeResponsibilities"] || "", managerResponsibilities: f["ManagerResponsibilities"] || "",
+      performanceIssues: f["PerformanceIssues"] || "", expectationsRows: coaParseJson(f["ExpectationsRows"], []),
+      status: f["Status"] || "Issued",
+      employeeSignature: f["EmployeeSignature"] || null, employeeSignedDate: f["EmployeeSignedDate"] || null,
+      managerReviewNotes: f["ManagerReviewNotes"] || "", managerSignature: f["ManagerSignature"] || null, managerReviewDate: f["ManagerReviewDate"] || null,
+      outcome: f["Outcome"] || "", clusterLeadNotes: f["ClusterLeadNotes"] || "", clusterLeadSignature: f["ClusterLeadSignature"] || null, clusterLeadReviewDate: f["ClusterLeadReviewDate"] || null,
+      closedBy: f["ClosedBy"] || "", closedDate: f["ClosedDate"] || null
+    };
+  };
+  try {
+    if (canDraftNte() || canApproveNte()) {
+      let url = `/sites/${siteId}/lists/${pipCasesListId}/items?$expand=fields&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => pipCases.push(mapItem(it)));
+        url = data["@odata.nextLink"] || null;
+      }
+    } else {
+      const me = myEmployeeRecord();
+      if (me) {
+        const url = `/sites/${siteId}/lists/${pipCasesListId}/items?$expand=fields&$filter=fields/EmployeeId eq '${me.id}'&$top=100`;
+        const data = await graphFetch(url, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+        (data.value || []).forEach(it => pipCases.push(mapItem(it)));
+      }
+    }
+    pipCases.sort((a, b) => (b.issuedDate || "").localeCompare(a.issuedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR PIP Cases (list may not exist yet):", e);
+    pipCases = [];
+  }
+}
+
+// ── permissions ──────────────────────────────────────────────────────────────
+function canIssuePip() { return canDraftNte(); }               // APM or higher, same reach as NTE
+function canFinalReviewPip() { return canApproveNte(); }        // Cluster Lead or HR/Admin
+function isPipIssuer(c) {
+  const myEmail = ((currentAccount && currentAccount.username) || "").toLowerCase();
+  return !!(c.issuedBy && c.issuedBy.toLowerCase() === myEmail);
+}
+function isPipTarget(c) {
+  const me = myEmployeeRecord();
+  return !!(me && String(c.employeeId) === String(me.id));
+}
+function pipStatusLabel(status) {
+  const map = {
+    Issued: { text: "Issued — awaiting employee review", color: "var(--accent)" },
+    EmployeeSigned: { text: "Employee signed — awaiting manager review", color: "var(--yellow)" },
+    ManagerReviewed: { text: "Manager signed — awaiting final review", color: "var(--yellow)" },
+    Closed: { text: "Closed", color: "var(--green)" }
+  };
+  return map[status] || { text: status, color: "var(--text3)" };
+}
+function myPendingPipCases() { return pipCases.filter(c => isPipTarget(c) && c.status === "Issued"); }
+function myPipTodo() {
+  // Things waiting on me as the issuing manager (review+sign) or as the final reviewer (close).
+  const mineAsManager = pipCases.filter(c => isPipIssuer(c) && c.status === "EmployeeSigned");
+  const mineAsFinal = canFinalReviewPip() ? pipCases.filter(c => c.status === "ManagerReviewed") : [];
+  return [...mineAsManager, ...mineAsFinal];
+}
+function canViewPipCaseLists() { return canViewCaseLists(); } // HR/Admin only, same boundary as NTE/Coaching lists
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openPipCases() {
+  if (!canViewPipCaseLists() || !pipCasesListId) return;
+  hrView = { mode: "pipList" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function pipListOrClose() { if (canViewPipCaseLists()) openPipCases(); else closeHRModal(); }
+function openPipNewForm() {
+  if (!canIssuePip()) return;
+  pipNewExpectationRows = [{ expectation: "", indicators: "", strategies: "" }];
+  hrView = { mode: "pipNew" };
+  renderHRModal();
+}
+function openPipNewFromRequests() {
+  if (!canIssuePip() || !pipCasesListId) return;
+  document.getElementById("hrModal").classList.add("open");
+  openPipNewForm();
+}
+function openPipDetail(caseId) {
+  hrView = { mode: "pipDetail", caseId };
+  renderHRModal();
+}
+function openPipCaseFromRequests(id) {
+  document.getElementById("hrModal").classList.add("open");
+  openPipDetail(id);
+}
+function openPipFromIncident(caseId) { openPipDetail(caseId); }
+
+// ── new-form helpers: employee search + expectation rows ───────────────────────
+function filterPipEmployeeOptions() {
+  const q = document.getElementById("pipEmployeeSearch").value.trim().toLowerCase();
+  const box = document.getElementById("pipEmployeeOptions");
+  document.getElementById("pipEmployeeId").value = "";
+  if (!q) { box.style.display = "none"; return; }
+  const matches = employees.filter(e => e.status !== "Resigned" && e.name.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length) { box.style.display = "none"; return; }
+  box.innerHTML = matches.map(e => `<div onclick="selectPipEmployee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.style.display = "";
+}
+function selectPipEmployee(id) {
+  const emp = employees.find(e => e.id === id);
+  if (!emp) return;
+  document.getElementById("pipEmployeeId").value = id;
+  document.getElementById("pipEmployeeSearch").value = emp.name;
+  document.getElementById("pipEmployeeOptions").style.display = "none";
+  document.getElementById("pipPosition").value = emp.position || "";
+  document.getElementById("pipWorkArea").value = emp.team || "";
+}
+function addPipExpectationRow() {
+  if (pipNewExpectationRows.length >= 5) return;
+  pipNewExpectationRows.push({ expectation: "", indicators: "", strategies: "" });
+  renderHRModal();
+}
+function removePipExpectationRow(i) {
+  if (pipNewExpectationRows.length <= 1) return;
+  pipNewExpectationRows.splice(i, 1);
+  renderHRModal();
+}
+function readPipExpectationRowsFromForm() {
+  return pipNewExpectationRows.map((_, i) => ({
+    expectation: (document.getElementById(`pipExp${i}`) || {}).value || "",
+    indicators: (document.getElementById(`pipInd${i}`) || {}).value || "",
+    strategies: (document.getElementById(`pipStrat${i}`) || {}).value || ""
+  })).map(r => ({ expectation: r.expectation.trim(), indicators: r.indicators.trim(), strategies: r.strategies.trim() }))
+    .filter(r => r.expectation || r.indicators || r.strategies);
+}
+
+// ── create (issue) ──────────────────────────────────────────────────────────
+async function createPipCase() {
+  if (!canIssuePip()) return;
+  const employeeId = document.getElementById("pipEmployeeId").value;
+  const emp = employees.find(e => e.id === employeeId);
+  if (!emp) { toast("Search and select an employee.", "error"); return; }
+  const periodStart = document.getElementById("pipPeriodStart").value;
+  const periodEnd = document.getElementById("pipPeriodEnd").value;
+  if (!periodStart || !periodEnd) { toast("Set the performance improvement period.", "error"); return; }
+  if (periodEnd <= periodStart) { toast("The end date must be after the start date.", "error"); return; }
+  const employeeResponsibilities = document.getElementById("pipEmployeeResp").value.trim();
+  const managerResponsibilities = document.getElementById("pipManagerResp").value.trim();
+  const performanceIssues = document.getElementById("pipIssues").value.trim();
+  if (!performanceIssues) { toast("Describe the performance issues being addressed.", "error"); return; }
+  const expectationsRows = readPipExpectationRowsFromForm();
+  if (!expectationsRows.length) { toast("Add at least one performance expectation.", "error"); return; }
+
+  const me = myEmployeeRecord();
+  const issuedBy = (currentAccount && currentAccount.username) || "";
+  const issuedByName = (me && me.name) || issuedBy;
+  const issuedDate = toLocalYMD(new Date());
+  const refNo = "PIP-" + issuedDate.replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  if (!confirm(`Issue this Performance Improvement Plan to ${emp.name}?`)) return;
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${pipCasesListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: {
+        Title: emp.name, PIPRefNo: refNo, EmployeeId: String(emp.id), Position: emp.position || "", Team: emp.team || "", Cluster: emp.cluster || "",
+        IssuedBy: issuedBy, IssuedByName: issuedByName, IssuedDate: issuedDate, PeriodStart: periodStart, PeriodEnd: periodEnd,
+        EmployeeResponsibilities: employeeResponsibilities, ManagerResponsibilities: managerResponsibilities,
+        PerformanceIssues: performanceIssues, ExpectationsRows: JSON.stringify(expectationsRows), Status: "Issued"
+      } })
+    });
+    pipCases.unshift({
+      itemId: created.id, refNo, employeeId: String(emp.id), title: emp.name, position: emp.position || "", team: emp.team || "", cluster: emp.cluster || "",
+      issuedBy, issuedByName, issuedDate, periodStart, periodEnd, employeeResponsibilities, managerResponsibilities, performanceIssues, expectationsRows,
+      status: "Issued", employeeSignature: null, employeeSignedDate: null, managerReviewNotes: "", managerSignature: null, managerReviewDate: null,
+      outcome: "", clusterLeadNotes: "", clusterLeadSignature: null, clusterLeadReviewDate: null, closedBy: "", closedDate: null
+    });
+    setSyncing(false, true);
+    toast("PIP issued ✓", "success");
+    openPipDetail(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not issue PIP: " + err.message, "error");
+  }
+}
+
+// ── employee sign-off ───────────────────────────────────────────────────────
+async function signPipAsEmployee(itemId) {
+  const c = pipCases.find(x => x.itemId === itemId);
+  if (!c || !isPipTarget(c) || c.status !== "Issued") return;
+  const sig = signatureDataUrl("pipSigEmployee");
+  if (!sig) { toast("Please sign before submitting.", "error"); return; }
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, c.title, c.position, now);
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${pipCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "EmployeeSigned", EmployeeSignature: sigPayload, EmployeeSignedDate: now })
+    });
+    Object.assign(c, { status: "EmployeeSigned", employeeSignature: sigPayload, employeeSignedDate: now });
+    setSyncing(false, true);
+    toast("Signed ✓", "success");
+    openPipDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+// ── manager review + sign ───────────────────────────────────────────────────
+async function signPipAsManager(itemId) {
+  const c = pipCases.find(x => x.itemId === itemId);
+  if (!c || !isPipIssuer(c) || c.status !== "EmployeeSigned") return;
+  const notes = document.getElementById("pipManagerNotes").value.trim();
+  if (!notes) { toast("Enter your review notes.", "error"); return; }
+  const sig = signatureDataUrl("pipSigManager");
+  if (!sig) { toast("Please sign before submitting.", "error"); return; }
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, c.issuedByName, null, now);
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${pipCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "ManagerReviewed", ManagerReviewNotes: notes, ManagerSignature: sigPayload, ManagerReviewDate: now })
+    });
+    Object.assign(c, { status: "ManagerReviewed", managerReviewNotes: notes, managerSignature: sigPayload, managerReviewDate: now });
+    setSyncing(false, true);
+    toast("Review signed ✓", "success");
+    openPipDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+// ── final Cluster Lead review + close ───────────────────────────────────────
+async function logPipIncident(c) {
+  if (!incidentsListId) return;
+  try {
+    const incidentDate = toLocalYMD(new Date());
+    const notes = `PIP ${c.refNo}: ${c.outcome}`;
+    const created = await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items`, {
+      method: "POST",
+      body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: "PIP", IncidentNotes: notes, PIPCaseId: c.itemId } })
+    });
+    allIncidents.push({ itemId: created.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: "PIP", notes, pipCaseId: c.itemId });
+  } catch (e) {
+    console.warn("Could not log PIP incident:", e);
+    toast("Case closed, but the HR Records entry could not be created.", "error");
+  }
+}
+async function closePipCase(itemId) {
+  const c = pipCases.find(x => x.itemId === itemId);
+  if (!c || !canFinalReviewPip() || c.status !== "ManagerReviewed") return;
+  const outcome = document.getElementById("pipOutcomeSelect").value;
+  const notes = document.getElementById("pipClusterLeadNotes").value.trim();
+  const sig = signatureDataUrl("pipSigClusterLead");
+  if (!sig) { toast("Please sign before closing.", "error"); return; }
+  const me = myEmployeeRecord();
+  const by = (currentAccount && currentAccount.username) || "";
+  const now = new Date().toISOString();
+  const sigPayload = buildSignaturePayload(sig, (me && me.name) || by, me && me.position, now);
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${pipCasesListId}/items/${itemId}/fields`, {
+      method: "PATCH", body: JSON.stringify({ Status: "Closed", Outcome: outcome, ClusterLeadNotes: notes, ClusterLeadSignature: sigPayload, ClusterLeadReviewDate: now, ClosedBy: by, ClosedDate: now })
+    });
+    Object.assign(c, { status: "Closed", outcome, clusterLeadNotes: notes, clusterLeadSignature: sigPayload, clusterLeadReviewDate: now, closedBy: by, closedDate: now });
+    await logPipIncident(c);
+    setSyncing(false, true);
+    toast("PIP closed ✓", "success");
+    openPipDetail(itemId);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+async function deletePipCase(itemId) {
+  if (!canViewPipCaseLists()) return;
+  const c = pipCases.find(x => x.itemId === itemId);
+  if (!c) return;
+  if (!confirm("Delete this PIP case? This also removes its HR Records entry. This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    if (incidentsListId) {
+      try {
+        let url = `/sites/${siteId}/lists/${incidentsListId}/items?$expand=fields&$top=2000`;
+        const linked = [];
+        while (url) {
+          const data = await graphFetch(url);
+          (data.value || []).forEach(it => { if (String(it.fields["PIPCaseId"] || "") === String(itemId)) linked.push(it.id); });
+          url = data["@odata.nextLink"] || null;
+        }
+        for (const incId of linked) await graphFetch(`/sites/${siteId}/lists/${incidentsListId}/items/${incId}`, { method: "DELETE" });
+        allIncidents = allIncidents.filter(i => !linked.includes(i.itemId));
+      } catch (e) { console.warn("Could not check/delete linked PIP incident:", e); }
+    }
+    await graphFetch(`/sites/${siteId}/lists/${pipCasesListId}/items/${itemId}`, { method: "DELETE" });
+    pipCases = pipCases.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("PIP case deleted", "success");
+    if (hrView && hrView.mode === "pipDetail" && hrView.caseId === itemId) hrView = { mode: "pipList" };
+    renderHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function pipExpectationsTableHtml(rows) {
+  if (!rows.length) return `<p style="color:var(--text3); font-size:12px;">None entered.</p>`;
+  return `<table style="width:100%; border-collapse:collapse; font-size:12.5px;">
+    <tr style="background:var(--surface2);">
+      <th style="text-align:left; padding:6px 8px; border:1px solid var(--border);">Performance Expectations<br><span style="font-weight:400; color:var(--text3);">(What needs to be Achieved)</span></th>
+      <th style="text-align:left; padding:6px 8px; border:1px solid var(--border);">Agreed Indicators / Outcomes / Timeframes<br><span style="font-weight:400; color:var(--text3);">(How measured)</span></th>
+      <th style="text-align:left; padding:6px 8px; border:1px solid var(--border);">Strategies / Actions / Tasks<br><span style="font-weight:400; color:var(--text3);">(How achieved)</span></th>
+    </tr>
+    ${rows.map(r => `<tr>
+      <td style="padding:6px 8px; border:1px solid var(--border); white-space:pre-wrap;">${escapeHtml(r.expectation)}</td>
+      <td style="padding:6px 8px; border:1px solid var(--border); white-space:pre-wrap;">${escapeHtml(r.indicators)}</td>
+      <td style="padding:6px 8px; border:1px solid var(--border); white-space:pre-wrap;">${escapeHtml(r.strategies)}</td>
+    </tr>`).join("")}
+  </table>`;
+}
+function pipSignatureBlockHtml(label, sigRaw, dateRaw) {
+  const sig = parseSignatureField(sigRaw);
+  if (!sig) return `<div style="flex:1; min-width:160px;"><div style="font-size:11px; color:var(--text3); margin-bottom:4px;">${escapeHtml(label)}</div><div style="font-size:12px; color:var(--text3);">Not yet signed</div></div>`;
+  return `<div style="flex:1; min-width:160px;">
+    <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">${escapeHtml(label)}</div>
+    <img src="${sig.dataUrl}" style="height:50px; background:#fff; border:1px solid var(--border); border-radius:4px; display:block;" />
+    <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(sig.name)}${sig.position ? " · " + escapeHtml(sig.position) : ""}</div>
+    <div style="font-size:10px; color:var(--text3);">${escapeHtml(dateOnly(dateRaw))}</div>
+  </div>`;
+}
+
+function renderPipList(box) {
+  box.style.width = "min(760px, 95vw)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">PIP Cases</h3>
+        <div style="font-size:12px; color:var(--text2);">${pipCases.length} case${pipCases.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
+      ${pipCases.length ? pipCases.map(c => {
+        const s = pipStatusLabel(c.status);
+        return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div onclick="openPipDetail('${c.itemId}')" style="cursor:pointer; flex:1; min-width:0;">
+            <div style="font-size:13px; color:var(--accent);">${escapeHtml(c.title)}</div>
+            <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(c.refNo)} · ${escapeHtml(dateOnly(c.issuedDate))}</div>
+          </div>
+          <span style="font-size:12px; font-weight:600; color:${s.color}; white-space:nowrap;">${escapeHtml(s.text)}</span>
+          <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deletePipCase('${c.itemId}')" title="Delete case">&#128465;</button>
+        </div>`;
+      }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No PIP cases yet.</div>`}
+    </div>`;
+}
+
+function renderPipNewForm(box) {
+  box.style.width = "min(700px, 95vw)";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="pipListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${canViewPipCaseLists() ? "&larr; PIP Cases" : "&larr; Back to Requests"}</div>
+        <h3 style="margin-bottom:2px;">New Performance Improvement Plan</h3>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group" style="position:relative; margin-top:14px;">
+      <label>Employee Name *</label>
+      <input id="pipEmployeeSearch" type="text" placeholder="Type a name…" oninput="filterPipEmployeeOptions()" autocomplete="off" />
+      <div id="pipEmployeeOptions" style="display:none; position:absolute; z-index:10; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; width:100%; margin-top:2px; box-shadow:0 4px 14px rgba(0,0,0,.25);"></div>
+      <input type="hidden" id="pipEmployeeId" />
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Position</label><input id="pipPosition" type="text" readonly style="opacity:.7;" /></div>
+      <div class="form-group" style="flex:1;"><label>Work Area</label><input id="pipWorkArea" type="text" readonly style="opacity:.7;" /></div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Performance Improvement Period — Start *</label><input id="pipPeriodStart" type="date" /></div>
+      <div class="form-group" style="flex:1;"><label>Performance Improvement Period — End *</label><input id="pipPeriodEnd" type="date" /></div>
+    </div>
+    <div class="form-group"><label>Employee Responsibilities</label><textarea id="pipEmployeeResp" style="min-height:70px;" placeholder="What the employee is responsible for during this plan…"></textarea></div>
+    <div class="form-group"><label>Manager Responsibilities</label><textarea id="pipManagerResp" style="min-height:70px;" placeholder="What the manager is responsible for during this plan…"></textarea></div>
+    <div class="form-group">
+      <label>Performance Issues Being Addressed *</label>
+      <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">This section should note the current performance issues that are to be addressed within the Personal Improvement Program.</div>
+      <textarea id="pipIssues" style="min-height:90px;"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Performance Expectations and Assessment *</label>
+      <div style="font-size:11px; color:var(--text3); margin-bottom:8px;">This section should clearly outline the performance expectations that need to be achieved (the role description, ELITE's values of Endless Passion, Loyalty, Integrity, Teamwork and Excellence should be used as a minimum performance standard to follow). The strategies, actions or tasks to achieve the performance expectations should be realistic, clear, measurable and expectations. The agreed performance indicators, outcomes and/or timeframes should be achievable and monitored during each review meeting.</div>
+      ${pipNewExpectationRows.map((r, i) => `<div style="border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;"><span style="font-size:11px; color:var(--text3);">Row ${i + 1}</span>${pipNewExpectationRows.length > 1 ? `<span onclick="removePipExpectationRow(${i})" style="cursor:pointer; color:var(--text3); font-size:13px;">&times; Remove</span>` : ""}</div>
+        <label style="font-size:11px;">Performance Expectations (What needs to be Achieved)</label>
+        <textarea id="pipExp${i}" style="min-height:50px;">${escapeHtml(r.expectation)}</textarea>
+        <label style="font-size:11px; margin-top:6px; display:block;">Agreed Performance Indicators / Required Outcomes / Timeframes (How measured)</label>
+        <textarea id="pipInd${i}" style="min-height:50px;">${escapeHtml(r.indicators)}</textarea>
+        <label style="font-size:11px; margin-top:6px; display:block;">Strategies / Actions / Tasks (How achieved)</label>
+        <textarea id="pipStrat${i}" style="min-height:50px;">${escapeHtml(r.strategies)}</textarea>
+      </div>`).join("")}
+      ${pipNewExpectationRows.length < 5 ? `<button class="btn btn-secondary btn-sm" onclick="addPipExpectationRow()">&#65291; Add row</button>` : ""}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="pipListOrClose()">Cancel</button>
+      <button class="btn btn-primary" onclick="createPipCase()">Issue PIP</button>
+    </div>`;
+}
+
+function renderPipDetail(box) {
+  box.style.width = "min(760px, 95vw)";
+  const c = pipCases.find(x => x.itemId === hrView.caseId);
+  if (!c) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Case not found.</div>`; return; }
+  const st = pipStatusLabel(c.status);
+  const padToInit = [];
+
+  let actionPanel = "";
+  if (c.status === "Issued" && isPipTarget(c)) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Please review this plan and sign</div>
+      <div class="form-group"><label>Your Signature</label>${signaturePadHtml("pipSigEmployee")}</div>
+      <button class="btn btn-primary" onclick="signPipAsEmployee('${c.itemId}')">Acknowledge &amp; Sign</button>
+    </div>`;
+    padToInit.push("pipSigEmployee");
+  } else if (c.status === "Issued") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for the employee to review and sign.</div>`;
+  } else if (c.status === "EmployeeSigned" && isPipIssuer(c)) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Manager review</div>
+      <div class="form-group"><label>Review notes</label><textarea id="pipManagerNotes" style="min-height:80px;" placeholder="Progress and observations…"></textarea></div>
+      <div class="form-group"><label>Your Signature</label>${signaturePadHtml("pipSigManager")}</div>
+      <button class="btn btn-primary" onclick="signPipAsManager('${c.itemId}')">Sign Review</button>
+      <div style="font-size:11px; color:var(--text3); margin-top:8px;">The review date is recorded automatically when you sign — it isn't typed in.</div>
+    </div>`;
+    padToInit.push("pipSigManager");
+  } else if (c.status === "EmployeeSigned") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for ${escapeHtml(c.issuedByName)} to complete the manager review.</div>`;
+  } else if (c.status === "ManagerReviewed" && canFinalReviewPip()) {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">Final review (Cluster Lead) &amp; close</div>
+      <div class="form-group">
+        <label>Outcome</label>
+        <select id="pipOutcomeSelect">${PIP_OUTCOMES.map(o => `<option value="${escapeAttr(o)}">${escapeHtml(o)}</option>`).join("")}</select>
+      </div>
+      <div class="form-group"><label>Notes</label><textarea id="pipClusterLeadNotes" style="min-height:70px;" placeholder="Final review notes…"></textarea></div>
+      <div class="form-group"><label>Your Signature</label>${signaturePadHtml("pipSigClusterLead")}</div>
+      <button class="btn btn-primary" onclick="closePipCase('${c.itemId}')">Sign &amp; Close PIP</button>
+      <div style="font-size:11px; color:var(--text3); margin-top:8px;">The review date is recorded automatically when you sign — it isn't typed in.</div>
+    </div>`;
+    padToInit.push("pipSigClusterLead");
+  } else if (c.status === "ManagerReviewed") {
+    actionPanel = `<div style="font-size:12px; color:var(--text3); margin-top:12px;">Waiting for a Cluster Lead or HR/Admin to complete the final review.</div>`;
+  } else if (c.status === "Closed") {
+    actionPanel = `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:16px;">
+      <div style="font-size:13px; font-weight:600;">Outcome: ${escapeHtml(c.outcome)}</div>
+      <div style="font-size:11px; color:var(--text3); margin-top:4px;">Closed by ${escapeHtml(c.closedBy)} on ${escapeHtml(dateOnly(c.closedDate))}</div>
+    </div>`;
+  }
+
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <div onclick="pipListOrClose()" style="font-size:12px; color:var(--text2); cursor:pointer; margin-bottom:4px;">${canViewPipCaseLists() ? "&larr; PIP Cases" : "&larr; Back to Requests"}</div>
+        <h3 style="margin-bottom:2px;">Performance Improvement Plan — ${escapeHtml(c.title)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(c.refNo)} · <span style="color:${st.color};">${escapeHtml(st.text)}</span></div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:6px;" />
+      <div style="font-size:11px; color:var(--text3); margin-bottom:14px;">${COMPANY_ADDRESS_LINES.map(escapeHtml).join("<br>")}</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px 20px; margin-bottom:14px; font-size:12px;">
+        <div><span style="color:var(--text3);">Employee:</span> ${escapeHtml(c.title)}</div>
+        <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(c.position)}</div>
+        <div><span style="color:var(--text3);">Work Area:</span> ${escapeHtml(c.team)}</div>
+        <div><span style="color:var(--text3);">Issued by:</span> ${escapeHtml(c.issuedByName)}</div>
+        <div><span style="color:var(--text3);">PIP Ref No:</span> ${escapeHtml(c.refNo)}</div>
+        <div><span style="color:var(--text3);">Date Issued:</span> ${escapeHtml(dateOnly(c.issuedDate))}</div>
+      </div>
+      <div style="font-weight:600; margin-bottom:4px;">Performance Improvement Period</div>
+      <p style="margin-bottom:14px;">${escapeHtml(dateOnly(c.periodStart))} to ${escapeHtml(dateOnly(c.periodEnd))}</p>
+      ${c.employeeResponsibilities ? `<div style="font-weight:600; margin-bottom:4px;">Employee Responsibilities</div><p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.employeeResponsibilities)}</p>` : ""}
+      ${c.managerResponsibilities ? `<div style="font-weight:600; margin-bottom:4px;">Manager Responsibilities</div><p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.managerResponsibilities)}</p>` : ""}
+      <div style="font-weight:600; margin-bottom:4px;">Performance Issues Being Addressed</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:14px;">${escapeHtml(c.performanceIssues)}</p>
+      <div style="font-weight:600; margin-bottom:8px;">Performance Expectations and Assessment</div>
+      ${pipExpectationsTableHtml(c.expectationsRows)}
+
+      <div style="display:flex; flex-wrap:wrap; gap:18px; margin-top:18px; padding-top:14px; border-top:1px solid var(--border);">
+        ${pipSignatureBlockHtml("Employee", c.employeeSignature, c.employeeSignedDate)}
+        ${pipSignatureBlockHtml("Manager — Review Date (auto)", c.managerSignature, c.managerReviewDate)}
+        ${pipSignatureBlockHtml("Cluster Lead — Review Date (auto)", c.clusterLeadSignature, c.clusterLeadReviewDate)}
+      </div>
+      ${c.managerReviewNotes ? `<div style="margin-top:14px;"><div style="font-weight:600; margin-bottom:4px;">Manager Review Notes</div><p style="white-space:pre-wrap; color:var(--text2);">${escapeHtml(c.managerReviewNotes)}</p></div>` : ""}
+      ${c.clusterLeadNotes ? `<div style="margin-top:10px;"><div style="font-weight:600; margin-bottom:4px;">Final Review Notes</div><p style="white-space:pre-wrap; color:var(--text2);">${escapeHtml(c.clusterLeadNotes)}</p></div>` : ""}
+    </div>
+    ${actionPanel}
+  `;
+  padToInit.forEach(initSignaturePad);
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -7483,7 +7995,8 @@ async function loadEmployeeDetail(employeeId) {
       description: it.fields["IncidentNotes"] || "",
       nteCaseId: it.fields["NTECaseId"] || null,
       coachingCaseId: it.fields["CoachingCaseId"] || null,
-      recognitionCaseId: it.fields["RecognitionCaseId"] || null
+      recognitionCaseId: it.fields["RecognitionCaseId"] || null,
+      pipCaseId: it.fields["PIPCaseId"] || null
     }))
   ]);
   result.positions.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -8007,6 +8520,9 @@ function renderHRModal() {
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
   if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
   if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
+  if (hrView.mode === "pipList") { renderPipList(box); return; }
+  if (hrView.mode === "pipNew") { renderPipNewForm(box); return; }
+  if (hrView.mode === "pipDetail") { renderPipDetail(box); return; }
   if (hrView.mode === "dayEvents") { renderDayEvents(box); return; }
 
   if (hrView.mode === "detail") {
@@ -8440,6 +8956,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
             ${i.nteCaseId ? `<span onclick="openNteFromIncident('${i.nteCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View NTE</span>` : ""}
             ${i.coachingCaseId ? `<span onclick="openCoachingFromIncident('${i.coachingCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View Coaching</span>` : ""}
             ${i.recognitionCaseId && recognitionCases.some(r => r.itemId === i.recognitionCaseId) ? `<span onclick="openRecognitionFromIncident('${i.recognitionCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View Recognition</span>` : ""}
+            ${i.pipCaseId && pipCases.some(p => p.itemId === i.pipCaseId) ? `<span onclick="openPipFromIncident('${i.pipCaseId}')" style="font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap;">View PIP</span>` : ""}
             ${canAccessIncidents ? delBtn("incident", i.itemId) : ""}
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2);">None on file.</div>`}
@@ -8585,7 +9102,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -8877,7 +9394,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0);
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -8926,6 +9443,8 @@ function renderRequestsTodo() {
   myCoachingTodo().forEach(c => rows.push({ label: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
   myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   { const qa = qfAlert(); if (qa) rows.push({ label: qa.title, sub: qa.sub, click: qa.onclick }); }
+  myPendingPipCases().forEach(c => rows.push({ label: "Performance Improvement Plan — please review and sign", sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
+  myPipTodo().forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -8951,7 +9470,7 @@ function renderRequests() {
   ];
   const management = [
     { icon: "&#129309;", title: "Create Coaching Form", desc: "Issue a coaching form to an employee.", onclick: coachingCasesListId ? "openCoachingNewFromRequests()" : "" },
-    { icon: "&#128200;", title: "Create PIP", desc: "Performance Improvement Plan." },
+    { icon: "&#128200;", title: "Create PIP", desc: "Performance Improvement Plan.", onclick: pipCasesListId ? "openPipNewFromRequests()" : "" },
     { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteNewFromRequests()" : "" },
     { icon: "&#127942;", title: "Request Recognition", desc: "Recommend teammates or managers for recognition.",
       actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }, ...(canReviewRecognition() ? [{ label: "Review Requests", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : [])] : undefined },
@@ -8971,7 +9490,7 @@ function renderRequests() {
       actions: [
         ...(nteCasesListId ? [{ label: "NTE Cases", onclick: "openNteCases()", badge: nteQueue }] : []),
         ...(coachingCasesListId ? [{ label: "Coaching Cases", onclick: "openCoachingCases()" }] : []),
-        { label: "PIP" }
+        ...(pipCasesListId ? [{ label: "PIP Cases", onclick: "openPipCases()" }] : [])
       ] },
     { icon: "&#128260;", title: "Manpower Change", desc: "New hire · Transfer · Promotion · Salary change" },
     { icon: "&#128340;", title: "Attendance Adjustment", desc: "" },
@@ -9756,6 +10275,7 @@ function myReviewQueueItems() {
   myCoachingTodo().forEach(c => items.push({ title: c.status === "Declined" ? `Coaching declined by ${c.title} — confirm to close` : `Coaching follow-up due — ${c.title}`, sub: c.refNo, onclick: `openCoachingCaseFromRequests('${c.itemId}')` }));
   recognitionReviewQueue().forEach(c => items.push({ title: `Recognition awaiting review — ${recRecipientNames(c)}`, sub: c.refNo, onclick: `openRecognitionFromRequests('${c.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => items.push({ title: `Task decline needs your approval`, sub: t.refNo, onclick: `openGeneralTaskDetail('${t.itemId}')` }));
+  myPipTodo().forEach(c => items.push({ title: c.status === "EmployeeSigned" ? `PIP manager review — ${c.title}` : `PIP final review — ${c.title}`, sub: c.refNo, onclick: `openPipCaseFromRequests('${c.itemId}')` }));
   return items;
 }
 function toggleMyWeekSection(key) { myWeekExpanded[key] = !myWeekExpanded[key]; renderContent(); }
