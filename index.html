@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-05-01";
+const BUILD_ID = "2026-10-09-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2234,11 +2234,11 @@ async function deleteTestTeam() {
     renderTabs();
   } catch (err) { setSyncing(false, false); toast("Could not delete testers: " + err.message, "error"); }
 }
-// Privacy-scoped lists (NTE/Coaching/Recognition/Quarterly Feedback) query the server with the
+// Privacy-scoped lists (NTE/Coaching/Recognition/PIP/Quarterly Feedback) query the server with the
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
