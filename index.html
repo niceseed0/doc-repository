@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-04";
+const BUILD_ID = "2026-10-09-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -8328,7 +8328,7 @@ function wsMyRequestGroups() {
     groups.push({ label, items, more: serviceRequestsListId ? `openSrList('mine','${type}')` : "", enabled: !!serviceRequestsListId });
   });
   const rec = recognitionCases.filter(c => isRecognitionRequester(c)).map(c => {
-    const text = c.status === "Pending" ? "Submitted" : c.status === "Recognized" ? "Completed" : c.status === "Returned" ? "Completed · Returned" : c.status;
+    const text = c.status === "Pending" ? "Submitted" : c.status === "Recognized" ? "Recognized" : c.status === "Returned" ? "Returned" : c.status;
     const color = c.status === "Pending" ? WS_ACCENT : c.status === "Recognized" ? WS_GREEN : WS_GREY;
     return { title: recRecipientNames(c), ref: c.refNo, text, color, click: `openRecognitionFromRequests('${c.itemId}')`, ms: c.requestedDate || "" };
   });
@@ -8424,7 +8424,7 @@ function wsTableRows() {
     const click = `openRecognitionFromRequests('${c.itemId}')`;
     const names = recRecipientNames(c);
     if (c.status === "Pending") push("Recognition", names, "Submitted", WS_ACCENT, c.requesterName || wsNameByEmail(c.requestedBy), false, c.requestedDate, click);
-    else push("Recognition", names, c.status === "Returned" ? "Completed · Returned" : "Completed", c.status === "Returned" ? WS_GREY : WS_GREEN, wsNameByEmail(c.reviewedBy), true, c.requestedDate, click);
+    else push("Recognition", names, c.status === "Returned" ? "Returned" : "Recognized", c.status === "Returned" ? WS_GREY : WS_GREEN, wsNameByEmail(c.reviewedBy), true, c.requestedDate, click);
   });
   quarterlyFeedback.forEach(q => {
     if (!inScope(q.employeeId)) return;
@@ -8507,7 +8507,7 @@ function wsTableHtml() {
 function renderWorkStatus() {
   const reqGroups = wsMyRequestGroups();
   const caseGroups = wsMyCaseGroups();
-  const reqOpen = reqGroups.reduce((n, g) => n + g.items.filter(i => !/^Completed/.test(i.text)).length, 0);
+  const reqOpen = reqGroups.reduce((n, g) => n + g.items.filter(i => !/^(Completed|Recognized|Returned)/.test(i.text)).length, 0);
   const caseAction = caseGroups.reduce((n, g) => n + g.items.filter(i => /^Acknowledgment Required/.test(i.text)).length, 0);
   const caseTotal = caseGroups.reduce((n, g) => n + g.items.length, 0);
   const reqTotal = reqGroups.reduce((n, g) => n + g.items.length, 0);
