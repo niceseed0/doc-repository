@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-02";
+const BUILD_ID = "2026-10-09-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -526,6 +526,7 @@ const CONFIG = {
   pipCasesListDisplayName: "HR PIP Cases",
   holidaysListDisplayName: "HR Holidays",
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
+  serviceRequestsListDisplayName: "HR Service Requests",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -998,6 +999,8 @@ let holidaysListId = null;
 let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclamations) — see loadHolidayOverrides()
 let pipCasesListId = null;
 let pipCases = []; // see PIP module below
+let serviceRequestsListId = null;
+let serviceRequests = []; // General Requests / Employee Feedback / Inquiry — see Service Requests module below
 let announcementPostsListId = null;
 let announcementCommentsListId = null;
 let announcementPosts = []; // see Announcement Board module below
@@ -1030,7 +1033,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1103,6 +1106,8 @@ async function resolveSiteAndLists() {
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
   const annPostsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementPostsListDisplayName);
   announcementPostsListId = annPostsMatch ? annPostsMatch.id : null; // optional — Announcement board stays empty if missing
+  const srMatch = (lists.value || []).find(l => l.displayName === CONFIG.serviceRequestsListDisplayName);
+  serviceRequestsListId = srMatch ? srMatch.id : null; // optional — the three request cards stay "Coming soon" if missing
   const pipMatch = (lists.value || []).find(l => l.displayName === CONFIG.pipCasesListDisplayName);
   pipCasesListId = pipMatch ? pipMatch.id : null; // optional — PIP card stays "Coming soon" if missing
   const annCommentsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementCommentsListDisplayName);
@@ -2238,7 +2243,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -7756,6 +7761,482 @@ function renderPipDetail(box) {
   padToInit.forEach(initSignaturePad);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Service Requests module — General Requests / Employee Feedback / Inquiry
+// One SharePoint list ("HR Service Requests", see SETUP_SERVICE_REQUESTS.md) holds all three types.
+//   General Request   : topic + content. Viewers can assign a responder (themselves or anyone).
+//   Employee Feedback : title + content. Viewers can assign a responder, but only another viewer.
+//   Inquiry           : title + content. Responder is fixed to HR/Admin (every viewer can answer).
+// "Viewers" = HR/Admin Manager, HOC, Managing Director, CEO = canViewCaseLists().
+// Progress shown to the requester:  Submitted  >  Under Review / <responder>  >  Completed
+//   - GR/EF: moves to Under Review the moment a responder is assigned.
+//   - Inquiry: moves to Under Review the first time a viewer (not the requester) opens it.
+// Privacy boundary (server-side): viewers receive everything; everyone else only receives
+// requests they submitted plus requests assigned to them — never a wider list.
+// The progress tracker UI is isolated in srProgressHtml() so it can be restyled in one place.
+// ═══════════════════════════════════════════════════════════════════════════
+const SR_TYPES = {
+  GeneralRequest: { label: "General Request", plural: "General Requests", prefix: "GR", icon: "&#128421;" },
+  EmployeeFeedback: { label: "Employee Feedback", plural: "Employee Feedback", prefix: "EF", icon: "&#128172;" },
+  Inquiry: { label: "Inquiry", plural: "Inquiries", prefix: "IQ", icon: "&#10067;" }
+};
+const SR_TOPICS = ["PC & Devices", "Facilities", "Office Supply", "Personal Concern", "Others"];
+const SR_FIXED_RESPONDER = "HR / Admin";
+const SR_CONTENT_MAX = 5000;
+const SR_FIELD_PROP = {
+  AssigneeEmail: "assigneeEmail", AssigneeName: "assigneeName", AssignedByName: "assignedByName", AssignedDate: "assignedDate",
+  Status: "status", ReviewStartedDate: "reviewStartedDate", ReplyText: "replyText", RepliedByName: "repliedByName", CompletedDate: "completedDate"
+};
+let srViewerPool = null; // cached list of employees who count as "viewers" (assignable for Employee Feedback)
+
+function srMapItem(it) {
+  const f = it.fields;
+  return {
+    itemId: it.id, refNo: f["RefNo"] || "", requestType: f["RequestType"] || "GeneralRequest",
+    title: f["Title"] || "", topic: f["Topic"] || "", content: f["Content"] || "",
+    requesterEmail: String(f["RequesterEmail"] || "").toLowerCase(), requesterName: f["RequesterName"] || "",
+    submittedDate: f["SubmittedDate"] || null, status: f["Status"] || "Submitted",
+    assigneeEmail: String(f["AssigneeEmail"] || "").toLowerCase(), assigneeName: f["AssigneeName"] || "",
+    assignedByName: f["AssignedByName"] || "", assignedDate: f["AssignedDate"] || null,
+    reviewStartedDate: f["ReviewStartedDate"] || null,
+    replyText: f["ReplyText"] || "", repliedByName: f["RepliedByName"] || "", completedDate: f["CompletedDate"] || null
+  };
+}
+
+async function loadServiceRequests() {
+  serviceRequests = [];
+  srViewerPool = null; // identity may have changed (Test Mode) — rebuild the viewer pool on next use
+  if (!serviceRequestsListId) return;
+  const myEmail = srMyEmail();
+  const base = `/sites/${siteId}/lists/${serviceRequestsListId}/items?$expand=fields&$top=500`;
+  const esc = v => String(v).replace(/'/g, "''");
+  try {
+    const seen = new Set();
+    const add = it => { if (!seen.has(it.id)) { seen.add(it.id); serviceRequests.push(srMapItem(it)); } };
+    if (canViewCaseLists()) {
+      let url = base;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(add);
+        url = data["@odata.nextLink"] || null;
+      }
+    } else if (myEmail) {
+      // Two narrow server-side queries (own submissions, then requests assigned to me) — merged.
+      for (const col of ["RequesterEmail", "AssigneeEmail"]) {
+        const data = await graphFetch(`${base}&$filter=fields/${col} eq '${esc(myEmail)}'`, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+        (data.value || []).forEach(add);
+      }
+    }
+    serviceRequests.sort((a, b) => (b.submittedDate || "").localeCompare(a.submittedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR Service Requests (list may not exist yet):", e);
+    serviceRequests = [];
+  }
+}
+
+// ── permissions / helpers ────────────────────────────────────────────────────
+function srMyEmail() { return ((currentAccount && currentAccount.username) || "").toLowerCase(); }
+function srMyName() {
+  const me = myEmployeeRecord();
+  return (me && me.name) || (currentAccount && currentAccount.name) || srMyEmail();
+}
+function srFind(id) { return serviceRequests.find(x => x.itemId === id); }
+function srIsViewer() { return canViewCaseLists(); }
+function srIsRequester(r) { return !!r.requesterEmail && r.requesterEmail === srMyEmail(); }
+function srIsAssignee(r) { return r.requestType !== "Inquiry" && !!r.assigneeEmail && r.assigneeEmail === srMyEmail(); }
+function srCanAssign(r) { return srIsViewer() && r.requestType !== "Inquiry" && r.status !== "Completed"; }
+function srCanReply(r) {
+  if (r.status === "Completed") return false;
+  return r.requestType === "Inquiry" ? srIsViewer() : srIsAssignee(r);
+}
+function srCanDelete(r) { return srIsViewer() || (srIsRequester(r) && r.status === "Submitted"); }
+function srResponderLabel(r) { return r.requestType === "Inquiry" ? SR_FIXED_RESPONDER : (r.assigneeName || ""); }
+function srDisplayTitle(r) {
+  if (r.requestType === "GeneralRequest") {
+    const snip = (r.content || "").replace(/\s+/g, " ").slice(0, 50);
+    return `${r.topic || "General"} — ${snip}${(r.content || "").length > 50 ? "…" : ""}`;
+  }
+  return r.title || "(untitled)";
+}
+function srStatusInfo(r) {
+  if (r.status === "Completed") return { text: "Completed", color: "var(--green)" };
+  if (r.status === "UnderReview") {
+    const who = srResponderLabel(r);
+    return { text: "Under Review" + (who ? " / " + who : ""), color: "var(--yellow)" };
+  }
+  return { text: "Submitted", color: "var(--accent)" };
+}
+function srMine() { const me = srMyEmail(); return serviceRequests.filter(r => r.requesterEmail === me); }
+function srAssignedToMe() { return serviceRequests.filter(r => srIsAssignee(r)); }
+function srOpenCount(type) { return serviceRequests.filter(r => r.requestType === type && r.status !== "Completed").length; }
+
+// Rows for "Needs your action" on the Requests page (and the Requests tab badge).
+function srTodoItems() {
+  const rows = [];
+  if (!serviceRequestsListId) return rows;
+  serviceRequests.forEach(r => {
+    if (r.status === "Completed") return;
+    const click = `openSrDetail('${r.itemId}')`;
+    if (srIsAssignee(r)) {
+      rows.push({ label: `${SR_TYPES[r.requestType].label} — please reply: ${srDisplayTitle(r).slice(0, 50)}`, sub: r.refNo, click });
+    } else if (srIsViewer()) {
+      if (r.requestType === "Inquiry") rows.push({ label: `Inquiry awaiting reply — ${srDisplayTitle(r).slice(0, 50)}`, sub: r.refNo, click });
+      else if (!r.assigneeEmail) rows.push({ label: `${SR_TYPES[r.requestType].label} needs a responder — ${srDisplayTitle(r).slice(0, 50)}`, sub: r.refNo, click });
+    }
+  });
+  return rows;
+}
+
+// Employee-facing cards; fall back to the old "Coming soon" placeholders if the list isn't set up.
+function srEmployeeCards() {
+  const defs = [
+    { type: "GeneralRequest", desc: "PC & devices · Facilities · Office supply · Personal concern · Others" },
+    { type: "EmployeeFeedback", desc: "Share feedback with the company." },
+    { type: "Inquiry", desc: "Ask HR / Admin a question." }
+  ];
+  return defs.map(d => {
+    const T = SR_TYPES[d.type];
+    const card = { icon: T.icon, title: T.plural, desc: d.desc };
+    if (serviceRequestsListId) {
+      card.actions = [{ label: "New Request", onclick: `openSrNew('${d.type}')` }, { label: "My Requests", onclick: `openSrList('mine','${d.type}')` }];
+    }
+    return card;
+  });
+}
+function srAssignedCard() {
+  if (!serviceRequestsListId || !srAssignedToMe().length) return [];
+  return [{ icon: "&#128229;", title: "Assigned to Me", desc: "Requests you've been asked to answer.", onclick: "openSrList('assigned',null)", badge: srAssignedToMe().filter(r => r.status === "UnderReview").length }];
+}
+function srHrCard() {
+  if (!serviceRequestsListId) return [];
+  return [{ icon: "&#128236;", title: "Service Requests", desc: "General requests, employee feedback and inquiries from across the company.",
+    actions: [
+      { label: "General Requests", onclick: "openSrList('all','GeneralRequest')", badge: srOpenCount("GeneralRequest") },
+      { label: "Employee Feedback", onclick: "openSrList('all','EmployeeFeedback')", badge: srOpenCount("EmployeeFeedback") },
+      { label: "Inquiries", onclick: "openSrList('all','Inquiry')", badge: srOpenCount("Inquiry") }
+    ] }];
+}
+
+// People a responder can be picked from. Employee Feedback is limited to "viewer" people. Graph can't
+// list the HR-Sensitive-Access group with the scopes this app requests, so viewers are matched from the
+// org chart, the admin list and Cluster Leads (HOC) — plus the signed-in user when they are a viewer.
+function srEnsureViewerPool() {
+  if (srViewerPool) return srViewerPool;
+  const active = employees.filter(e => e.status !== "Resigned" && e.email);
+  const names = new Set();
+  const addName = n => { if (n) names.add(String(n).trim().toLowerCase()); };
+  try {
+    addName(ORG_CHART.ceo && ORG_CHART.ceo.name);
+    addName(ORG_CHART.md && ORG_CHART.md.name);
+    if (ORG_CHART.businessOps) { addName(ORG_CHART.businessOps.lead && ORG_CHART.businessOps.lead.name); addName(ORG_CHART.businessOps.manager && ORG_CHART.businessOps.manager.name); }
+    ((ORG_CHART.gameServiceOps && ORG_CHART.gameServiceOps.leads) || []).forEach(l => addName(l.name));
+  } catch (e) { /* org chart shape changed — fall through to the other signals */ }
+  const admins = new Set((typeof ADMIN_EMAILS !== "undefined" ? ADMIN_EMAILS : []).map(x => String(x).toLowerCase()));
+  const topRank = CONFIG.positionRank[0];
+  const myEmail = srMyEmail();
+  srViewerPool = active.filter(e => names.has(String(e.name || "").trim().toLowerCase()) || admins.has(e.email.toLowerCase()) || e.position === topRank || (srIsViewer() && e.email.toLowerCase() === myEmail));
+  return srViewerPool;
+}
+function srPoolFor(r) {
+  if (r.requestType === "EmployeeFeedback") return srEnsureViewerPool();
+  return employees.filter(e => e.status !== "Resigned" && e.email);
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openSrNew(type) {
+  if (!serviceRequestsListId || !SR_TYPES[type]) return;
+  hrView = { mode: "srNew", type };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openSrList(scope, type) {
+  if (!serviceRequestsListId) return;
+  if (scope === "all" && !srIsViewer()) scope = "mine";
+  hrView = { mode: "srList", scope, type: type || null, filter: "All" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openSrDetail(itemId) {
+  hrView = { mode: "srDetail", caseId: itemId };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  srAutoStartReview(itemId);
+}
+function setSrFilter(f) { if (hrView && hrView.mode === "srList") { hrView.filter = f; renderHRModal(); } }
+
+// ── new request ──────────────────────────────────────────────────────────────
+function renderSrNewForm(box) {
+  box.style.width = "min(620px, 94vw)";
+  const type = hrView.type;
+  const T = SR_TYPES[type];
+  const intro = type === "GeneralRequest"
+    ? "Pick a topic and describe what you need. HR / Admin management will pick this up."
+    : type === "EmployeeFeedback"
+      ? "Share your feedback with the company. It is visible only to HR / Admin management, Heads of Cluster, the Managing Director and the CEO."
+      : "Ask HR / Admin a question. Your inquiry goes to HR / Admin, and you can follow its progress here.";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">New ${escapeHtml(T.label)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(intro)}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${type === "GeneralRequest"
+      ? `<div class="form-group" style="margin-top:14px;"><label>Topic *</label>
+          <select id="srTopic"><option value="">Select a topic…</option>${SR_TOPICS.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}</select></div>`
+      : `<div class="form-group" style="margin-top:14px;"><label>Title *</label><input id="srTitle" type="text" maxlength="200" placeholder="Short title" /></div>`}
+    <div class="form-group"><label>Content *</label><textarea id="srContent" maxlength="${SR_CONTENT_MAX}" style="min-height:160px;" placeholder="Write the details here…"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitSrRequest()">Submit</button>
+    </div>`;
+}
+
+async function submitSrRequest() {
+  const type = hrView && hrView.type;
+  if (!serviceRequestsListId || !SR_TYPES[type]) return;
+  const topicEl = document.getElementById("srTopic");
+  const titleEl = document.getElementById("srTitle");
+  const topic = topicEl ? topicEl.value : "";
+  const titleIn = titleEl ? titleEl.value.trim() : "";
+  const content = document.getElementById("srContent").value.trim();
+  if (type === "GeneralRequest" && !topic) { toast("Please select a topic.", "error"); return; }
+  if (type !== "GeneralRequest" && !titleIn) { toast("Please enter a title.", "error"); return; }
+  if (!content) { toast("Please write the content.", "error"); return; }
+  if (content.length > SR_CONTENT_MAX) { toast(`Content is too long (max ${SR_CONTENT_MAX} characters).`, "error"); return; }
+  if (!confirm(`Submit this ${SR_TYPES[type].label.toLowerCase()}?`)) return;
+
+  const email = srMyEmail();
+  const name = srMyName();
+  const submittedDate = new Date().toISOString();
+  const refNo = SR_TYPES[type].prefix + "-" + toLocalYMD(new Date()).replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  const title = (type === "GeneralRequest" ? topic : titleIn).slice(0, 250);
+  const fields = { Title: title, RefNo: refNo, RequestType: type, Content: content, RequesterEmail: email, RequesterName: name, SubmittedDate: submittedDate, Status: "Submitted" };
+  if (topic) fields.Topic = topic;
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${serviceRequestsListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    serviceRequests.unshift(srMapItem({ id: created.id, fields }));
+    setSyncing(false, true);
+    toast("Submitted ✓", "success");
+    openSrDetail(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+// ── persistence helper ───────────────────────────────────────────────────────
+async function srSave(r, fields) {
+  await graphFetch(`/sites/${siteId}/lists/${serviceRequestsListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+  Object.keys(fields).forEach(k => { if (SR_FIELD_PROP[k]) r[SR_FIELD_PROP[k]] = fields[k]; });
+}
+
+// Inquiry: a viewer (other than the requester) opening it for the first time starts the review.
+async function srAutoStartReview(itemId) {
+  const r = srFind(itemId);
+  if (!r || r.requestType !== "Inquiry" || r.status !== "Submitted" || !srIsViewer() || srIsRequester(r)) return;
+  try {
+    await srSave(r, { Status: "UnderReview", ReviewStartedDate: new Date().toISOString() });
+    if (hrView && hrView.mode === "srDetail" && hrView.caseId === itemId) renderHRModal();
+  } catch (e) { console.warn("Could not mark inquiry as Under Review:", e); }
+}
+
+// ── assigning a responder (General Request / Employee Feedback) ──────────────
+async function srApplyAssign(r, email, name) {
+  const now = new Date().toISOString();
+  const fields = { AssigneeEmail: String(email).toLowerCase(), AssigneeName: name, AssignedByName: srMyName(), AssignedDate: now, Status: "UnderReview" };
+  if (!r.reviewStartedDate) fields.ReviewStartedDate = now;
+  setSyncing(true);
+  try {
+    await srSave(r, fields);
+    setSyncing(false, true);
+    toast(`Assigned to ${name} ✓`, "success");
+    openSrDetail(r.itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not assign: " + err.message, "error");
+  }
+}
+async function srAssignToMe(itemId) {
+  const r = srFind(itemId);
+  if (!r || !srCanAssign(r)) return;
+  if (!confirm("Assign this request to yourself?")) return;
+  await srApplyAssign(r, srMyEmail(), srMyName());
+}
+async function srAssignTo(itemId, empId) {
+  const r = srFind(itemId);
+  if (!r || !srCanAssign(r)) return;
+  const emp = srPoolFor(r).find(e => String(e.id) === String(empId));
+  if (!emp || !emp.email) { toast("Could not find that person.", "error"); return; }
+  if (!confirm(`Assign this request to ${emp.name}? They will be able to see it and reply.`)) return;
+  await srApplyAssign(r, emp.email, emp.name);
+}
+function srFilterAssignees(itemId) {
+  const r = srFind(itemId);
+  const input = document.getElementById("srAssignSearch");
+  const box = document.getElementById("srAssignOptions");
+  if (!r || !input || !box) return;
+  const q = input.value.trim().toLowerCase();
+  if (!q) { box.style.display = "none"; return; }
+  const matches = srPoolFor(r).filter(e => e.email.toLowerCase() !== r.assigneeEmail && String(e.name || "").toLowerCase().includes(q)).slice(0, 8);
+  box.innerHTML = matches.length
+    ? matches.map(e => `<div onclick="srAssignTo('${r.itemId}','${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || e.team || "")}</span></div>`).join("")
+    : `<div style="padding:8px 10px; font-size:12px; color:var(--text3);">No match${r.requestType === "EmployeeFeedback" ? " — Employee Feedback can only be assigned to people with access to these requests" : ""}.</div>`;
+  box.style.display = "";
+}
+
+// ── reply & complete ─────────────────────────────────────────────────────────
+async function srSendReply(itemId) {
+  const r = srFind(itemId);
+  if (!r || !srCanReply(r)) return;
+  const text = document.getElementById("srReplyText").value.trim();
+  if (!text) { toast("Please write a reply.", "error"); return; }
+  if (text.length > SR_CONTENT_MAX) { toast(`Reply is too long (max ${SR_CONTENT_MAX} characters).`, "error"); return; }
+  if (!confirm("Send this reply and mark the request as Completed?")) return;
+  const now = new Date().toISOString();
+  const fields = { ReplyText: text, RepliedByName: srMyName(), CompletedDate: now, Status: "Completed" };
+  if (!r.reviewStartedDate) fields.ReviewStartedDate = now;
+  setSyncing(true);
+  try {
+    await srSave(r, fields);
+    setSyncing(false, true);
+    toast("Reply sent — request completed ✓", "success");
+    openSrDetail(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not send reply: " + err.message, "error");
+  }
+}
+
+async function deleteSrRequest(itemId) {
+  const r = srFind(itemId);
+  if (!r || !srCanDelete(r)) return;
+  if (!confirm("Delete this request? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${serviceRequestsListId}/items/${itemId}`, { method: "DELETE" });
+    serviceRequests = serviceRequests.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Request deleted", "success");
+    closeHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+// ── views ────────────────────────────────────────────────────────────────────
+function srStatusBadgeHtml(r) {
+  const st = srStatusInfo(r);
+  return `<span style="font-size:12px; font-weight:600; color:${st.color}; white-space:nowrap;">${escapeHtml(st.text)}</span>`;
+}
+
+// Progress tracker: Submitted > Under Review / <responder> > Completed.
+// Kept self-contained so the look can be changed here without touching the rest of the module.
+function srProgressHtml(r) {
+  const order = ["Submitted", "UnderReview", "Completed"];
+  const cur = Math.max(0, order.indexOf(r.status));
+  const responder = srResponderLabel(r);
+  const labels = ["Submitted", "Under Review" + (responder ? " / " + responder : ""), "Completed"];
+  const dates = [r.submittedDate, r.reviewStartedDate, r.completedDate];
+  return `<div style="display:flex; align-items:flex-start; margin:14px 0 4px;">
+    ${labels.map((lab, i) => {
+      const done = i <= cur;
+      const color = done ? (i === 2 ? "var(--green)" : i === cur ? "var(--yellow)" : "var(--accent)") : "var(--border)";
+      const line = i < labels.length - 1 ? `<div style="flex:1; height:2px; margin-top:8px; background:${i < cur ? "var(--accent)" : "var(--border)"};"></div>` : "";
+      return `<div style="display:flex; flex-direction:column; align-items:center; min-width:96px; text-align:center;">
+          <div style="width:18px; height:18px; border-radius:50%; background:${color}; ${done ? "" : "opacity:.6;"}"></div>
+          <div style="font-size:11px; margin-top:6px; color:${done ? "var(--text)" : "var(--text3)"}; font-weight:${i === cur ? 600 : 400};">${escapeHtml(lab)}</div>
+          <div style="font-size:10px; color:var(--text3);">${done && dates[i] ? escapeHtml(dateOnly(dates[i])) : "&nbsp;"}</div>
+        </div>${line}`;
+    }).join("")}
+  </div>`;
+}
+
+function renderSrList(box) {
+  box.style.width = "min(780px, 95vw)";
+  const { scope, type } = hrView;
+  const filter = hrView.filter || "All";
+  let list = scope === "mine" ? srMine() : scope === "assigned" ? srAssignedToMe() : serviceRequests;
+  if (type) list = list.filter(r => r.requestType === type);
+  const shown = filter === "All" ? list : list.filter(r => r.status === filter);
+  const T = type ? SR_TYPES[type] : null;
+  const heading = scope === "mine" ? (T ? `My ${T.plural}` : "My Requests") : scope === "assigned" ? "Assigned to Me" : (T ? T.plural : "Service Requests");
+  const chips = [["All", "All"], ["Submitted", "Submitted"], ["UnderReview", "Under Review"], ["Completed", "Completed"]];
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(heading)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${list.length} request${list.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${scope === "mine" && T ? `<button class="btn btn-primary" onclick="openSrNew('${type}')" style="margin:14px 0 0;">&#65291; New ${escapeHtml(T.label)}</button>` : ""}
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin:14px 0;">
+      ${chips.map(([val, lab]) => `<button class="btn ${filter === val ? "btn-primary" : "btn-secondary"} btn-sm" onclick="setSrFilter('${val}')">${lab}${val === "All" ? "" : ` (${list.filter(r => r.status === val).length})`}</button>`).join("")}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${shown.length ? shown.map(r => `<div onclick="openSrDetail('${r.itemId}')" style="cursor:pointer; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <div style="font-size:13px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(srDisplayTitle(r))}</div>
+            ${srStatusBadgeHtml(r)}
+          </div>
+          <div style="font-size:11px; color:var(--text3); margin-top:2px;">${escapeHtml(r.refNo)}${T ? "" : " · " + escapeHtml(SR_TYPES[r.requestType] ? SR_TYPES[r.requestType].label : r.requestType)}${scope === "mine" ? "" : " · " + escapeHtml(r.requesterName)} · ${escapeHtml(dateOnly(r.submittedDate))}</div>
+        </div>`).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">Nothing here yet.</div>`}
+    </div>`;
+}
+
+function srAssignBlockHtml(r) {
+  const isEF = r.requestType === "EmployeeFeedback";
+  return `<div style="margin-top:16px; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:8px;">${r.assigneeEmail ? "Reassign responder" : "Assign a responder"}${isEF ? ` <span style="font-weight:400; color:var(--text3); font-size:11px;">(only people with access to these requests)</span>` : ""}</div>
+    <button class="btn btn-secondary btn-sm" onclick="srAssignToMe('${r.itemId}')" style="margin-bottom:8px;">Assign to me</button>
+    <input id="srAssignSearch" type="text" placeholder="Or search a name…" oninput="srFilterAssignees('${r.itemId}')" autocomplete="off" />
+    <div id="srAssignOptions" style="display:none; border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; margin-top:4px; background:var(--surface);"></div>
+  </div>`;
+}
+
+function renderSrDetail(box) {
+  box.style.width = "min(720px, 95vw)";
+  const r = srFind(hrView.caseId);
+  if (!r) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Request not found.</div>`; return; }
+  const T = SR_TYPES[r.requestType] || SR_TYPES.GeneralRequest;
+  const responder = srResponderLabel(r);
+  const heading = r.requestType === "GeneralRequest" ? r.topic : r.title;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(r.refNo)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(T.label)} · by ${escapeHtml(r.requesterName)} · ${escapeHtml(fmtDueDateTime(r.submittedDate))}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${srCanDelete(r) ? `<button class="btn btn-danger btn-sm" onclick="deleteSrRequest('${r.itemId}')" title="Delete">&#128465;</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    ${srProgressHtml(r)}
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-top:14px; font-size:13px; line-height:1.6;">
+      <div style="font-weight:600; margin-bottom:4px;">${r.requestType === "GeneralRequest" ? "Topic" : "Title"}</div>
+      <p style="margin-bottom:12px;">${escapeHtml(heading)}</p>
+      <div style="font-weight:600; margin-bottom:4px;">Content</div>
+      <p style="white-space:pre-wrap; color:var(--text2); margin-bottom:0;">${escapeHtml(r.content)}</p>
+    </div>
+    ${responder ? `<div style="font-size:12px; color:var(--text3); margin-top:10px;"><strong>Responder:</strong> ${escapeHtml(responder)}${r.requestType !== "Inquiry" && r.assignedByName ? ` (assigned by ${escapeHtml(r.assignedByName)} · ${escapeHtml(dateOnly(r.assignedDate))})` : ""}</div>` : (r.requestType !== "Inquiry" && r.status !== "Completed" ? `<div style="font-size:12px; color:var(--text3); margin-top:10px;">Waiting for a responder to be assigned.</div>` : "")}
+    ${r.status === "Completed" ? `<div style="background:var(--surface); border:1px solid var(--green); border-radius:8px; padding:14px 16px; margin-top:14px; font-size:13px; line-height:1.6;">
+        <div style="font-weight:600; margin-bottom:4px;">Reply <span style="font-weight:400; color:var(--text3); font-size:11px;">— ${escapeHtml(r.repliedByName)} · ${escapeHtml(fmtDueDateTime(r.completedDate))}</span></div>
+        <p style="white-space:pre-wrap; margin-bottom:0;">${escapeHtml(r.replyText)}</p>
+      </div>` : ""}
+    ${srCanAssign(r) ? srAssignBlockHtml(r) : ""}
+    ${srCanReply(r) ? `<div style="margin-top:16px;">
+        <div class="form-group"><label>Your reply *</label><textarea id="srReplyText" maxlength="${SR_CONTENT_MAX}" style="min-height:110px;" placeholder="Write your reply…"></textarea></div>
+        <div class="modal-actions"><button class="btn btn-primary" onclick="srSendReply('${r.itemId}')">Send reply &amp; complete</button></div>
+      </div>` : ""}
+    ${srIsRequester(r) && r.status !== "Completed" ? `<div style="font-size:12px; color:var(--text3); margin-top:14px;">You'll see the reply here once it's completed.</div>` : ""}
+  `;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -8519,6 +9000,9 @@ function renderHRModal() {
   if (hrView.mode === "gtNew") { renderGeneralTaskNewForm(box); return; }
   if (hrView.mode === "gtList") { renderGeneralTaskList(box); return; }
   if (hrView.mode === "gtDetail") { renderGeneralTaskDetail(box); return; }
+  if (hrView.mode === "srNew") { renderSrNewForm(box); return; }
+  if (hrView.mode === "srList") { renderSrList(box); return; }
+  if (hrView.mode === "srDetail") { renderSrDetail(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
   if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
   if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
@@ -9104,7 +9588,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -9396,7 +9880,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -9447,6 +9931,7 @@ function renderRequestsTodo() {
   { const qa = qfAlert(); if (qa) rows.push({ label: qa.title, sub: qa.sub, click: qa.onclick }); }
   myPendingPipCases().forEach(c => rows.push({ label: "Performance Improvement Plan — please review and sign", sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
   myPipTodo().forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
+  srTodoItems().forEach(r => rows.push(r));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -9464,9 +9949,8 @@ function renderRequests() {
   const isHR = canAccessHR || isPermissionAdmin;
   const nteQueue = nteApprovalQueue().length;
   const employee = [
-    { icon: "&#128421;", title: "General Requests", desc: "PC & devices · Facilities · Office supply · Others" },
-    { icon: "&#128172;", title: "Employee Feedback", desc: "Share feedback with the company." },
-    { icon: "&#10067;", title: "Inquiry", desc: "Ask HR / Admin a question." },
+    ...srEmployeeCards(),
+    ...srAssignedCard(),
     { icon: "&#128214;", title: "View Employee Handbook", desc: "Open the Employee Handbook in a new tab.", onclick: "window.open('handbook.html','_blank','noopener')" },
     ...(generalTasksListId && myGeneralTaskAssignments().length ? [{ icon: "&#128203;", title: "My Task Assignments", desc: "Tasks assigned to you — acknowledge, decline, or submit.", onclick: "openGeneralTaskList(false)", badge: myPendingGeneralTasks().length }] : [])
   ];
@@ -9484,6 +9968,7 @@ function renderRequests() {
       actions: quarterlyFeedbackListId ? [{ label: "New Feedback", onclick: "openQuarterlyFeedbackNewForm()" }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }] : undefined }
   ];
   const hr = [
+    ...srHrCard(),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     { icon: "&#128202;", title: "Manpower Status", desc: "" },
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
