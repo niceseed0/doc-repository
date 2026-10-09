@@ -293,6 +293,12 @@
   @media (max-width: 900px) {
     .welcome-grid { grid-template-columns: 1fr; }
   }
+  .home-grid { display: grid; grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr); gap: 24px; align-items: start; }
+  .home-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .home-grid .welcome-card { max-width: none; padding: 28px; }
+  @media (max-width: 1100px) {
+    .home-grid { grid-template-columns: 1fr; }
+  }
   .welcome-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
   .welcome-card h2 { font-size: 22px; font-weight: 700; }
   .welcome-body { color: var(--text2); font-size: 14px; line-height: 1.8; margin-top: 16px; }
@@ -494,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-05";
+const BUILD_ID = "2026-10-09-06";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -10993,33 +10999,119 @@ function toggleGuidelineSection() {
 // "My Schedule" (placeholders pending the Shifts-app / leave / meeting integrations),
 // "My Tasks of the Week", and the "Elite News" board.
 // ═══════════════════════════════════════════════════════════════════════════
+// Home greeting copy lives here so it can be translated / reworded in one place.
+const HOME_TEXT = {
+  hello: "Hello",
+  currently: "You're currently",
+  statusSoon: "Status — coming soon",
+  statusLabels: { working: "Working", leave: "On Leave", sick: "On Sick Leave", off: "Outside Working Hours" },
+  countLabels: { working: "working", leave: "on leave", sick: "on sick leave", off: "outside working hours" },
+  countsSoon: "Live headcount coming soon",
+  defaultByPart: { morning: "Hope you have a great day ahead.", afternoon: "Hope your day is going well.", evening: "Hope you had a good day." }
+};
+const GREETING_BUSY_TASK_COUNT = 3;     // this many tasks due today/overdue → "lots to do" line
+const GREETING_BUSY_MEETING_COUNT = 3;  // this many meetings today → "busy day" line
+const GREETING_EVENT_LOOKAHEAD_DAYS = 3;
+const GREETING_MAX_MESSAGES = 2;
 function greetingTimeOfDay() {
   const h = new Date().getHours();
   if (h < 12) return "Good Morning";
   if (h < 18) return "Good Afternoon";
   return "Good Evening";
 }
-// Hook for the future Shifts-app / leave integration: once wired, return "working" during the
-// person's scheduled hours, "off" outside them, or "leave" on an approved leave day. Returns
-// null until that data exists, in which case the greeting simply omits the status line.
+function greetingPart() { const h = new Date().getHours(); return h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"; }
+
+// ── Hooks for the schedule system (Shifts app / leave / meetings / company events) ──────────
+// Each returns null/[] until its data exists; the Home page already renders whatever they return.
+// Own status: return "working" | "leave" | "sick" | "off".
 function myCurrentScheduleStatus() {
   return null; // TODO: wire to work schedule + leave records once available
 }
+// Company-wide headcount for HOC / Managing Director / CEO: return { working, leave, sick, off } (numbers).
+function companyScheduleCounts() {
+  return null; // TODO: wire to the schedule system
+}
+// Number of meetings the signed-in person has today (null = unknown).
+function todaysMeetingCount() {
+  return null; // TODO: wire to meeting scheduling
+}
+// Company events starting within `days` days: [{ date: "YYYY-MM-DD", title }] sorted by date.
+function upcomingCompanyEvents(days) {
+  return []; // TODO: wire to the Elite Company Events list once it exists
+}
+
 function scheduleStatusLabel(status) {
-  const map = {
-    working: { text: "You're currently within working hours.", color: "var(--green)" },
-    off: { text: "You're currently outside working hours.", color: "var(--text3)" },
-    leave: { text: "You're currently on leave.", color: "var(--yellow)" }
-  };
-  return map[status] || null;
+  const colors = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" };
+  return HOME_TEXT.statusLabels[status] ? { text: HOME_TEXT.statusLabels[status], color: colors[status] } : null;
+}
+// HOC (Cluster Lead), Managing Director and CEO see the company headcount instead of their own status.
+function isHomeLeadership() {
+  const me = myEmployeeRecord();
+  if (!me) return false;
+  if (me.position === CONFIG.positionRank[0] || /managing director|\bceo\b/i.test(me.position || "")) return true;
+  const name = String(me.name || "").trim().toLowerCase();
+  return [ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === name);
+}
+function homeStatusPillHtml(text, color, soon) {
+  return `<span style="display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:${color}; border:1px solid ${color}; ${soon ? "opacity:.75; font-style:italic;" : ""}">${escapeHtml(text)}</span>`;
+}
+function homeStatusLineHtml() {
+  if (isHomeLeadership()) {
+    const counts = companyScheduleCounts();
+    const order = ["working", "leave", "sick", "off"];
+    const colors = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" };
+    return `<span style="font-size:13.5px; color:var(--text2);">Right now,</span> ${order.map(k => {
+      const n = counts && counts[k] != null ? counts[k] : "—";
+      return homeStatusPillHtml(`${n} ${HOME_TEXT.countLabels[k]}`, colors[k], !counts);
+    }).join(" ")}${counts ? "" : ` <span style="font-size:11.5px; color:var(--text3);">${escapeHtml(HOME_TEXT.countsSoon)}</span>`}`;
+  }
+  const st = scheduleStatusLabel(myCurrentScheduleStatus());
+  return `<span style="font-size:13.5px; color:var(--text2);">${escapeHtml(HOME_TEXT.currently)}</span> ${st ? homeStatusPillHtml(st.text, st.color, false) : homeStatusPillHtml(HOME_TEXT.statusSoon, "var(--text3)", true)}`;
+}
+
+// Situational lines appended after "Good Morning/Afternoon/Evening", highest priority first.
+function homeGreetingMessages() {
+  const msgs = [];
+  const now = new Date();
+  const todayYMD = toLocalYMD(now);
+  const mmdd = todayYMD.slice(5);
+  const me = myEmployeeRecord();
+  try {
+    if (me && me.birthday && dateOnly(me.birthday).slice(5) === mmdd) msgs.push("Happy birthday! 🎂 Wishing you a wonderful day.");
+    if (me && me.hireDate && dateOnly(me.hireDate).slice(5) === mmdd) {
+      const years = now.getFullYear() - Number(dateOnly(me.hireDate).slice(0, 4));
+      if (years >= 1) msgs.push(`Happy ${years}-year work anniversary! 🎉`);
+    }
+  } catch (e) { /* bad date — skip */ }
+  try {
+    const ev = upcomingCompanyEvents(GREETING_EVENT_LOOKAHEAD_DAYS) || [];
+    if (ev.length) msgs.push(`There's a company event on ${monthDayLabel(ev[0].date)}${ev[0].title ? ": " + ev[0].title : ""}.`);
+  } catch (e) { /* events hook failed — skip */ }
+  try {
+    const hol = upcomingHolidaysWithin(GREETING_EVENT_LOOKAHEAD_DAYS)[0];
+    if (hol) msgs.push(hol.date === todayYMD ? `Today is ${hol.name}.` : `${hol.name} is coming up on ${monthDayLabel(hol.date)}.`);
+  } catch (e) { /* skip */ }
+  try {
+    const mc = todaysMeetingCount();
+    if (mc != null && mc >= GREETING_BUSY_MEETING_COUNT) msgs.push("Lots of meetings today — have a great day, you've got this!");
+  } catch (e) { /* skip */ }
+  try {
+    const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
+    const due = myWeekTaskItems().filter(x => x.dueMs <= todayEnd.getTime()).length;
+    if (due >= GREETING_BUSY_TASK_COUNT) msgs.push("Busy day ahead with a lot to get done — hang in there!");
+  } catch (e) { /* skip */ }
+  return msgs.slice(0, GREETING_MAX_MESSAGES);
 }
 function renderGreeting() {
   const me = myEmployeeRecord();
   const firstName = me && me.name ? me.name.split(" ")[0] : null;
-  const status = scheduleStatusLabel(myCurrentScheduleStatus());
-  return `<div style="font-size:22px; font-weight:700; margin-bottom:4px;">Hello${firstName ? ", " + escapeHtml(firstName) : ""} &#128075;</div>
-    <div style="font-size:14px; color:var(--text2); margin-bottom:${status ? "4px" : "20px"};">${greetingTimeOfDay()}</div>
-    ${status ? `<div style="font-size:13px; font-weight:600; color:${status.color}; margin-bottom:20px;">${escapeHtml(status.text)}</div>` : ""}`;
+  const msgs = homeGreetingMessages();
+  const tail = msgs.length ? msgs.join(" ") : HOME_TEXT.defaultByPart[greetingPart()];
+  return `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; margin-bottom:6px;">
+      <span style="font-size:22px; font-weight:700;">${HOME_TEXT.hello}${firstName ? ", " + escapeHtml(firstName) : ""} &#128075;</span>
+      ${homeStatusLineHtml()}
+    </div>
+    <div style="font-size:14px; color:var(--text2); margin-bottom:20px;"><strong style="color:var(--text);">${greetingTimeOfDay()}.</strong> ${escapeHtml(tail)}</div>`;
 }
 
 function scheduleComingSoonBox(icon, title, desc) {
@@ -11298,13 +11390,15 @@ function renderOrganization() {
 
 function renderWelcome() {
   return `
-  <div style="max-width:1300px; margin:0 auto; display:flex; flex-direction:column; gap:20px;">
+  <div style="max-width:1680px; margin:0 auto; display:flex; flex-direction:column; gap:6px;">
     ${renderGreeting()}
-    <div class="welcome-grid">
-      ${renderMySchedule()}
-      ${renderMyTasksOfWeek()}
+    <div class="home-grid">
+      <div class="home-col">
+        ${renderMySchedule()}
+        ${renderMyTasksOfWeek()}
+      </div>
+      ${renderEliteNews()}
     </div>
-    ${renderEliteNews()}
   </div>`;
 }
 
