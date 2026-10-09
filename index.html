@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-01";
+const BUILD_ID = "2026-10-09-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -7491,7 +7491,7 @@ async function signPipAsManager(itemId) {
 
 // ── final Cluster Lead review + close ───────────────────────────────────────
 async function logPipIncident(c) {
-  if (!incidentsListId) return;
+  if (!incidentsListId) { toast("PIP closed, but the HR Incidents list was not found, so no HR Records entry was created.", "error"); return false; }
   try {
     const incidentDate = toLocalYMD(new Date());
     const notes = `PIP ${c.refNo}: ${c.outcome}`;
@@ -7500,9 +7500,11 @@ async function logPipIncident(c) {
       body: JSON.stringify({ fields: { Title: c.title, EmployeeId: c.employeeId, Date: incidentDate, IncidentType: "PIP", IncidentNotes: notes, PIPCaseId: c.itemId } })
     });
     allIncidents.push({ itemId: created.id, employeeId: String(c.employeeId), employeeName: c.title, date: incidentDate, type: "PIP", notes, pipCaseId: c.itemId });
+    return true;
   } catch (e) {
     console.warn("Could not log PIP incident:", e);
-    toast("Case closed, but the HR Records entry could not be created.", "error");
+    toast("PIP closed, but the HR Records entry could not be created: " + ((e && e.message) || e), "error");
+    return false;
   }
 }
 async function closePipCase(itemId) {
@@ -7522,9 +7524,9 @@ async function closePipCase(itemId) {
       method: "PATCH", body: JSON.stringify({ Status: "Closed", Outcome: outcome, ClusterLeadNotes: notes, ClusterLeadSignature: sigPayload, ClusterLeadReviewDate: now, ClosedBy: by, ClosedDate: now })
     });
     Object.assign(c, { status: "Closed", outcome, clusterLeadNotes: notes, clusterLeadSignature: sigPayload, clusterLeadReviewDate: now, closedBy: by, closedDate: now });
-    await logPipIncident(c);
+    const logged = await logPipIncident(c);
     setSyncing(false, true);
-    toast("PIP closed ✓", "success");
+    if (logged) toast("PIP closed ✓", "success");
     openPipDetail(itemId);
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
 }
