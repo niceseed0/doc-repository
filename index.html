@@ -494,7 +494,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-03";
+const BUILD_ID = "2026-10-09-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2466,7 +2466,7 @@ function closeHRModal() {
   hrView = null;
   hrDetail = null;
   // Case states may have changed inside the modal — refresh the Requests badge/page.
-  try { renderTabs(); if (activeTab === "__REQUESTS__") renderContent(); } catch (e) { /* not ready yet */ }
+  try { renderTabs(); if (activeTab === "__REQUESTS__" || activeTab === "__MYTASKS__") renderContent(); } catch (e) { /* not ready yet */ }
 }
 
 function openFormerEmployeesList() {
@@ -5813,7 +5813,7 @@ function renderAttendanceOverview() {
 
 // Add more report-type overview widgets here later and list them alongside these.
 function renderReportsOverviewRow() {
-  const widgets = [renderWeeklyReportOverview(), renderAttendanceOverview()].filter(Boolean);
+  const widgets = [renderWeeklyReportOverview(), renderAttendanceOverview(), renderWorkStatus()].filter(Boolean);
   if (!widgets.length) return "";
   return `<div id="reportsOverviewRow" style="display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; align-items:flex-start;">${widgets.join("")}</div>`;
 }
@@ -7787,6 +7787,7 @@ const SR_FIELD_PROP = {
   AssigneeEmail: "assigneeEmail", AssigneeName: "assigneeName", AssignedByName: "assignedByName", AssignedDate: "assignedDate",
   Status: "status", ReviewStartedDate: "reviewStartedDate", ReplyText: "replyText", RepliedByName: "repliedByName", CompletedDate: "completedDate"
 };
+let srTeamMeta = []; // STATUS-ONLY rows (no title/content/reply) of other employees' requests, for non-viewer managers' Work Status table
 let srViewerPool = null; // cached list of employees who count as "viewers" (assignable for Employee Feedback)
 
 function srMapItem(it) {
@@ -7805,6 +7806,7 @@ function srMapItem(it) {
 
 async function loadServiceRequests() {
   serviceRequests = [];
+  srTeamMeta = [];
   srViewerPool = null; // identity may have changed (Test Mode) — rebuild the viewer pool on next use
   if (!serviceRequestsListId) return;
   const myEmail = srMyEmail();
@@ -7831,6 +7833,41 @@ async function loadServiceRequests() {
   } catch (e) {
     console.warn("Could not load HR Service Requests (list may not exist yet):", e);
     serviceRequests = [];
+  }
+  await srLoadTeamMeta();
+}
+
+// Work Status table for managers who are NOT viewers: fetch only the status columns (never Title /
+// Content / ReplyText) — Cluster Lead+: every requester; APM–SPM: only their own team's requesters.
+async function srLoadTeamMeta() {
+  srTeamMeta = [];
+  if (!serviceRequestsListId || canViewCaseLists() || !(canDraftNte() || canApproveNte())) return;
+  const select = "RefNo,RequestType,RequesterEmail,RequesterName,SubmittedDate,Status,AssigneeEmail,AssigneeName,ReviewStartedDate,RepliedByName,CompletedDate";
+  const base = `/sites/${siteId}/lists/${serviceRequestsListId}/items?$expand=fields($select=${select})&$top=500`;
+  const esc = v => String(v).replace(/'/g, "''");
+  const seen = new Set();
+  const add = it => { if (!seen.has(it.id) && WS_TEAM_SERVICE_TYPES.includes((it.fields || {})["RequestType"])) { seen.add(it.id); srTeamMeta.push(srMapItem(it)); } };
+  try {
+    if (canApproveNte()) {
+      let url = base;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(add);
+        url = data["@odata.nextLink"] || null;
+      }
+    } else {
+      const me = myEmployeeRecord();
+      if (!me) return;
+      const emails = employees.filter(e => e.status !== "Resigned" && e.email && e.team === me.team && (me.cluster || "") === (e.cluster || "") && String(e.id) !== String(me.id)).map(e => e.email.toLowerCase());
+      for (let i = 0; i < emails.length; i += 8) {
+        const filter = emails.slice(i, i + 8).map(m => `fields/RequesterEmail eq '${esc(m)}'`).join(" or ");
+        const data = await graphFetch(`${base}&$filter=${filter}`, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+        (data.value || []).forEach(add);
+      }
+    }
+  } catch (e) {
+    console.warn("Could not load team request statuses:", e);
+    srTeamMeta = [];
   }
 }
 
@@ -7862,7 +7899,7 @@ function srStatusInfo(r) {
   if (r.status === "Completed") return { text: "Completed", color: "var(--green)" };
   if (r.status === "UnderReview") {
     const who = srResponderLabel(r);
-    return { text: "Under Review" + (who ? " / " + who : ""), color: "var(--yellow)" };
+    return { text: "Under Review" + (who ? " · " + who : ""), color: "var(--yellow)" };
   }
   return { text: "Submitted", color: "var(--accent)" };
 }
@@ -8139,7 +8176,7 @@ function srProgressHtml(r) {
   const order = ["Submitted", "UnderReview", "Completed"];
   const cur = Math.max(0, order.indexOf(r.status));
   const responder = srResponderLabel(r);
-  const labels = ["Submitted", "Under Review" + (responder ? " / " + responder : ""), "Completed"];
+  const labels = ["Submitted", "Under Review" + (responder ? " · " + responder : ""), "Completed"];
   const dates = [r.submittedDate, r.reviewStartedDate, r.completedDate];
   return `<div style="display:flex; align-items:flex-start; margin:14px 0 4px;">
     ${labels.map((lab, i) => {
@@ -8235,6 +8272,258 @@ function renderSrDetail(box) {
       </div>` : ""}
     ${srIsRequester(r) && r.status !== "Completed" ? `<div style="font-size:12px; color:var(--text3); margin-top:14px;">You'll see the reply here once it's completed.</div>` : ""}
   `;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Work Status panel (My Tasks → right of "Attendance Dashboard — this month")
+// A read-only roll-up of the status of everything that involves the signed-in person:
+//   My Requests  — what I submitted: Employee Inquiry / Employee Feedback / Employee Request / Request Recognition
+//                  (Submitted → Under Review · reviewer → Completed)
+//   My Cases     — where I am the subject: Coaching Form / PIP / NTE
+//                  (Acknowledgment Required / Active / Under Review / Completed ...)
+//   My Team Requests/Cases (APM–SPM: own team only) or Elite Requests/Cases (Cluster Lead+, HR/Admin: everyone)
+//                  — one table: Type | Employee | Current Step | Owner.
+// It only reads data the existing modules already load; the one addition is srTeamMeta (see
+// srLoadTeamMeta): STATUS-ONLY service-request rows (no title / content / reply) for non-viewer managers.
+// Each section's open/closed state lives in wsOpen so it survives re-renders.
+// ═══════════════════════════════════════════════════════════════════════════
+const WS_TYPE_LABEL = {
+  Coaching: "Coaching Form", PIP: "PIP", NTE: "NTE", Recognition: "Request Recognition", QuarterlyFeedback: "Quarterly Feedback",
+  Inquiry: "Employee Inquiry", EmployeeFeedback: "Employee Feedback", GeneralRequest: "Employee Request"
+};
+// Which service-request types a (non-viewer) manager can see the STATUS of for their team. Remove a type
+// here to hide it from team / elite tables for non-viewers (viewers always see all three).
+const WS_TEAM_SERVICE_TYPES = ["GeneralRequest", "EmployeeFeedback", "Inquiry"];
+const WS_PAGE_SIZE = 15;
+let wsOpen = { myRequests: false, myCases: false, team: false };
+let wsTypeFilter = "All";
+let wsHideDone = false;
+let wsLimit = WS_PAGE_SIZE;
+
+function toggleWs(key) { wsOpen[key] = !wsOpen[key]; renderContent(); }
+function setWsTypeFilter(v) { wsTypeFilter = v; wsLimit = WS_PAGE_SIZE; renderContent(); }
+function toggleWsHideDone() { wsHideDone = !wsHideDone; wsLimit = WS_PAGE_SIZE; renderContent(); }
+function wsShowMore() { wsLimit += WS_PAGE_SIZE; renderContent(); }
+
+function wsEmpById(id) { return employees.find(e => String(e.id) === String(id)) || null; }
+function wsEmpByEmail(email) {
+  const m = String(email || "").toLowerCase();
+  return m ? (employees.find(e => e.email && e.email.toLowerCase() === m) || null) : null;
+}
+function wsNameByEmail(email) {
+  if (!email) return "—";
+  const e = wsEmpByEmail(email);
+  return e ? e.name : (emailPrefix(email) || String(email));
+}
+const WS_YELLOW = "var(--yellow)", WS_ACCENT = "var(--accent)", WS_GREEN = "var(--green)", WS_GREY = "var(--text3)";
+
+// ── My Requests (I am the requester) ─────────────────────────────────────────
+function wsMyRequestGroups() {
+  const groups = [];
+  [["Inquiry", "Employee Inquiry"], ["EmployeeFeedback", "Employee Feedback"], ["GeneralRequest", "Employee Request"]].forEach(([type, label]) => {
+    const items = srMine().filter(r => r.requestType === type).map(r => {
+      const st = srStatusInfo(r);
+      return { title: srDisplayTitle(r), ref: r.refNo, text: st.text, color: st.color, click: `openSrDetail('${r.itemId}')`, ms: r.submittedDate || "" };
+    });
+    groups.push({ label, items, more: serviceRequestsListId ? `openSrList('mine','${type}')` : "", enabled: !!serviceRequestsListId });
+  });
+  const rec = recognitionCases.filter(c => isRecognitionRequester(c)).map(c => {
+    const text = c.status === "Pending" ? "Submitted" : c.status === "Recognized" ? "Completed" : c.status === "Returned" ? "Completed · Returned" : c.status;
+    const color = c.status === "Pending" ? WS_ACCENT : c.status === "Recognized" ? WS_GREEN : WS_GREY;
+    return { title: recRecipientNames(c), ref: c.refNo, text, color, click: `openRecognitionFromRequests('${c.itemId}')`, ms: c.requestedDate || "" };
+  });
+  groups.push({ label: "Request Recognition", items: rec, more: recognitionCasesListId ? "openRecognitionList(true)" : "", enabled: !!recognitionCasesListId });
+  groups.forEach(g => g.items.sort((a, b) => b.ms.localeCompare(a.ms)));
+  return groups;
+}
+
+// ── My Cases (I am the subject) ──────────────────────────────────────────────
+function wsMyCaseGroups() {
+  const me = myEmployeeRecord();
+  const mine = id => !!me && String(id) === String(me.id);
+  const coaching = coachingCases.filter(c => mine(c.employeeId)).map(c => {
+    const map = { Issued: ["Acknowledgment Required", WS_YELLOW], Active: ["Active", WS_ACCENT], Declined: ["Declined · awaiting manager", WS_YELLOW], Closed: ["Completed", WS_GREEN] };
+    const [text, color] = map[c.status] || [c.status, WS_GREY];
+    return { title: c.topic || c.title, ref: c.refNo, text, color, click: `openCoachingCaseFromRequests('${c.itemId}')`, ms: c.issuedDate || "" };
+  });
+  const pip = pipCases.filter(c => mine(c.employeeId)).map(c => {
+    const map = { Issued: ["Acknowledgment Required", WS_YELLOW], EmployeeSigned: ["Active", WS_ACCENT], ManagerReviewed: ["Active", WS_ACCENT], Closed: ["Completed", WS_GREEN] };
+    const [text, color] = map[c.status] || [c.status, WS_GREY];
+    return { title: "Performance Improvement Plan", ref: c.refNo, text, color, click: `openPipCaseFromRequests('${c.itemId}')`, ms: c.issuedDate || "" };
+  });
+  // A draft / pending-approval NTE hasn't been issued to the employee yet, so it is never shown to them.
+  const nte = nteCases.filter(c => mine(c.employeeId) && ["Issued", "Responded", "Closed"].includes(c.status)).map(c => {
+    let text, color;
+    if (c.status === "Issued") { text = "Acknowledgment Required" + (c.responseDueDate ? " · respond by " + dateOnly(c.responseDueDate) : ""); color = WS_YELLOW; }
+    else if (c.status === "Responded") { text = "Under Review · Current Reviewer: HR / HOC"; color = WS_ACCENT; }
+    else { text = "Completed"; color = WS_GREEN; }
+    return { title: "Notice to Explain", ref: c.refNo, text, color, click: `openNteCaseFromRequests('${c.itemId}')`, ms: c.issuedDate || c.requestedDate || "" };
+  });
+  const groups = [
+    { label: "Coaching Form", items: coaching, enabled: !!coachingCasesListId },
+    { label: "PIP", items: pip, enabled: !!pipCasesListId },
+    { label: "NTE", items: nte, enabled: !!nteCasesListId }
+  ];
+  groups.forEach(g => g.items.sort((a, b) => b.ms.localeCompare(a.ms)));
+  return groups;
+}
+
+// ── Team / Elite table rows ──────────────────────────────────────────────────
+function wsScopeMode() {
+  if (canApproveNte() || isPermissionAdmin) return "elite";
+  if (canDraftNte()) return "team";
+  return null;
+}
+function wsTableRows() {
+  const mode = wsScopeMode();
+  if (!mode) return [];
+  const me = myEmployeeRecord();
+  const myId = me ? String(me.id) : null;
+  const inScope = id => {
+    const e = wsEmpById(id);
+    if (!e || String(e.id) === myId) return false;
+    return mode === "elite" || (!!me && e.team === me.team && (me.cluster || "") === (e.cluster || ""));
+  };
+  const rows = [];
+  const push = (type, employee, step, color, owner, done, ms, click) => rows.push({ type, employee, step, color, owner: owner || "—", done, ms: ms || "", click: click || "" });
+
+  nteCases.forEach(c => {
+    if (!inScope(c.employeeId)) return;
+    const emp = (wsEmpById(c.employeeId) || {}).name || c.title;
+    const click = `openNteCaseFromRequests('${c.itemId}')`;
+    const ms = c.issuedDate || c.requestedDate;
+    if (c.status === "Draft") push("NTE", emp, "Draft", WS_GREY, wsNameByEmail(c.requestedBy), false, ms, click);
+    else if (c.status === "Pending Approval") push("NTE", emp, "Submitted", WS_ACCENT, wsNameByEmail(c.requestedBy), false, ms, click);
+    else if (c.status === "Issued") push("NTE", emp, "Acknowledgment Required", WS_YELLOW, wsNameByEmail(c.approvedBy || c.requestedBy), false, ms, click);
+    else if (c.status === "Responded") push("NTE", emp, "Under Review", WS_YELLOW, "HR / HOC", false, ms, click);
+    else push("NTE", emp, "Completed", WS_GREEN, wsNameByEmail(c.reviewedBy || c.approvedBy), true, ms, click);
+  });
+  coachingCases.forEach(c => {
+    if (!inScope(c.employeeId)) return;
+    const emp = (wsEmpById(c.employeeId) || {}).name || c.title;
+    const click = `openCoachingCaseFromRequests('${c.itemId}')`;
+    const issuer = wsNameByEmail(c.issuedBy);
+    if (c.status === "Issued") push("Coaching", emp, "Acknowledgment Required", WS_YELLOW, issuer, false, c.issuedDate, click);
+    else if (c.status === "Active") push("Coaching", emp, "Active", WS_ACCENT, issuer, false, c.issuedDate, click);
+    else if (c.status === "Declined") push("Coaching", emp, "Under Review", WS_YELLOW, issuer, false, c.issuedDate, click);
+    else push("Coaching", emp, "Completed", WS_GREEN, wsNameByEmail(c.closedBy || c.issuedBy), true, c.issuedDate, click);
+  });
+  pipCases.forEach(c => {
+    if (!inScope(c.employeeId)) return;
+    const emp = (wsEmpById(c.employeeId) || {}).name || c.title;
+    const click = `openPipCaseFromRequests('${c.itemId}')`;
+    const issuer = c.issuedByName || wsNameByEmail(c.issuedBy);
+    if (c.status === "Issued") push("PIP", emp, "Acknowledgment Required", WS_YELLOW, issuer, false, c.issuedDate, click);
+    else if (c.status === "EmployeeSigned") push("PIP", emp, "Under Review", WS_YELLOW, issuer, false, c.issuedDate, click);
+    else if (c.status === "ManagerReviewed") push("PIP", emp, "Under Review", WS_YELLOW, "Cluster Lead / HR", false, c.issuedDate, click);
+    else push("PIP", emp, "Completed", WS_GREEN, wsNameByEmail(c.closedBy || c.issuedBy), true, c.issuedDate, click);
+  });
+  recognitionCases.forEach(c => {
+    const recips = c.recipients || [];
+    if (!recips.some(r => inScope(r.id))) return;
+    const click = `openRecognitionFromRequests('${c.itemId}')`;
+    const names = recRecipientNames(c);
+    if (c.status === "Pending") push("Recognition", names, "Submitted", WS_ACCENT, c.requesterName || wsNameByEmail(c.requestedBy), false, c.requestedDate, click);
+    else push("Recognition", names, c.status === "Returned" ? "Completed · Returned" : "Completed", c.status === "Returned" ? WS_GREY : WS_GREEN, wsNameByEmail(c.reviewedBy), true, c.requestedDate, click);
+  });
+  quarterlyFeedback.forEach(q => {
+    if (!inScope(q.employeeId)) return;
+    push("QuarterlyFeedback", q.employeeName, "Completed", WS_GREEN, q.facilitatorName || wsNameByEmail(q.facilitatedBy), true, q.sessionDate, `(function(){document.getElementById('hrModal').classList.add('open');openQuarterlyFeedbackDetail('${q.itemId}','close');})()`);
+  });
+  // Service requests: viewers hold the full items; other managers only hold status-only rows (srTeamMeta).
+  const viewer = srIsViewer();
+  (viewer ? serviceRequests : srTeamMeta).forEach(r => {
+    if (!viewer && !WS_TEAM_SERVICE_TYPES.includes(r.requestType)) return;
+    const emp = wsEmpByEmail(r.requesterEmail);
+    if (!emp || !inScope(emp.id)) return;
+    const click = viewer ? `openSrDetail('${r.itemId}')` : "";
+    const resp = srResponderLabel(r);
+    if (r.status === "Completed") push(r.requestType, r.requesterName || emp.name, "Completed", WS_GREEN, r.repliedByName || resp, true, r.submittedDate, click);
+    else if (r.status === "UnderReview") push(r.requestType, r.requesterName || emp.name, "Under Review", WS_YELLOW, resp || "—", false, r.submittedDate, click);
+    else push(r.requestType, r.requesterName || emp.name, "Submitted", WS_ACCENT, r.requesterName || emp.name, false, r.submittedDate, click);
+  });
+  rows.sort((a, b) => (a.done === b.done) ? String(b.ms).localeCompare(String(a.ms)) : (a.done ? 1 : -1));
+  return rows;
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
+function wsRowHtml(it) {
+  return `<div ${it.click ? `onclick="${it.click}"` : ""} style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 9px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; ${it.click ? "cursor:pointer;" : ""}">
+    <span style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(it.title)}<span style="color:var(--text3);"> · ${escapeHtml(it.ref)}</span></span>
+    <span style="font-size:11px; font-weight:600; color:${it.color}; white-space:nowrap;">${escapeHtml(it.text)}</span>
+  </div>`;
+}
+function wsGroupsHtml(groups) {
+  return groups.map(g => {
+    const shown = g.items.slice(0, 5);
+    return `<div style="margin-bottom:12px;">
+      <div style="font-size:11px; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.03em; margin-bottom:6px;">${escapeHtml(g.label)} <span style="font-weight:400;">(${g.items.length})</span></div>
+      ${g.items.length
+        ? `<div style="display:flex; flex-direction:column; gap:5px;">${shown.map(wsRowHtml).join("")}</div>${g.items.length > shown.length && g.more ? `<div onclick="${g.more}" style="cursor:pointer; font-size:11px; color:var(--accent); margin-top:5px;">+ ${g.items.length - shown.length} more</div>` : ""}`
+        : `<div style="font-size:12px; color:var(--text3);">${g.enabled === false ? "Not set up yet." : "Nothing yet."}</div>`}
+    </div>`;
+  }).join("");
+}
+function wsSectionHeader(key, title, count, alert) {
+  const open = wsOpen[key];
+  return `<div onclick="toggleWs('${key}')" style="cursor:pointer; display:flex; align-items:center; gap:8px; padding:8px 0; border-top:1px solid var(--border);">
+    <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+    <span style="font-size:13px; font-weight:600;">${escapeHtml(title)}</span>
+    <span style="font-size:11px; color:var(--text3);">(${count})</span>
+    ${alert > 0 ? `<span class="req-badge" title="Needs attention">${alert}</span>` : ""}
+  </div>`;
+}
+function wsTableHtml() {
+  const all = wsTableRows();
+  let rows = all;
+  if (wsTypeFilter !== "All") rows = rows.filter(r => r.type === wsTypeFilter);
+  if (wsHideDone) rows = rows.filter(r => !r.done);
+  const types = Array.from(new Set(all.map(r => r.type)));
+  const shown = rows.slice(0, wsLimit);
+  const grid = "display:grid; grid-template-columns:1.25fr 1.2fr 1.35fr 1.2fr; gap:8px; align-items:center;";
+  return `<div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:2px 0 10px;">
+      <select onchange="setWsTypeFilter(this.value)" style="max-width:200px; font-size:12px;">
+        <option value="All">All types</option>
+        ${types.map(t => `<option value="${t}" ${wsTypeFilter === t ? "selected" : ""}>${escapeHtml(WS_TYPE_LABEL[t] || t)}</option>`).join("")}
+      </select>
+      <label style="font-size:12px; display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" ${wsHideDone ? "checked" : ""} onchange="toggleWsHideDone()" /> Hide completed</label>
+    </div>
+    <div style="overflow-x:auto;"><div style="min-width:460px;">
+      <div style="${grid} font-size:11px; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.03em; padding:0 9px 6px;">
+        <span>Type</span><span>Employee</span><span>Current Step</span><span>Owner</span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:5px;">
+        ${shown.length ? shown.map(r => `<div ${r.click ? `onclick="${r.click}"` : ""} style="${grid} font-size:12px; padding:6px 9px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; ${r.click ? "cursor:pointer;" : ""}">
+            <span>${escapeHtml(WS_TYPE_LABEL[r.type] || r.type)}</span>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(r.employee)}">${escapeHtml(r.employee)}</span>
+            <span style="font-weight:600; color:${r.color};">${escapeHtml(r.step)}</span>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(r.owner)}">${escapeHtml(r.owner)}</span>
+          </div>`).join("") : `<div style="font-size:12px; color:var(--text3); padding:6px 9px;">Nothing to show.</div>`}
+      </div>
+    </div></div>
+    ${rows.length > shown.length ? `<div onclick="wsShowMore()" style="cursor:pointer; font-size:12px; color:var(--accent); margin-top:8px;">Show more (${rows.length - shown.length})</div>` : ""}`;
+}
+
+function renderWorkStatus() {
+  const reqGroups = wsMyRequestGroups();
+  const caseGroups = wsMyCaseGroups();
+  const reqOpen = reqGroups.reduce((n, g) => n + g.items.filter(i => !/^Completed/.test(i.text)).length, 0);
+  const caseAction = caseGroups.reduce((n, g) => n + g.items.filter(i => /^Acknowledgment Required/.test(i.text)).length, 0);
+  const caseTotal = caseGroups.reduce((n, g) => n + g.items.length, 0);
+  const reqTotal = reqGroups.reduce((n, g) => n + g.items.length, 0);
+  const mode = wsScopeMode();
+  const tableRows = mode ? wsTableRows() : [];
+  const tableTitle = mode === "elite" ? "Elite Requests/Cases" : "My Team Requests/Cases";
+  return `<div class="req-card" style="width:560px; flex:1 1 480px; max-width:680px;">
+    <div class="req-title"><span>&#128203;</span><span>Work Status</span></div>
+    <div class="req-desc" style="margin-bottom:6px;">Where your requests and cases stand. Click an item to open it.</div>
+    ${wsSectionHeader("myRequests", "My Requests", reqTotal, reqOpen)}
+    ${wsOpen.myRequests ? `<div style="padding:2px 0 6px 20px;">${wsGroupsHtml(reqGroups)}</div>` : ""}
+    ${wsSectionHeader("myCases", "My Cases", caseTotal, caseAction)}
+    ${wsOpen.myCases ? `<div style="padding:2px 0 6px 20px;">${wsGroupsHtml(caseGroups)}</div>` : ""}
+    ${mode ? wsSectionHeader("team", tableTitle, tableRows.length, tableRows.filter(r => !r.done).length) : ""}
+    ${mode && wsOpen.team ? `<div style="padding:2px 0 6px 20px;">${wsTableHtml()}</div>` : ""}
+  </div>`;
 }
 
 function toLocalYMD(d) {
