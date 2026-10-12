@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-08";
+const BUILD_ID = "2026-10-09-09";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -6762,10 +6762,12 @@ function qfEligibleTargets() {
   const me = myEmployeeRecord();
   if (!me) return [];
   const myRank = positionRankIndex(me.position);
+  // Never includes the facilitator themselves — nobody writes their own quarterly session (this also keeps
+  // the "x/y done" progress and the Home alert from being stuck on an entry that can never be completed).
   if (me.position === "Cluster Lead" && me.cluster) {
-    return employees.filter(e => e.status !== "Resigned" && e.cluster === me.cluster && positionRankIndex(e.position) >= positionRankIndex("Senior Product Manager"));
+    return employees.filter(e => String(e.id) !== String(me.id) && e.status !== "Resigned" && e.cluster === me.cluster && positionRankIndex(e.position) >= positionRankIndex("Senior Product Manager"));
   }
-  return employees.filter(e => e.status !== "Resigned" && e.team === me.team && (e.cluster || "") === (me.cluster || "") && positionRankIndex(e.position) >= myRank);
+  return employees.filter(e => String(e.id) !== String(me.id) && e.status !== "Resigned" && e.team === me.team && (e.cluster || "") === (me.cluster || "") && positionRankIndex(e.position) >= myRank);
 }
 function canViewAllQuarterlyFeedback() { return canAccessHR || isPermissionAdmin; }
 
@@ -6787,7 +6789,7 @@ function qfAlert() {
   if (!p || !p.remaining.length) return null;
   const level = alertLevelForDueMs(new Date(p.due + "T23:59:59").getTime());
   if (!level) return null;
-  return { level, sortMs: new Date(p.due + "T23:59:59").getTime(), onclick: "openQuarterlyFeedbackList(true)",
+  return { level, sortMs: new Date(p.due + "T23:59:59").getTime(), onclick: "openQfBoard()",
     title: `Quarterly Feedback — ${p.doneCount}/${p.total} done`, sub: quarterLabel(p.quarter, p.year), dueLabel: `Due ${p.due}` };
 }
 
@@ -6813,7 +6815,9 @@ function openQuarterlyFeedbackDetail(itemId, back) {
 }
 function qfBack() {
   const b = hrView && hrView.back;
-  if (b === "all") openQuarterlyFeedbackList(false);
+  if (b === "board") openQfBoard();
+  else if (b === "overview") openQfOverview(true);
+  else if (b === "all") openQuarterlyFeedbackList(false);
   else if (b === "mine") openQuarterlyFeedbackList(true);
   else closeHRModal();
 }
@@ -6854,6 +6858,8 @@ function toggleQfReasonField() {
 // ── submit ────────────────────────────────────────────────────────────────────
 async function submitQuarterlyFeedback() {
   if (!canWriteQuarterlyFeedback()) return;
+  const fromBoard = !!(hrView && hrView.fromBoard);
+  const preset = hrView && hrView.preset;
   const emp = employees.find(e => String(e.id) === String(qfNewEmployeeId));
   if (!emp) { toast("Search and select an employee.", "error"); return; }
   const sessionDate = document.getElementById("qfSessionDate").value;
@@ -6879,6 +6885,7 @@ async function submitQuarterlyFeedback() {
   const facilitatorName = (me && me.name) || facilitatedBy;
   const quarter = Math.floor(new Date(sessionDate + "T00:00:00").getMonth() / 3) + 1;
   const year = new Date(sessionDate + "T00:00:00").getFullYear();
+  if (preset && (quarter !== preset.quarter || year !== preset.year)) { toast(`The session date must fall in ${quarterLabel(preset.quarter, preset.year)}.`, "error"); return; }
   const fields = {
     Title: emp.name, SessionDate: sessionDate, FacilitatedBy: facilitatedBy, FacilitatorName: facilitatorName,
     EmployeeId: String(emp.id), Position: emp.position || "", Team: emp.team || "", Cluster: emp.cluster || "",
@@ -6899,7 +6906,7 @@ async function submitQuarterlyFeedback() {
     });
     setSyncing(false, true);
     toast("Quarterly feedback saved ✓", "success");
-    openQuarterlyFeedbackDetail(created.id, "mine");
+    if (fromBoard) openQfBoard(); else openQuarterlyFeedbackDetail(created.id, "mine");
   } catch (err) {
     setSyncing(false, false);
     toast("Could not save: " + err.message, "error");
@@ -6932,15 +6939,22 @@ function qfRatingStars(rating) {
 }
 function renderQuarterlyFeedbackNewForm(box) {
   box.style.width = "min(640px, 94vw)";
+  // Opened from the Board: the person and quarter are fixed and the session date is limited to that quarter.
+  const preset = hrView && hrView.preset;
+  const qi = preset ? { quarter: preset.quarter, year: preset.year, due: quarterlyFeedbackDeadline(preset.year, preset.quarter) } : currentQuarterInfo();
+  const range = preset ? qfQuarterRange(preset.year, preset.quarter) : null;
+  const todayYMD = toLocalYMD(new Date());
+  const maxDate = range ? (range.end < todayYMD ? range.end : todayYMD) : todayYMD;
+  const minAttr = range ? ` min="${range.start}"` : "";
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
         <h3 style="margin-bottom:2px;">New Quarterly Feedback</h3>
-        <div style="font-size:12px; color:var(--text2);">${quarterLabel(currentQuarterInfo().quarter, currentQuarterInfo().year)} — due ${escapeHtml(toLocalYMD(currentQuarterInfo().due))}</div>
+        <div style="font-size:12px; color:var(--text2);">${quarterLabel(qi.quarter, qi.year)} — due ${escapeHtml(toLocalYMD(qi.due))}</div>
       </div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
-    <div class="form-group" style="margin-top:14px;"><label>Session Date *</label><input id="qfSessionDate" type="date" value="${escapeHtml(toLocalYMD(new Date()))}" max="${escapeHtml(toLocalYMD(new Date()))}" /></div>
+    <div class="form-group" style="margin-top:14px;"><label>Session Date *</label><input id="qfSessionDate" type="date" value="${escapeHtml(maxDate)}" max="${escapeHtml(maxDate)}"${minAttr} /></div>
     <div class="form-group"><label>Facilitator</label><input type="text" readonly value="${escapeHtml((myEmployeeRecord() && myEmployeeRecord().name) || "")}" style="opacity:.7;" /></div>
     <div class="form-group" style="position:relative;">
       <label>Employee Name *</label>
@@ -6976,10 +6990,15 @@ function renderQuarterlyFeedbackNewForm(box) {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-secondary" onclick="qfNewCancel()">Cancel</button>
       <button class="btn btn-primary" onclick="submitQuarterlyFeedback()">Save</button>
     </div>`;
   toggleQfReasonField();
+  if (preset) {
+    selectQfEmployee(preset.employeeId);
+    const search = document.getElementById("qfSearch");
+    if (search) { search.readOnly = true; search.style.opacity = ".7"; }
+  }
 }
 
 function renderQuarterlyFeedbackList(box) {
@@ -9175,6 +9194,255 @@ function renderMpDetail(box) {
   `;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Quarterly Feedback — Board (managers) and Overview (HR / HOC)
+//   Board    : every eligible team member × all four quarters of a year (qfEligibleTargets(), minus yourself).
+//              Each quarter is a collapsible section with a progress bar and the roster; "Write" opens the
+//              normal feedback form pre-filled for that person and quarter, and returns here after saving.
+//   Overview : submission rate for the chosen year/quarter, then drill-down  All → Cluster → Team → Employee → session.
+//              HR/Admin (canViewAllQuarterlyFeedback) see the whole company; a Cluster Lead who isn't in that group sees
+//              only their own cluster (the same boundary loadQuarterlyFeedback() enforces on the server query).
+// Quarter of a session = quarter of its SessionDate, so the form constrains the date to the quarter being written.
+// ═══════════════════════════════════════════════════════════════════════════
+let qfBoardState = { year: null, open: {} };
+let qfOverviewState = { year: null, quarter: null, cluster: null, team: null };
+
+function qfQuarterRange(year, q) {
+  const startM = (q - 1) * 3;
+  const end = new Date(year, startM + 3, 0); // last day of the quarter
+  const p = n => String(n).padStart(2, "0");
+  return { start: `${year}-${p(startM + 1)}-01`, end: `${year}-${p(end.getMonth() + 1)}-${p(end.getDate())}` };
+}
+function qfQuarterStarted(year, q) { return toLocalYMD(new Date()) >= qfQuarterRange(year, q).start; }
+function qfDueYMD(year, q) { return toLocalYMD(quarterlyFeedbackDeadline(year, q)); }
+function qfIsOverdue(year, q) { return toLocalYMD(new Date()) > qfDueYMD(year, q); }
+function qfRecordFor(empId, q, y) {
+  return quarterlyFeedback.filter(f => String(f.employeeId) === String(empId) && f.quarter === q && f.year === y)
+    .sort((a, b) => (b.sessionDate || "").localeCompare(a.sessionDate || ""))[0] || null;
+}
+function qfYears() {
+  const cy = new Date().getFullYear();
+  const set = new Set([cy, cy - 1]);
+  quarterlyFeedback.forEach(f => { if (f.year) set.add(f.year); });
+  return Array.from(set).sort((a, b) => b - a);
+}
+function qfSortEmployees(list) {
+  return list.slice().sort((a, b) => (positionRankIndex(a.position) - positionRankIndex(b.position)) || String(a.name).localeCompare(String(b.name)));
+}
+// Who gets a quarterly session company-wide: active staff below Cluster Lead (no HOC / MD / CEO).
+function qfIsEvaluatee(e) {
+  if (!e || e.status === "Resigned") return false;
+  if (e.position === CONFIG.positionRank[0] || /managing director|\bceo\b|chief/i.test(e.position || "")) return false;
+  const n = String(e.name || "").trim().toLowerCase();
+  return ![ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === n);
+}
+function qfBoardTargets() {
+  const me = myEmployeeRecord();
+  return qfSortEmployees(qfEligibleTargets().filter(e => e.status !== "Resigned" && (!me || String(e.id) !== String(me.id))));
+}
+function qfBoardBadge() { try { const p = qfMyProgress(); return p ? p.remaining.length : 0; } catch (e) { return 0; } }
+function qfIsClusterLead() { const me = myEmployeeRecord(); return !!me && me.position === CONFIG.positionRank[0]; }
+function qfCanOverview() { return !!quarterlyFeedbackListId && (canViewAllQuarterlyFeedback() || qfIsClusterLead()); }
+function qfOverviewEmployees() {
+  const me = myEmployeeRecord();
+  let list = employees.filter(qfIsEvaluatee);
+  if (!canViewAllQuarterlyFeedback()) list = (me && me.cluster) ? list.filter(e => e.cluster === me.cluster) : [];
+  return list;
+}
+function qfRate(list, q, y) {
+  const done = list.filter(e => qfRecordFor(e.id, q, y)).length;
+  const total = list.length;
+  return { done, total, pct: total ? Math.round(done / total * 100) : 0 };
+}
+function qfRateColor(r, started) {
+  if (!started) return "var(--text3)";
+  return r.total === 0 ? "var(--text3)" : r.pct >= 100 ? "var(--green)" : r.pct >= 60 ? "var(--yellow)" : "var(--red, #ef4444)";
+}
+function qfBarHtml(r, started) {
+  return `<div style="height:6px; border-radius:3px; background:var(--surface2); overflow:hidden; min-width:80px;"><div style="height:100%; width:${r.pct}%; background:${qfRateColor(r, started)};"></div></div>`;
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openQfBoard() {
+  if (!quarterlyFeedbackListId || !canWriteQuarterlyFeedback()) return;
+  const now = new Date();
+  if (!qfBoardState.year) { qfBoardState.year = now.getFullYear(); qfBoardState.open = { [Math.floor(now.getMonth() / 3) + 1]: true }; }
+  hrView = { mode: "qfBoard" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function setQfBoardYear(y) {
+  qfBoardState.year = parseInt(y, 10);
+  const cy = new Date().getFullYear();
+  qfBoardState.open = qfBoardState.year === cy ? { [Math.floor(new Date().getMonth() / 3) + 1]: true } : {};
+  renderHRModal();
+}
+function toggleQfQuarter(q) { qfBoardState.open[q] = !qfBoardState.open[q]; renderHRModal(); }
+function toggleQfAllQuarters() {
+  const allOpen = [1, 2, 3, 4].every(q => qfBoardState.open[q]);
+  qfBoardState.open = allOpen ? {} : { 1: true, 2: true, 3: true, 4: true };
+  renderHRModal();
+}
+function qfWrite(empId, q, y) {
+  if (!canWriteQuarterlyFeedback()) return;
+  qfNewEmployeeId = null;
+  hrView = { mode: "qfNew", fromBoard: true, preset: { employeeId: String(empId), quarter: q, year: y } };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function qfNewCancel() { if (hrView && hrView.fromBoard) openQfBoard(); else closeHRModal(); }
+
+function openQfOverview(keep) {
+  if (!qfCanOverview()) return;
+  if (!keep || !qfOverviewState.year) {
+    const now = new Date();
+    qfOverviewState = { year: now.getFullYear(), quarter: Math.floor(now.getMonth() / 3) + 1, cluster: null, team: null };
+  }
+  hrView = { mode: "qfOverview" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function qfOvSet(patch) { Object.assign(qfOverviewState, patch); renderHRModal(); }
+function qfOvYear(y) { qfOvSet({ year: parseInt(y, 10), cluster: null, team: null }); }
+
+// ── board ────────────────────────────────────────────────────────────────────
+function renderQfBoard(box) {
+  box.style.width = "min(860px, 96vw)";
+  const year = qfBoardState.year || new Date().getFullYear();
+  const targets = qfBoardTargets();
+  const years = qfYears();
+  const allOpen = [1, 2, 3, 4].every(q => qfBoardState.open[q]);
+  const section = q => {
+    const started = qfQuarterStarted(year, q);
+    const overdue = qfIsOverdue(year, q);
+    const r = qfRate(targets, q, year);
+    const open = !!qfBoardState.open[q];
+    const rows = targets.map(e => {
+      const rec = qfRecordFor(e.id, q, year);
+      let status, action;
+      if (rec) {
+        status = `<span style="color:var(--green); font-weight:600;">&#10003; Submitted</span> <span style="color:var(--text3); font-size:11px;">${escapeHtml(dateOnly(rec.sessionDate))} · by ${escapeHtml(rec.facilitatorName)}</span>`;
+        action = `<button class="btn btn-secondary btn-sm" onclick="openQuarterlyFeedbackDetail('${rec.itemId}','board')">View</button>`;
+      } else if (!started) {
+        status = `<span style="color:var(--text3);">Opens ${escapeHtml(qfQuarterRange(year, q).start)}</span>`;
+        action = "";
+      } else {
+        status = overdue ? `<span style="color:var(--red, #ef4444); font-weight:600;">Overdue</span> <span style="color:var(--text3); font-size:11px;">due ${escapeHtml(qfDueYMD(year, q))}</span>` : `<span style="color:var(--yellow); font-weight:600;">Not yet</span>`;
+        action = `<button class="btn btn-primary btn-sm" onclick="qfWrite('${e.id}',${q},${year})">Write</button>`;
+      }
+      return `<div style="display:grid; grid-template-columns:1.3fr 1.7fr auto; gap:10px; align-items:center; padding:7px 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+        <span>${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")}</span></span>
+        <span>${status}</span><span style="text-align:right;">${action}</span></div>`;
+    }).join("");
+    return `<div style="border:1px solid var(--border); border-radius:10px; margin-bottom:10px; overflow:hidden;">
+      <div onclick="toggleQfQuarter(${q})" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:11px 14px; background:var(--surface);">
+        <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+        <span style="font-size:14px; font-weight:700; min-width:64px;">${escapeHtml(quarterLabel(q, year))}</span>
+        <span style="font-size:11px; color:var(--text3); white-space:nowrap;">due ${escapeHtml(qfDueYMD(year, q))}</span>
+        <div style="flex:1;">${qfBarHtml(r, started)}</div>
+        <span style="font-size:12px; font-weight:600; color:${qfRateColor(r, started)}; white-space:nowrap;">${started ? `${r.done}/${r.total}` : "—"}</span>
+      </div>
+      ${open ? `<div style="padding:10px 12px; display:flex; flex-direction:column; gap:5px;">${rows || `<div style="font-size:12px; color:var(--text3);">No eligible team members.</div>`}</div>` : ""}
+    </div>`;
+  };
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Quarterly Feedback</h3>
+        <div style="font-size:12px; color:var(--text2);">${targets.length} team member${targets.length === 1 ? "" : "s"} · write each person's session per quarter</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:14px 0;">
+      <select onchange="setQfBoardYear(this.value)" style="max-width:110px;">${years.map(y => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
+      <button class="btn btn-secondary btn-sm" onclick="toggleQfAllQuarters()">${allOpen ? "Collapse all" : "Expand all"}</button>
+      <button class="btn btn-secondary btn-sm" onclick="openQuarterlyFeedbackList(true)">My Submissions</button>
+      ${qfCanOverview() ? `<button class="btn btn-secondary btn-sm" onclick="openQfOverview()">Overview</button>` : ""}
+    </div>
+    ${targets.length ? [1, 2, 3, 4].map(section).join("") : `<div style="font-size:13px; color:var(--text2);">There is nobody on your team you can write a session for yet.</div>`}`;
+}
+
+// ── overview (HR / HOC) ──────────────────────────────────────────────────────
+function qfGroupBy(list, keyFn) {
+  const m = new Map();
+  list.forEach(e => { const k = keyFn(e); if (!m.has(k)) m.set(k, []); m.get(k).push(e); });
+  return Array.from(m.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+}
+function renderQfOverview(box) {
+  box.style.width = "min(980px, 96vw)";
+  const st = qfOverviewState;
+  const y = st.year, q = st.quarter;
+  const scope = qfOverviewEmployees();
+  const started = qfQuarterStarted(y, q);
+  const years = qfYears();
+  const NOCLUSTER = "(No cluster)";
+  const clusterOf = e => e.cluster || NOCLUSTER;
+  const crumbs = [`<a href="#" onclick="qfOvSet({cluster:null,team:null}); return false;">All</a>`];
+  if (st.cluster) crumbs.push(`<a href="#" onclick="qfOvSet({team:null}); return false;">${escapeHtml(st.cluster)}</a>`);
+  if (st.team) crumbs.push(`<span>${escapeHtml(st.team)}</span>`);
+
+  const strip = [1, 2, 3, 4].map(n => {
+    const s = qfQuarterStarted(y, n);
+    const r = qfRate(scope, n, y);
+    const on = n === q;
+    return `<div onclick="qfOvSet({quarter:${n}})" style="cursor:pointer; flex:1; min-width:120px; padding:10px 12px; border-radius:10px; border:1px solid ${on ? "var(--accent)" : "var(--border)"}; background:${on ? "var(--surface2)" : "var(--surface)"};">
+      <div style="font-size:12px; font-weight:700; margin-bottom:4px;">${escapeHtml(quarterLabel(n, y))}</div>
+      <div style="font-size:18px; font-weight:700; color:${qfRateColor(r, s)};">${s ? r.pct + "%" : "—"}</div>
+      <div style="font-size:11px; color:var(--text3); margin-bottom:6px;">${s ? `${r.done}/${r.total} submitted` : "not started"}</div>
+      ${qfBarHtml(r, s)}</div>`;
+  }).join("");
+
+  let body = "";
+  const rateRow = (label, sub, list, click) => {
+    const r = qfRate(list, q, y);
+    return `<div onclick="${click}" style="cursor:pointer; display:grid; grid-template-columns:1.6fr 2fr auto; gap:14px; align-items:center; padding:10px 14px; background:var(--surface2); border:1px solid var(--border); border-radius:8px;">
+      <div style="font-size:13px; color:var(--accent);">${escapeHtml(label)} <span style="color:var(--text3); font-size:11px;">${escapeHtml(sub)}</span></div>
+      <div>${qfBarHtml(r, started)}</div>
+      <div style="font-size:12px; font-weight:600; color:${qfRateColor(r, started)}; white-space:nowrap;">${started ? `${r.pct}% · ${r.done}/${r.total}` : "—"}</div></div>`;
+  };
+  if (!st.cluster) {
+    const groups = qfGroupBy(scope, clusterOf);
+    body = groups.length ? groups.map(([c, list]) => rateRow(c, `${list.length} employee${list.length === 1 ? "" : "s"}`, list, `qfOvSet({cluster:'${jsAttrEscape(c)}',team:null})`)).join("") : `<div style="font-size:12px; color:var(--text3);">No employees in scope.</div>`;
+  } else if (!st.team) {
+    const inCluster = scope.filter(e => clusterOf(e) === st.cluster);
+    body = qfGroupBy(inCluster, e => e.team || "(No team)").map(([t, list]) => rateRow(t, `${list.length} employee${list.length === 1 ? "" : "s"}`, list, `qfOvSet({team:'${jsAttrEscape(t)}'})`)).join("") || `<div style="font-size:12px; color:var(--text3);">No teams.</div>`;
+  } else {
+    const people = qfSortEmployees(scope.filter(e => clusterOf(e) === st.cluster && (e.team || "(No team)") === st.team));
+    body = people.map(e => {
+      const rec = qfRecordFor(e.id, q, y);
+      const grid = "display:grid; grid-template-columns:1.4fr 1.6fr 1fr 1fr auto; gap:10px; align-items:center;";
+      return `<div ${rec ? `onclick="openQuarterlyFeedbackDetail('${rec.itemId}','overview')" style="cursor:pointer; ${grid}` : `style="${grid}`} padding:8px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+        <span>${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")}</span></span>
+        <span>${rec ? `<span style="color:var(--green); font-weight:600;">&#10003; Submitted</span> <span style="color:var(--text3); font-size:11px;">${escapeHtml(dateOnly(rec.sessionDate))} · ${escapeHtml(rec.facilitatorName)}</span>` : (!started ? `<span style="color:var(--text3);">Not started</span>` : qfIsOverdue(y, q) ? `<span style="color:var(--red, #ef4444); font-weight:600;">Overdue</span>` : `<span style="color:var(--yellow); font-weight:600;">Not yet</span>`)}</span>
+        <span>${rec ? `${qfRatingStars(rec.satisfactionRating)}` : "—"}</span>
+        <span style="color:${rec && rec.recommendation !== "No Recommendation" ? "var(--green)" : "var(--text3)"};">${rec ? escapeHtml(rec.recommendation) : "—"}</span>
+        <span style="color:var(--text3);">${rec ? "&rsaquo;" : ""}</span></div>`;
+    }).join("") || `<div style="font-size:12px; color:var(--text3);">No employees.</div>`;
+    body = `<div style="display:grid; grid-template-columns:1.4fr 1.6fr 1fr 1fr auto; gap:10px; padding:0 12px 6px; font-size:11px; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.03em;"><span>Employee</span><span>Status</span><span>Satisfaction</span><span>Recommendation</span><span></span></div>
+      <div style="display:flex; flex-direction:column; gap:5px;">${body}</div>`;
+  }
+  const overall = qfRate(scope, q, y);
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Quarterly Feedback — Overview</h3>
+        <div style="font-size:12px; color:var(--text2);">${canViewAllQuarterlyFeedback() ? "Whole company" : "Your cluster"} · ${scope.length} employee${scope.length === 1 ? "" : "s"} expected to receive a session</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:14px 0 10px;">
+      <select onchange="qfOvYear(this.value)" style="max-width:110px;">${years.map(yy => `<option value="${yy}" ${yy === y ? "selected" : ""}>${yy}</option>`).join("")}</select>
+      ${canWriteQuarterlyFeedback() ? `<button class="btn btn-secondary btn-sm" onclick="openQfBoard()">My team board</button>` : ""}
+      <button class="btn btn-secondary btn-sm" onclick="openQuarterlyFeedbackList(${canViewAllQuarterlyFeedback() ? "false" : "true"})">All sessions (list)</button>
+    </div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">${strip}</div>
+    <div style="font-size:13px; margin-bottom:10px;"><strong>${escapeHtml(quarterLabel(q, y))}</strong> submission rate:
+      <span style="font-weight:700; color:${qfRateColor(overall, started)};">${started ? `${overall.pct}% (${overall.done}/${overall.total})` : "not started"}</span>
+      <span style="color:var(--text3); font-size:11px;"> · due ${escapeHtml(qfDueYMD(y, q))}</span></div>
+    <div style="font-size:12px; color:var(--text2); margin-bottom:10px; display:flex; gap:6px; align-items:center;">${crumbs.join('<span style="color:var(--text3);">&rsaquo;</span>')}</div>
+    ${body}`;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -9944,6 +10212,8 @@ function renderHRModal() {
   if (hrView.mode === "mpNew") { renderMpNewForm(box); return; }
   if (hrView.mode === "mpList") { renderMpList(box); return; }
   if (hrView.mode === "mpDetail") { renderMpDetail(box); return; }
+  if (hrView.mode === "qfBoard") { renderQfBoard(box); return; }
+  if (hrView.mode === "qfOverview") { renderQfOverview(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
   if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
   if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
@@ -10907,7 +11177,7 @@ function renderRequests() {
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Write a session for anyone eligible on your team — recognition requests are separate.",
-      actions: quarterlyFeedbackListId ? [{ label: "New Feedback", onclick: "openQuarterlyFeedbackNewForm()" }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }] : undefined }
+      actions: quarterlyFeedbackListId ? [{ label: "Team Board", onclick: "openQfBoard()", badge: qfBoardBadge() }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }, ...(qfCanOverview() ? [{ label: "Overview", onclick: "openQfOverview()" }] : [])] : undefined }
   ];
   const hr = [
     ...srHrCard(),
@@ -10924,7 +11194,7 @@ function renderRequests() {
       ] },
     { icon: "&#128260;", title: "Manpower Change", desc: "New hire · Transfer · Promotion · Salary change" },
     { icon: "&#128340;", title: "Attendance Adjustment", desc: "" },
-    ...(quarterlyFeedbackListId ? [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Browse every submitted session across the company.", onclick: "openQuarterlyFeedbackList(false)" }] : [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }])
+    ...(quarterlyFeedbackListId ? [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Submission rates by quarter, cluster and team — drill down to every session.", actions: [{ label: "Overview", onclick: "openQfOverview()" }, { label: "All Sessions", onclick: "openQuarterlyFeedbackList(false)" }] }] : [{ icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "" }])
   ];
   return `<div style="max-width:1100px; margin:0 auto;">
     <h2 style="margin:4px 0 18px;">Requests</h2>
@@ -11811,7 +12081,7 @@ function myWeekTaskItems() {
   });
   const qp = qfMyProgress();
   if (qp && qp.remaining.length) {
-    items.push({ title: `Quarterly Feedback — ${qp.doneCount}/${qp.total} done`, sub: quarterLabel(qp.quarter, qp.year), dueMs: new Date(qp.due + "T23:59:59").getTime(), onclick: `openQuarterlyFeedbackList(true)` });
+    items.push({ title: `Quarterly Feedback — ${qp.doneCount}/${qp.total} done`, sub: quarterLabel(qp.quarter, qp.year), dueMs: new Date(qp.due + "T23:59:59").getTime(), onclick: `openQfBoard()` });
   }
   return items.sort((a, b) => a.dueMs - b.dueMs);
 }
