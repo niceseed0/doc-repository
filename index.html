@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-06";
+const BUILD_ID = "2026-10-09-07";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -533,6 +533,7 @@ const CONFIG = {
   holidaysListDisplayName: "HR Holidays",
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   serviceRequestsListDisplayName: "HR Service Requests",
+  manpowerRequestsListDisplayName: "HR Manpower Requests",
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -1006,6 +1007,8 @@ let holidayOverrides = []; // manually-added holidays (Eid dates, ad-hoc proclam
 let pipCasesListId = null;
 let pipCases = []; // see PIP module below
 let serviceRequestsListId = null;
+let manpowerRequestsListId = null;
+let manpowerRequests = []; // Team Change / Resignation Notice — see Manpower Request module below
 let serviceRequests = []; // General Requests / Employee Feedback / Inquiry — see Service Requests module below
 let announcementPostsListId = null;
 let announcementCommentsListId = null;
@@ -1039,7 +1042,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1112,6 +1115,8 @@ async function resolveSiteAndLists() {
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
   const annPostsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementPostsListDisplayName);
   announcementPostsListId = annPostsMatch ? annPostsMatch.id : null; // optional — Announcement board stays empty if missing
+  const mpMatch = (lists.value || []).find(l => l.displayName === CONFIG.manpowerRequestsListDisplayName);
+  manpowerRequestsListId = mpMatch ? mpMatch.id : null; // optional — Manpower Request card stays "Coming soon" if missing
   const srMatch = (lists.value || []).find(l => l.displayName === CONFIG.serviceRequestsListDisplayName);
   serviceRequestsListId = srMatch ? srMatch.id : null; // optional — the three request cards stay "Coming soon" if missing
   const pipMatch = (lists.value || []).find(l => l.displayName === CONFIG.pipCasesListDisplayName);
@@ -2249,7 +2254,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -8532,6 +8537,522 @@ function renderWorkStatus() {
   </div>`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Manpower Request module (Requests → Management → "Manpower Request")
+// One SharePoint list ("HR Manpower Requests", see SETUP_MANPOWER_REQUESTS.md) holds two request types:
+//   Team Change         — a manager moves someone INTO their team or OUT of it to another team.
+//                         Goes to HR / HOC (canApproveNte / HR). On approval the change is applied:
+//                         Employees list Team+Cluster are updated and a "Transferred: A → B (reason)" line is
+//                         added to the employee's position history (the HR profile's Employee History).
+//                         If the requested effective date is still in the future, approval only schedules it
+//                         (status Approved) and an HR / HOC "Apply" to-do appears once the date arrives.
+//   Resignation Notice  — a manager reports that a team member will resign. No approval. It sits in the HR queue
+//                         as Scheduled; on/after the resignation date HR (canAccessHR) presses "Process
+//                         resignation", which sets Status = Resigned + SeparationDate/Reason and logs the history.
+// Status values: Pending / Approved / Applied / Rejected  (Team Change) · Scheduled / Processed (Resignation) · Cancelled.
+// New-hire requests ("Addition") are intentionally NOT here — they get their own module later.
+// Privacy boundary (server-side): approvers/HR load every request; managers load only their own submissions.
+// ═══════════════════════════════════════════════════════════════════════════
+const MP_TYPE_LABEL = { TeamChange: "Team Change", Resignation: "Resignation Notice" };
+const MP_DIR_LABEL = { IntoMyTeam: "Move into my team", OutOfMyTeam: "Move out of my team" };
+const MP_TEXT_MAX = 1000;
+const MP_FIELD_PROP = {
+  Status: "status", DecidedByName: "decidedByName", DecidedByEmail: "decidedByEmail", DecidedDate: "decidedDate",
+  DecisionNote: "decisionNote", AppliedDate: "appliedDate", AppliedByName: "appliedByName"
+};
+
+function mpMapItem(it) {
+  const f = it.fields;
+  return {
+    itemId: it.id, refNo: f["RefNo"] || "", requestType: f["RequestType"] || "TeamChange", direction: f["Direction"] || "",
+    employeeId: String(f["EmployeeId"] || ""), employeeName: f["Title"] || "",
+    fromTeam: f["FromTeam"] || "", fromCluster: f["FromCluster"] || "", toTeam: f["ToTeam"] || "", toCluster: f["ToCluster"] || "",
+    reason: f["Reason"] || "", effectiveDate: dateOnly(f["EffectiveDate"] || ""),
+    requesterEmail: String(f["RequesterEmail"] || "").toLowerCase(), requesterName: f["RequesterName"] || "",
+    submittedDate: f["SubmittedDate"] || null, status: f["Status"] || "Pending",
+    decidedByName: f["DecidedByName"] || "", decidedByEmail: String(f["DecidedByEmail"] || "").toLowerCase(), decidedDate: f["DecidedDate"] || null,
+    decisionNote: f["DecisionNote"] || "", appliedDate: f["AppliedDate"] || null, appliedByName: f["AppliedByName"] || ""
+  };
+}
+
+async function loadManpowerRequests() {
+  manpowerRequests = [];
+  if (!manpowerRequestsListId) return;
+  const myEmail = srMyEmail();
+  const base = `/sites/${siteId}/lists/${manpowerRequestsListId}/items?$expand=fields&$top=500`;
+  try {
+    const seen = new Set();
+    const add = it => { if (!seen.has(it.id)) { seen.add(it.id); manpowerRequests.push(mpMapItem(it)); } };
+    if (mpCanApprove()) {
+      let url = base;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(add);
+        url = data["@odata.nextLink"] || null;
+      }
+    } else if (canDraftNte() && myEmail) {
+      const data = await graphFetch(`${base}&$filter=fields/RequesterEmail eq '${String(myEmail).replace(/'/g, "''")}'`, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
+      (data.value || []).forEach(add);
+    }
+    manpowerRequests.sort((a, b) => (b.submittedDate || "").localeCompare(a.submittedDate || ""));
+  } catch (e) {
+    console.warn("Could not load HR Manpower Requests (list may not exist yet):", e);
+    manpowerRequests = [];
+  }
+}
+
+// ── permissions / helpers ────────────────────────────────────────────────────
+function mpIsHR() { return !!(canAccessHR || isPermissionAdmin); }
+function mpCanApprove() { return !!(canAccessHR || isPermissionAdmin || canApproveNte()); } // HR/Admin or HOC (Cluster Lead+)
+function mpToday() { return toLocalYMD(new Date()); }
+function mpFind(id) { return manpowerRequests.find(x => x.itemId === id); }
+function mpIsRequester(r) { return !!r.requesterEmail && r.requesterEmail === srMyEmail(); }
+function mpIsDue(r) { return !!r.effectiveDate && r.effectiveDate <= mpToday(); }
+function mpTeamLabel(cluster, team) { return cluster ? `${cluster} / ${team || "?"}` : (team || "?"); }
+function mpMineList() { const me = srMyEmail(); return manpowerRequests.filter(r => r.requesterEmail === me); }
+function mpStatusInfo(r) {
+  const d = r.effectiveDate ? dateOnly(r.effectiveDate) : "";
+  switch (r.status) {
+    case "Pending": return { text: "Pending approval", color: "var(--yellow)" };
+    case "Approved": return { text: "Approved — applies " + d, color: "var(--accent)" };
+    case "Applied": return { text: "Applied", color: "var(--green)" };
+    case "Rejected": return { text: "Rejected", color: "var(--red, #ef4444)" };
+    case "Scheduled": return { text: "Scheduled — " + d, color: "var(--accent)" };
+    case "Processed": return { text: "Processed", color: "var(--green)" };
+    case "Cancelled": return { text: "Cancelled", color: "var(--text3)" };
+    default: return { text: r.status, color: "var(--text3)" };
+  }
+}
+function mpIsOpen(r) { return ["Pending", "Approved", "Scheduled"].includes(r.status); }
+function mpSummary(r) {
+  if (r.requestType === "Resignation") return `${r.employeeName} — resignation on ${r.effectiveDate}`;
+  return `${r.employeeName} — ${mpTeamLabel(r.fromCluster, r.fromTeam)} → ${mpTeamLabel(r.toCluster, r.toTeam)}`;
+}
+// Does this request need something from the signed-in person right now?
+function mpNeedsMyAction(r) {
+  if (r.requestType === "TeamChange") {
+    if (r.status === "Pending") return mpCanApprove() && !mpIsRequester(r);
+    if (r.status === "Approved") return mpCanApprove() && mpIsDue(r);
+  } else if (r.requestType === "Resignation" && r.status === "Scheduled") {
+    return mpIsHR() && mpIsDue(r);
+  }
+  return false;
+}
+function mpTodoItems() {
+  if (!manpowerRequestsListId) return [];
+  return manpowerRequests.filter(mpNeedsMyAction).map(r => {
+    const label = r.requestType === "Resignation" ? "Resignation due — process" : r.status === "Pending" ? "Team change — please review" : "Team change due — apply";
+    return { label: `${label}: ${r.employeeName}`, sub: r.refNo, click: `openMpDetail('${r.itemId}')` };
+  });
+}
+function mpMgmtCard() {
+  const base = { icon: "&#128101;", title: "Manpower Request", desc: "Team change · Resignation notice" };
+  if (!manpowerRequestsListId) return base;
+  base.actions = [
+    { label: "Team Change", onclick: "openMpNew('TeamChange')" },
+    { label: "Resignation Notice", onclick: "openMpNew('Resignation')" },
+    { label: "My Requests", onclick: "openMpList('mine')" }
+  ];
+  if (mpCanApprove()) base.actions.push({ label: "Review Requests", onclick: "openMpList('review')", badge: mpTodoItems().length });
+  return base;
+}
+function mpHrCard() {
+  if (!manpowerRequestsListId || !mpCanApprove()) return [];
+  return [{ icon: "&#128101;", title: "Manpower Requests", desc: "Team changes to approve · resignations to process.",
+    actions: [{ label: "Review Requests", onclick: "openMpList('review')", badge: mpTodoItems().length }] }];
+}
+
+// ── navigation ───────────────────────────────────────────────────────────────
+function openMpNew(type) {
+  if (!manpowerRequestsListId || !canDraftNte() || !MP_TYPE_LABEL[type]) return;
+  if (!myEmployeeRecord()) { toast("Your employee record was not found.", "error"); return; }
+  hrView = { mode: "mpNew", type, direction: "OutOfMyTeam", employeeId: null, draft: {} };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openMpList(scope) {
+  if (!manpowerRequestsListId) return;
+  if (scope === "review" && !mpCanApprove()) scope = "mine";
+  hrView = { mode: "mpList", scope, filter: "All" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function openMpDetail(itemId) {
+  hrView = { mode: "mpDetail", caseId: itemId };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function setMpFilter(f) { if (hrView && hrView.mode === "mpList") { hrView.filter = f; renderHRModal(); } }
+
+// ── new request form ─────────────────────────────────────────────────────────
+function mpPool(type, direction) {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  const same = e => e.team === me.team && (e.cluster || "") === (me.cluster || "");
+  const kind = type === "Resignation" ? "Resignation" : "TeamChange";
+  const busy = new Set(manpowerRequests.filter(mpIsOpen).filter(r => r.requestType === kind).map(r => String(r.employeeId)));
+  return employees.filter(e => e.status !== "Resigned" && String(e.id) !== String(me.id) && !busy.has(String(e.id))
+    && ((type === "Resignation" || direction === "OutOfMyTeam") ? same(e) : !same(e)));
+}
+function mpCaptureDraft() {
+  if (!hrView || hrView.mode !== "mpNew") return;
+  const g = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
+  const d = hrView.draft || (hrView.draft = {});
+  ["mpReason", "mpDate", "mpToCluster", "mpToTeam"].forEach(k => { const v = g(k); if (v !== undefined) d[k] = v; });
+}
+function mpSetDirection(dir) { mpCaptureDraft(); hrView.direction = dir; hrView.employeeId = null; if (hrView.draft) { delete hrView.draft.mpToCluster; delete hrView.draft.mpToTeam; } renderHRModal(); }
+function mpPickEmployee(id) { mpCaptureDraft(); hrView.employeeId = String(id); renderHRModal(); }
+function mpClearEmployee() { mpCaptureDraft(); hrView.employeeId = null; renderHRModal(); }
+function mpFilterEmployees() {
+  const input = document.getElementById("mpEmpSearch");
+  const box = document.getElementById("mpEmpOptions");
+  if (!input || !box || !hrView || hrView.mode !== "mpNew") return;
+  const q = input.value.trim().toLowerCase();
+  if (!q) { box.style.display = "none"; return; }
+  const matches = mpPool(hrView.type, hrView.direction).filter(e => String(e.name || "").toLowerCase().includes(q)).slice(0, 8);
+  box.innerHTML = matches.length
+    ? matches.map(e => `<div onclick="mpPickEmployee('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")} · ${escapeHtml(mpTeamLabel(e.cluster, e.team))}</span></div>`).join("")
+    : `<div style="padding:8px 10px; font-size:12px; color:var(--text3);">No match${hrView.type === "Resignation" ? " (only your team members without an open notice)" : ""}.</div>`;
+  box.style.display = "";
+}
+function mpClusterChanged() {
+  updateClusterTeamOptions("mpToCluster", "mpToTeam");
+  const t = document.getElementById("mpToTeam");
+  const n = t && t.querySelector('option[value="__new__"]');
+  if (n) n.remove(); // managers can only pick existing teams
+}
+
+function renderMpNewForm(box) {
+  box.style.width = "min(640px, 94vw)";
+  const h = hrView;
+  const me = myEmployeeRecord();
+  const d = h.draft || {};
+  const isTC = h.type === "TeamChange";
+  const emp = h.employeeId ? employees.find(e => String(e.id) === String(h.employeeId)) : null;
+  const myLabel = me ? mpTeamLabel(me.cluster, me.team) : "";
+  const dirBtn = (val, lab) => `<button class="btn ${h.direction === val ? "btn-primary" : "btn-secondary"} btn-sm" onclick="mpSetDirection('${val}')">${lab}</button>`;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${isTC ? "Team Change" : "Resignation Notice"}</h3>
+        <div style="font-size:12px; color:var(--text2);">${isTC ? "Your request goes to HR / HOC. After approval it is applied to the team roster and the employee's HR profile." : "Report a team member who will resign. No approval needed — HR processes it on the resignation date."}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${isTC ? `<div class="form-group" style="margin-top:14px;"><label>Direction *</label>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">${dirBtn("IntoMyTeam", "Move into my team")}${dirBtn("OutOfMyTeam", "Move out of my team")}</div></div>` : ""}
+    <div class="form-group" style="margin-top:${isTC ? "0" : "14px"};">
+      <label>${h.type === "Resignation" || h.direction === "OutOfMyTeam" ? "Team member *" : "Employee to move into your team *"}</label>
+      ${emp ? `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:13px;">
+          <span>${escapeHtml(emp.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(emp.position || "")} · ${escapeHtml(mpTeamLabel(emp.cluster, emp.team))}</span></span>
+          <a href="#" onclick="mpClearEmployee(); return false;" style="font-size:12px;">change</a></div>`
+        : `<input id="mpEmpSearch" type="text" placeholder="Search by name…" oninput="mpFilterEmployees()" autocomplete="off" />
+           <div id="mpEmpOptions" style="display:none; border:1px solid var(--border); border-radius:8px; max-height:200px; overflow-y:auto; margin-top:4px; background:var(--surface);"></div>`}
+    </div>
+    ${isTC && h.direction === "IntoMyTeam" ? `<div style="font-size:12px; color:var(--text2); margin-bottom:12px;">Destination: <strong>${escapeHtml(myLabel)}</strong> (your team)</div>` : ""}
+    ${isTC && h.direction === "OutOfMyTeam" ? `<div class="form-group"><label>Move to *</label>
+        <select id="mpToCluster" onchange="mpClusterChanged()" style="margin-bottom:6px;">
+          <option value="">— Not part of a cluster —</option>
+          ${CONFIG.clusterTeams.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}
+        </select>
+        <select id="mpToTeam"></select></div>` : ""}
+    <div class="form-group"><label>${isTC ? "Effective date *" : "Resignation date *"}</label>
+      <input id="mpDate" type="date" min="${mpToday()}" value="${escapeHtml(d.mpDate || mpToday())}" /></div>
+    <div class="form-group"><label>${isTC ? "Reason for the change *" : "Reason for resignation *"}</label>
+      <textarea id="mpReason" maxlength="${MP_TEXT_MAX}" style="min-height:90px;" placeholder="${isTC ? "Why is this change needed?" : "Reason given by the employee"}">${escapeHtml(d.mpReason || "")}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitMpRequest()">Submit</button>
+    </div>`;
+  if (isTC && h.direction === "OutOfMyTeam") {
+    const cl = document.getElementById("mpToCluster");
+    if (cl) { cl.value = d.mpToCluster || ""; mpClusterChanged(); const t = document.getElementById("mpToTeam"); if (t && d.mpToTeam && [...t.options].some(o => o.value === d.mpToTeam)) t.value = d.mpToTeam; }
+  }
+}
+
+async function submitMpRequest() {
+  const h = hrView;
+  if (!h || h.mode !== "mpNew" || !manpowerRequestsListId) return;
+  mpCaptureDraft();
+  const d = h.draft || {};
+  const me = myEmployeeRecord();
+  const emp = h.employeeId ? employees.find(e => String(e.id) === String(h.employeeId)) : null;
+  const isTC = h.type === "TeamChange";
+  if (!me || !emp) { toast("Please select an employee.", "error"); return; }
+  const date = d.mpDate || "";
+  const reason = (d.mpReason || "").trim();
+  if (!date) { toast("Please pick a date.", "error"); return; }
+  if (date < mpToday()) { toast("The date can't be in the past.", "error"); return; }
+  if (reason.length < 3) { toast("Please write the reason.", "error"); return; }
+  if (reason.length > MP_TEXT_MAX) { toast(`Reason is too long (max ${MP_TEXT_MAX} characters).`, "error"); return; }
+  let toTeam = "", toCluster = "";
+  if (isTC) {
+    if (h.direction === "IntoMyTeam") { toTeam = me.team || ""; toCluster = me.cluster || ""; }
+    else { toCluster = d.mpToCluster || ""; toTeam = d.mpToTeam || ""; }
+    if (!toTeam || toTeam === "__new__") { toast("Please choose the destination team.", "error"); return; }
+    if (toTeam === emp.team && toCluster === (emp.cluster || "")) { toast(`${emp.name} is already in that team.`, "error"); return; }
+  }
+  const msg = isTC
+    ? `Submit this team change?\n${emp.name}: ${mpTeamLabel(emp.cluster, emp.team)} → ${mpTeamLabel(toCluster, toTeam)} (effective ${date})`
+    : `Submit this resignation notice for ${emp.name} (resignation date ${date})?`;
+  if (!confirm(msg)) return;
+  const refNo = "MP-" + toLocalYMD(new Date()).replace(/-/g, "") + "-" + Math.floor(1000 + Math.random() * 9000);
+  const fields = {
+    Title: emp.name, RefNo: refNo, RequestType: h.type, EmployeeId: String(emp.id), FromTeam: emp.team || "", Reason: reason, EffectiveDate: date,
+    RequesterEmail: srMyEmail(), RequesterName: srMyName(), SubmittedDate: new Date().toISOString(), Status: isTC ? "Pending" : "Scheduled"
+  };
+  if (emp.cluster) fields.FromCluster = emp.cluster;
+  if (isTC) { fields.Direction = h.direction; fields.ToTeam = toTeam; if (toCluster) fields.ToCluster = toCluster; }
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${manpowerRequestsListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    manpowerRequests.unshift(mpMapItem({ id: created.id, fields }));
+    setSyncing(false, true);
+    toast(isTC ? "Submitted for approval ✓" : "Resignation notice filed ✓", "success");
+    openMpDetail(created.id);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not submit: " + err.message, "error");
+  }
+}
+
+// ── persistence / applying changes ───────────────────────────────────────────
+async function mpSave(r, fields) {
+  await graphFetch(`/sites/${siteId}/lists/${manpowerRequestsListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+  Object.keys(fields).forEach(k => { if (MP_FIELD_PROP[k]) r[MP_FIELD_PROP[k]] = fields[k]; });
+}
+async function mpLogHistory(emp, date, description) {
+  if (!positionHistoryListId) return;
+  const created = await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items`, {
+    method: "POST", body: JSON.stringify({ fields: { Title: emp.name, EmployeeId: String(emp.id), EffectiveDate: date, Description: description } })
+  });
+  allPositionHistory.push({ itemId: created.id, employeeId: String(emp.id), employeeName: emp.name, date, description });
+  return created.id;
+}
+// Best-effort rollback of a history line when the Employees update that goes with it failed.
+async function mpUndoHistory(id) {
+  if (!id || !positionHistoryListId) return;
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items/${id}`, { method: "DELETE" });
+    allPositionHistory = allPositionHistory.filter(h => h.itemId !== id);
+  } catch (e) { console.warn("Could not roll back history entry:", e); }
+}
+// Writes the team change to the Employees list + the employee's history. Returns false if nothing needed changing.
+async function mpExecuteTransfer(r) {
+  const emp = employees.find(e => String(e.id) === String(r.employeeId));
+  if (!emp) throw new Error("The employee record was not found.");
+  if (emp.status === "Resigned") throw new Error(`${emp.name} has already resigned.`);
+  if (emp.team === r.toTeam && (emp.cluster || "") === (r.toCluster || "")) return false;
+  const oldLabel = mpTeamLabel(emp.cluster, emp.team);
+  const newLabel = mpTeamLabel(r.toCluster, r.toTeam);
+  const histId = await mpLogHistory(emp, r.effectiveDate, `Transferred: ${oldLabel} → ${newLabel} (${r.reason}; Manpower Request ${r.refNo})`);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, { method: "PATCH", body: JSON.stringify({ Team: r.toTeam, Cluster: r.toCluster || "" }) });
+  } catch (e) { await mpUndoHistory(histId); throw e; }
+  emp.team = r.toTeam;
+  emp.cluster = r.toCluster || "";
+  return true;
+}
+function mpAfterChange(itemId) {
+  try { renderContent(); } catch (e) { /* not ready */ }
+  openMpDetail(itemId);
+}
+
+async function mpApprove(itemId) {
+  const r = mpFind(itemId);
+  if (!r || r.requestType !== "TeamChange" || r.status !== "Pending" || !mpCanApprove()) return;
+  if (mpIsRequester(r)) { toast("You can't approve your own request.", "error"); return; }
+  const due = mpIsDue(r);
+  if (!confirm(due ? `Approve and apply this team change now?\n${mpSummary(r)}` : `Approve this team change?\nIt will be applied on ${r.effectiveDate} (you'll get a to-do then).`)) return;
+  const now = new Date().toISOString();
+  const decision = { DecidedByName: srMyName(), DecidedByEmail: srMyEmail(), DecidedDate: now };
+  setSyncing(true);
+  try {
+    if (due) {
+      await mpExecuteTransfer(r);
+      await mpSave(r, { ...decision, Status: "Applied", AppliedDate: now, AppliedByName: srMyName() });
+    } else {
+      await mpSave(r, { ...decision, Status: "Approved" });
+    }
+    setSyncing(false, true);
+    toast(due ? "Approved and applied ✓" : "Approved — scheduled ✓", "success");
+    mpAfterChange(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not approve: " + err.message, "error");
+  }
+}
+async function mpReject(itemId) {
+  const r = mpFind(itemId);
+  if (!r || r.requestType !== "TeamChange" || r.status !== "Pending" || !mpCanApprove()) return;
+  if (mpIsRequester(r)) { toast("You can't decide your own request.", "error"); return; }
+  const note = (prompt("Reason for rejecting this request (required):") || "").trim();
+  if (!note) { toast("A reason is required to reject.", "error"); return; }
+  setSyncing(true);
+  try {
+    await mpSave(r, { Status: "Rejected", DecidedByName: srMyName(), DecidedByEmail: srMyEmail(), DecidedDate: new Date().toISOString(), DecisionNote: note.slice(0, MP_TEXT_MAX) });
+    setSyncing(false, true);
+    toast("Request rejected", "success");
+    mpAfterChange(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not reject: " + err.message, "error");
+  }
+}
+async function mpApplyDue(itemId) {
+  const r = mpFind(itemId);
+  if (!r || r.requestType !== "TeamChange" || r.status !== "Approved" || !mpCanApprove() || !mpIsDue(r)) return;
+  if (!confirm(`Apply this team change now?\n${mpSummary(r)}`)) return;
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    await mpExecuteTransfer(r);
+    await mpSave(r, { Status: "Applied", AppliedDate: now, AppliedByName: srMyName() });
+    setSyncing(false, true);
+    toast("Team change applied ✓", "success");
+    mpAfterChange(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not apply: " + err.message, "error");
+  }
+}
+async function mpProcessResignation(itemId) {
+  const r = mpFind(itemId);
+  if (!r || r.requestType !== "Resignation" || r.status !== "Scheduled" || !mpIsHR()) return;
+  if (!mpIsDue(r)) { toast(`This can be processed on ${r.effectiveDate}.`, "error"); return; }
+  const emp = employees.find(e => String(e.id) === String(r.employeeId));
+  if (!emp) { toast("The employee record was not found.", "error"); return; }
+  if (!confirm(`Process this resignation?\n${emp.name} will be set to Resigned with separation date ${r.effectiveDate}.`)) return;
+  const now = new Date().toISOString();
+  setSyncing(true);
+  try {
+    if (emp.status !== "Resigned") {
+      const histId = await mpLogHistory(emp, r.effectiveDate, `Status: ${emp.status} → Resigned (${r.reason}; Manpower Request ${r.refNo})`);
+      try {
+        await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, { method: "PATCH", body: JSON.stringify({ Status: "Resigned", SeparationDate: r.effectiveDate, SeparationReason: r.reason }) });
+      } catch (e) { await mpUndoHistory(histId); throw e; }
+      emp.status = "Resigned";
+      emp.separationDate = r.effectiveDate;
+      emp.separationReason = r.reason;
+    }
+    await mpSave(r, { Status: "Processed", AppliedDate: now, AppliedByName: srMyName() });
+    setSyncing(false, true);
+    toast("Resignation processed ✓", "success");
+    mpAfterChange(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not process: " + err.message, "error");
+  }
+}
+async function mpCancel(itemId) {
+  const r = mpFind(itemId);
+  if (!r || !["Pending", "Scheduled"].includes(r.status) || !(mpIsRequester(r) || mpIsHR())) return;
+  if (!confirm("Cancel this request?")) return;
+  setSyncing(true);
+  try {
+    await mpSave(r, { Status: "Cancelled" });
+    setSyncing(false, true);
+    toast("Request cancelled", "success");
+    mpAfterChange(itemId);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not cancel: " + err.message, "error");
+  }
+}
+async function mpDelete(itemId) {
+  const r = mpFind(itemId);
+  if (!r || !mpIsHR()) return;
+  if (!confirm("Delete this request record? This can't be undone.")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${manpowerRequestsListId}/items/${itemId}`, { method: "DELETE" });
+    manpowerRequests = manpowerRequests.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Request deleted", "success");
+    closeHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete: " + err.message, "error");
+  }
+}
+
+// ── list & detail views ──────────────────────────────────────────────────────
+function renderMpList(box) {
+  box.style.width = "min(780px, 95vw)";
+  const scope = hrView.scope;
+  const filter = hrView.filter || "All";
+  const list = scope === "review" ? manpowerRequests : mpMineList();
+  const match = { All: () => true, Action: r => mpNeedsMyAction(r), Open: r => mpIsOpen(r), Done: r => !mpIsOpen(r) };
+  const shown = list.filter(match[filter] || match.All);
+  const chips = [["All", "All"], ...(scope === "review" ? [["Action", "Needs my action"]] : []), ["Open", "Open"], ["Done", "Closed"]];
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${scope === "review" ? "Manpower Requests" : "My Manpower Requests"}</h3>
+        <div style="font-size:12px; color:var(--text2);">${list.length} request${list.length === 1 ? "" : "s"}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${scope === "mine" ? `<div style="display:flex; gap:8px; margin:14px 0 0;"><button class="btn btn-primary btn-sm" onclick="openMpNew('TeamChange')">&#65291; Team Change</button><button class="btn btn-secondary btn-sm" onclick="openMpNew('Resignation')">&#65291; Resignation Notice</button></div>` : ""}
+    <div style="display:flex; gap:6px; flex-wrap:wrap; margin:14px 0;">
+      ${chips.map(([val, lab]) => `<button class="btn ${filter === val ? "btn-primary" : "btn-secondary"} btn-sm" onclick="setMpFilter('${val}')">${lab} (${list.filter(match[val]).length})</button>`).join("")}
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      ${shown.length ? shown.map(r => { const st = mpStatusInfo(r); return `<div onclick="openMpDetail('${r.itemId}')" style="cursor:pointer; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <div style="font-size:13px; color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(mpSummary(r))}</div>
+            <span style="font-size:12px; font-weight:600; color:${st.color}; white-space:nowrap;">${escapeHtml(st.text)}${mpNeedsMyAction(r) ? " ●" : ""}</span>
+          </div>
+          <div style="font-size:11px; color:var(--text3); margin-top:2px;">${escapeHtml(r.refNo)} · ${escapeHtml(MP_TYPE_LABEL[r.requestType] || r.requestType)}${scope === "review" ? " · by " + escapeHtml(r.requesterName) : ""} · ${escapeHtml(dateOnly(r.submittedDate))}</div>
+        </div>`; }).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">Nothing here yet.</div>`}
+    </div>`;
+}
+
+function renderMpDetail(box) {
+  box.style.width = "min(680px, 95vw)";
+  const r = mpFind(hrView.caseId);
+  if (!r) { box.innerHTML = `<div style="font-size:13px; color:var(--text2);">Request not found.</div>`; return; }
+  const st = mpStatusInfo(r);
+  const isTC = r.requestType === "TeamChange";
+  const emp = employees.find(e => String(e.id) === String(r.employeeId));
+  const row = (k, v) => `<div style="display:flex; gap:12px; padding:5px 0; font-size:13px;"><div style="width:130px; color:var(--text3); flex-shrink:0;">${k}</div><div style="white-space:pre-wrap;">${v}</div></div>`;
+  const btns = [];
+  if (isTC && r.status === "Pending" && mpCanApprove() && !mpIsRequester(r)) btns.push(`<button class="btn btn-primary" onclick="mpApprove('${r.itemId}')">Approve</button>`, `<button class="btn btn-danger" onclick="mpReject('${r.itemId}')">Reject</button>`);
+  if (isTC && r.status === "Approved" && mpCanApprove() && mpIsDue(r)) btns.push(`<button class="btn btn-primary" onclick="mpApplyDue('${r.itemId}')">Apply now</button>`);
+  if (!isTC && r.status === "Scheduled" && mpIsHR() && mpIsDue(r)) btns.push(`<button class="btn btn-primary" onclick="mpProcessResignation('${r.itemId}')">Process resignation</button>`);
+  if (["Pending", "Scheduled"].includes(r.status) && (mpIsRequester(r) || mpIsHR())) btns.push(`<button class="btn btn-secondary" onclick="mpCancel('${r.itemId}')">Cancel request</button>`);
+  const hint = isTC && r.status === "Pending" && mpIsRequester(r) ? "Waiting for HR / HOC to review."
+    : isTC && r.status === "Approved" && !mpIsDue(r) ? `Approved. It will be applied on ${r.effectiveDate}.`
+    : !isTC && r.status === "Scheduled" && !mpIsDue(r) ? `HR will process this on the resignation date (${r.effectiveDate}).`
+    : !isTC && r.status === "Scheduled" && mpIsDue(r) && !mpIsHR() ? "The resignation date has arrived — waiting for HR to process it." : "";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+      <div>
+        <h3 style="margin-bottom:2px;">${escapeHtml(r.refNo)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(MP_TYPE_LABEL[r.requestType] || r.requestType)} · by ${escapeHtml(r.requesterName)} · ${escapeHtml(fmtDueDateTime(r.submittedDate))}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        ${mpIsHR() ? `<button class="btn btn-danger btn-sm" onclick="mpDelete('${r.itemId}')" title="Delete">&#128465;</button>` : ""}
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+    </div>
+    <div style="font-size:14px; font-weight:700; color:${st.color}; margin:6px 0 12px;">${escapeHtml(st.text)}</div>
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 16px;">
+      ${row("Employee", `${escapeHtml(r.employeeName)}${emp && emp.position ? ` <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(emp.position)}</span>` : ""}`)}
+      ${isTC ? row("Direction", escapeHtml(MP_DIR_LABEL[r.direction] || r.direction)) + row("Change", `${escapeHtml(mpTeamLabel(r.fromCluster, r.fromTeam))} → <strong>${escapeHtml(mpTeamLabel(r.toCluster, r.toTeam))}</strong>`) : row("Current team", escapeHtml(mpTeamLabel(r.fromCluster, r.fromTeam)))}
+      ${row(isTC ? "Effective date" : "Resignation date", escapeHtml(r.effectiveDate))}
+      ${row("Reason", escapeHtml(r.reason))}
+    </div>
+    ${r.decidedByName ? `<div style="background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-top:12px;">
+        ${row(r.status === "Rejected" ? "Rejected by" : "Approved by", `${escapeHtml(r.decidedByName)} <span style="color:var(--text3); font-size:11px;">· ${escapeHtml(fmtDueDateTime(r.decidedDate))}</span>`)}
+        ${r.decisionNote ? row("Note", escapeHtml(r.decisionNote)) : ""}
+      </div>` : ""}
+    ${r.appliedDate ? `<div style="font-size:12px; color:var(--text3); margin-top:10px;">${isTC ? "Applied" : "Processed"} by ${escapeHtml(r.appliedByName)} · ${escapeHtml(fmtDueDateTime(r.appliedDate))}</div>` : ""}
+    ${hint ? `<div style="font-size:12px; color:var(--text3); margin-top:10px;">${escapeHtml(hint)}</div>` : ""}
+    ${btns.length ? `<div class="modal-actions" style="margin-top:16px;">${btns.join("")}</div>` : ""}
+  `;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -9298,6 +9819,9 @@ function renderHRModal() {
   if (hrView.mode === "srNew") { renderSrNewForm(box); return; }
   if (hrView.mode === "srList") { renderSrList(box); return; }
   if (hrView.mode === "srDetail") { renderSrDetail(box); return; }
+  if (hrView.mode === "mpNew") { renderMpNewForm(box); return; }
+  if (hrView.mode === "mpList") { renderMpList(box); return; }
+  if (hrView.mode === "mpDetail") { renderMpDetail(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
   if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
   if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
@@ -9883,7 +10407,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -10175,7 +10699,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -10227,6 +10751,7 @@ function renderRequestsTodo() {
   myPendingPipCases().forEach(c => rows.push({ label: "Performance Improvement Plan — please review and sign", sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
   myPipTodo().forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
   srTodoItems().forEach(r => rows.push(r));
+  mpTodoItems().forEach(r => rows.push(r));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -10255,7 +10780,7 @@ function renderRequests() {
     { icon: "&#128221;", title: "Request NTE", desc: "Draft a Notice to Explain and route it for approval.", onclick: nteCasesListId ? "openNteNewFromRequests()" : "" },
     { icon: "&#127942;", title: "Request Recognition", desc: "Recommend teammates or managers for recognition.",
       actions: recognitionCasesListId ? [{ label: "New Request", onclick: "openRecognitionNewFromRequests()" }, { label: "My Requests", onclick: "openRecognitionList(true)" }, ...(canReviewRecognition() ? [{ label: "Review Requests", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : [])] : undefined },
-    { icon: "&#128101;", title: "Manpower Request", desc: "Addition · Removal · Transfer" },
+    mpMgmtCard(),
     { icon: "&#128203;", title: "General Task Request", desc: "Assign a one-off task with a deadline and track it to submission.",
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
@@ -10264,6 +10789,7 @@ function renderRequests() {
   ];
   const hr = [
     ...srHrCard(),
+    ...mpHrCard(),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     { icon: "&#128202;", title: "Manpower Status", desc: "" },
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
