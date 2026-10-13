@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-09";
+const BUILD_ID = "2026-10-09-10";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -534,6 +534,7 @@ const CONFIG = {
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   serviceRequestsListDisplayName: "HR Service Requests",
   manpowerRequestsListDisplayName: "HR Manpower Requests",
+  manpowerPlanListDisplayName: "HR Manpower Plan", // billable targets / member classification — HR-only, see SETUP_MANPOWER_PLAN.md
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
@@ -1010,6 +1011,7 @@ let pipCasesListId = null;
 let pipCases = []; // see PIP module below
 let serviceRequestsListId = null;
 let manpowerRequestsListId = null;
+let manpowerPlanListId = null;
 let manpowerRequests = []; // Team Change / Resignation Notice — see Manpower Request module below
 let serviceRequests = []; // General Requests / Employee Feedback / Inquiry — see Service Requests module below
 let announcementPostsListId = null;
@@ -1044,7 +1046,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1117,6 +1119,8 @@ async function resolveSiteAndLists() {
   holidaysListId = holidaysMatch ? holidaysMatch.id : null; // optional — only affects the two movable Eid holidays, everything else is computed
   const annPostsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementPostsListDisplayName);
   announcementPostsListId = annPostsMatch ? annPostsMatch.id : null; // optional — Announcement board stays empty if missing
+  const planMatch = (lists.value || []).find(l => l.displayName === CONFIG.manpowerPlanListDisplayName);
+  manpowerPlanListId = planMatch ? planMatch.id : null; // optional — Manpower Status still shows headcount without it
   const mpMatch = (lists.value || []).find(l => l.displayName === CONFIG.manpowerRequestsListDisplayName);
   manpowerRequestsListId = mpMatch ? mpMatch.id : null; // optional — Manpower Request card stays "Coming soon" if missing
   const srMatch = (lists.value || []).find(l => l.displayName === CONFIG.serviceRequestsListDisplayName);
@@ -2256,7 +2260,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -9443,6 +9447,261 @@ function renderQfOverview(box) {
     ${body}`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Manpower Status (Requests → HR / Admin → "Manpower Status")
+// Headcount by Cluster → Team → Member, plus the staffing plan:
+//   • each team's REQUIRED billable number (editable any time),
+//   • each member's classification: Billable / Reserve (editable any time; blank = not assigned yet).
+// A team whose billable count is below its requirement is shown in red.
+// PRIVACY: the plan lives in its own SharePoint list ("HR Manpower Plan", see SETUP_MANPOWER_PLAN.md) and is
+// loaded ONLY for HR viewers (canAccessHR / admin) — it is never put on the Employees list or shown on the
+// employee's own profile, so the employee can't see their classification anywhere. Restrict the list's
+// SharePoint permissions to HR as well (setup doc).
+// Record types in the list: "TeamTarget" (Cluster, Team, RequiredBillable) and "Member" (EmployeeId, Classification).
+// ═══════════════════════════════════════════════════════════════════════════
+const MPS_NO_CLUSTER = "(No cluster)";
+const MPS_NO_TEAM = "(No team)";
+const MPS_CLASSES = ["Billable", "Reserve"];
+const MPS_MAX_REQUIRED = 999;
+let mpsTargets = new Map();  // `${cluster}||${team}` (cluster "" = none) -> { itemId, required }
+let mpsMembers = new Map();  // employeeId -> { itemId, classification }
+let mpsOpen = { clusters: {}, teams: {} };
+let mpsBoxEl = null;
+
+function mpsCanView() { return !!(canAccessHR || isPermissionAdmin); }
+function mpsCanEdit() { return mpsCanView() && !!manpowerPlanListId; }
+function mpsTargetKey(cluster, team) { return `${cluster || ""}||${team || ""}`; }
+
+async function loadManpowerPlan() {
+  mpsTargets = new Map();
+  mpsMembers = new Map();
+  if (!manpowerPlanListId || !mpsCanView()) return; // everyone else never even requests this list
+  try {
+    let url = `/sites/${siteId}/lists/${manpowerPlanListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields || {};
+        if (f["RecordType"] === "TeamTarget") {
+          const n = parseInt(f["RequiredBillable"], 10);
+          mpsTargets.set(mpsTargetKey(f["Cluster"], f["Team"]), { itemId: it.id, required: Number.isFinite(n) ? n : null });
+        } else if (f["RecordType"] === "Member") {
+          mpsMembers.set(String(f["EmployeeId"] || ""), { itemId: it.id, classification: f["Classification"] || "" });
+        }
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) {
+    console.warn("Could not load HR Manpower Plan (list may not exist yet):", e);
+    mpsTargets = new Map();
+    mpsMembers = new Map();
+  }
+}
+
+// ── structure & numbers ──────────────────────────────────────────────────────
+function mpsStructure() {
+  const active = employees.filter(e => e.status !== "Resigned");
+  const clusters = new Map();
+  active.forEach(e => {
+    const c = e.cluster || "";
+    const t = e.team || MPS_NO_TEAM;
+    if (!clusters.has(c)) clusters.set(c, new Map());
+    const teams = clusters.get(c);
+    if (!teams.has(t)) teams.set(t, []);
+    teams.get(t).push(e);
+  });
+  const order = (CONFIG.clusterTeams || []);
+  const names = Array.from(clusters.keys()).sort((a, b) => {
+    if (a === "") return 1;
+    if (b === "") return -1;
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    return a.localeCompare(b);
+  });
+  return names.map(c => ({
+    cluster: c,
+    label: c || MPS_NO_CLUSTER,
+    teams: Array.from(clusters.get(c).entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([team, members]) => ({
+      team, members: members.slice().sort((x, y) => (positionRankIndex(x.position) - positionRankIndex(y.position)) || String(x.name).localeCompare(String(y.name)))
+    }))
+  }));
+}
+function mpsClassOf(empId) { const m = mpsMembers.get(String(empId)); return m ? m.classification : ""; }
+function mpsTeamStats(cluster, team, members) {
+  let billable = 0, reserve = 0, unassigned = 0;
+  members.forEach(e => { const c = mpsClassOf(e.id); if (c === "Billable") billable++; else if (c === "Reserve") reserve++; else unassigned++; });
+  const t = mpsTargets.get(mpsTargetKey(cluster, team));
+  const required = t && t.required != null ? t.required : null;
+  return { total: members.length, billable, reserve, unassigned, required, short: required != null && billable < required };
+}
+function mpsShortTeamCount() {
+  if (!mpsCanView() || !manpowerPlanListId) return 0;
+  let n = 0;
+  mpsStructure().forEach(c => c.teams.forEach(t => { if (mpsTeamStats(c.cluster, t.team, t.members).short) n++; }));
+  return n;
+}
+function mpsCard() {
+  if (!mpsCanView()) return { icon: "&#128202;", title: "Manpower Status", desc: "" };
+  return { icon: "&#128202;", title: "Manpower Status", desc: "Headcount by cluster and team — billable targets, billable and reserve staff.", onclick: "openManpowerStatus()", badge: mpsShortTeamCount() };
+}
+
+// ── editing ──────────────────────────────────────────────────────────────────
+function mpsRerender() {
+  const top = mpsBoxEl ? mpsBoxEl.scrollTop : 0;
+  renderHRModal();
+  if (mpsBoxEl) mpsBoxEl.scrollTop = top;
+}
+async function mpsSave(listFields, existing, removeIfEmpty) {
+  const base = `/sites/${siteId}/lists/${manpowerPlanListId}/items`;
+  if (removeIfEmpty) {
+    if (existing) await graphFetch(`${base}/${existing.itemId}`, { method: "DELETE" });
+    return null;
+  }
+  if (existing) { await graphFetch(`${base}/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify(listFields) }); return existing.itemId; }
+  const created = await graphFetch(base, { method: "POST", body: JSON.stringify({ fields: listFields }) });
+  return created.id;
+}
+async function mpsSetRequired(cluster, team, raw) {
+  if (!mpsCanEdit()) return;
+  const text = String(raw == null ? "" : raw).trim();
+  const key = mpsTargetKey(cluster, team);
+  const existing = mpsTargets.get(key);
+  let n = null;
+  if (text !== "") {
+    n = parseInt(text, 10);
+    if (!Number.isFinite(n) || n < 0 || n > MPS_MAX_REQUIRED || String(n) !== text.replace(/^0+(?=\d)/, "")) { toast(`Enter a whole number from 0 to ${MPS_MAX_REQUIRED}.`, "error"); mpsRerender(); return; }
+  }
+  setSyncing(true);
+  try {
+    const id = await mpsSave({
+      Title: `T|${cluster || ""}|${team || ""}`, RecordType: "TeamTarget", Cluster: cluster || "", Team: team || "",
+      RequiredBillable: String(n), UpdatedByName: srMyName(), UpdatedDate: new Date().toISOString()
+    }, existing, n == null);
+    if (n == null) mpsTargets.delete(key); else mpsTargets.set(key, { itemId: id, required: n });
+    setSyncing(false, true);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+  mpsRerender();
+}
+async function mpsSetClass(empId, value) {
+  if (!mpsCanEdit()) return;
+  const emp = employees.find(e => String(e.id) === String(empId));
+  if (!emp) return;
+  const v = MPS_CLASSES.includes(value) ? value : "";
+  const existing = mpsMembers.get(String(empId));
+  setSyncing(true);
+  try {
+    const id = await mpsSave({
+      Title: `M|${emp.id}`, RecordType: "Member", EmployeeId: String(emp.id), EmployeeName: emp.name,
+      Classification: v, UpdatedByName: srMyName(), UpdatedDate: new Date().toISOString()
+    }, existing, v === "");
+    if (v === "") mpsMembers.delete(String(empId)); else mpsMembers.set(String(empId), { itemId: id, classification: v });
+    setSyncing(false, true);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+  mpsRerender();
+}
+function toggleMpsCluster(cluster) { mpsOpen.clusters[cluster] = !mpsOpen.clusters[cluster]; mpsRerender(); }
+function toggleMpsTeam(cluster, team) { const k = mpsTargetKey(cluster, team); mpsOpen.teams[k] = !mpsOpen.teams[k]; mpsRerender(); }
+function openManpowerStatus() {
+  if (!mpsCanView()) return;
+  hrView = { mode: "manpowerStatus" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+
+// ── view ─────────────────────────────────────────────────────────────────────
+function mpsStatColor(s) {
+  if (s.required == null) return "var(--text3)";
+  return s.short ? "var(--red, #ef4444)" : "var(--green)";
+}
+function renderManpowerStatus(box) {
+  mpsBoxEl = box;
+  box.style.width = "min(1000px, 96vw)";
+  const structure = mpsStructure();
+  const editable = mpsCanEdit();
+  let total = 0, billable = 0, reserve = 0, unassigned = 0, shortTeams = 0;
+  structure.forEach(c => c.teams.forEach(t => {
+    const s = mpsTeamStats(c.cluster, t.team, t.members);
+    total += s.total; billable += s.billable; reserve += s.reserve; unassigned += s.unassigned; if (s.short) shortTeams++;
+  }));
+  const pill = (label, value, color) => `<div style="flex:1; min-width:110px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface);">
+      <div style="font-size:11px; color:var(--text3);">${label}</div><div style="font-size:20px; font-weight:700; color:${color || "var(--text)"};">${value}</div></div>`;
+  const classSelect = e => {
+    const cur = mpsClassOf(e.id);
+    return `<select ${editable ? "" : "disabled"} onchange="mpsSetClass('${e.id}', this.value)" style="font-size:12px; padding:3px 6px; min-width:110px; ${cur === "Billable" ? "color:var(--green);" : cur === "Reserve" ? "color:var(--accent);" : "color:var(--text3);"}">
+      <option value="" ${cur === "" ? "selected" : ""}>— Not set —</option>
+      ${MPS_CLASSES.map(c => `<option value="${c}" ${cur === c ? "selected" : ""}>${c}</option>`).join("")}</select>`;
+  };
+  const teamHtml = (c, t) => {
+    const s = mpsTeamStats(c.cluster, t.team, t.members);
+    const key = mpsTargetKey(c.cluster, t.team);
+    const open = !!mpsOpen.teams[key];
+    const col = mpsStatColor(s);
+    const cj = jsAttrEscape(c.cluster), tj = jsAttrEscape(t.team);
+    const members = open ? `<div style="padding:8px 12px 12px 34px; display:flex; flex-direction:column; gap:5px;">
+        ${t.members.map(e => `<div style="display:grid; grid-template-columns:1.4fr 1.4fr 1fr auto; gap:10px; align-items:center; padding:6px 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+            <span>${escapeHtml(e.name)}</span>
+            <span style="color:var(--text2);">${escapeHtml(e.position || "—")}</span>
+            <span style="color:var(--text3);">${escapeHtml(e.status || "—")}</span>
+            ${classSelect(e)}</div>`).join("")}
+      </div>` : "";
+    return `<div style="border:1px solid ${s.short ? "var(--red, #ef4444)" : "var(--border)"}; border-radius:8px; margin-bottom:6px; overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--surface);">
+        <div onclick="toggleMpsTeam('${cj}','${tj}')" style="cursor:pointer; display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
+          <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+          <span style="font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(t.team)}</span>
+          <span style="font-size:11px; color:var(--text3);">${s.total} member${s.total === 1 ? "" : "s"}</span>
+        </div>
+        <span style="font-size:12px; font-weight:700; color:${col}; white-space:nowrap;">Billable ${s.billable}${s.required != null ? ` / ${s.required}` : ""}${s.short ? ` (−${s.required - s.billable})` : ""}</span>
+        <span style="font-size:12px; color:var(--accent); white-space:nowrap;">Reserve ${s.reserve}</span>
+        ${s.unassigned ? `<span style="font-size:11px; color:var(--text3); white-space:nowrap;">${s.unassigned} not set</span>` : ""}
+        <label style="font-size:11px; color:var(--text3); display:flex; align-items:center; gap:5px; white-space:nowrap;" onclick="event.stopPropagation()">Required billable
+          <input type="number" min="0" max="${MPS_MAX_REQUIRED}" step="1" ${editable ? "" : "disabled"} value="${s.required == null ? "" : s.required}" placeholder="—"
+            onchange="mpsSetRequired('${cj}','${tj}', this.value)" style="width:64px; padding:3px 6px; font-size:12px;" /></label>
+      </div>
+      ${members}
+    </div>`;
+  };
+  const clusterHtml = c => {
+    const open = !!mpsOpen.clusters[c.cluster];
+    const stats = c.teams.map(t => mpsTeamStats(c.cluster, t.team, t.members));
+    const count = stats.reduce((n, s) => n + s.total, 0);
+    const b = stats.reduce((n, s) => n + s.billable, 0);
+    const r = stats.reduce((n, s) => n + s.reserve, 0);
+    const short = stats.filter(s => s.short).length;
+    return `<div style="border:1px solid ${short ? "var(--red, #ef4444)" : "var(--border)"}; border-radius:10px; margin-bottom:10px; overflow:hidden;">
+      <div onclick="toggleMpsCluster('${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:11px 14px; background:var(--surface);">
+        <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+        <span style="font-size:14px; font-weight:700;">${escapeHtml(c.label)}</span>
+        <span style="font-size:12px; color:var(--text3);">${count} member${count === 1 ? "" : "s"} · ${c.teams.length} team${c.teams.length === 1 ? "" : "s"}</span>
+        <span style="flex:1;"></span>
+        ${short ? `<span style="font-size:12px; font-weight:700; color:var(--red, #ef4444);">${short} team${short === 1 ? "" : "s"} short of billable</span>` : ""}
+        <span style="font-size:12px; color:var(--green);">Billable ${b}</span>
+        <span style="font-size:12px; color:var(--accent);">Reserve ${r}</span>
+      </div>
+      ${open ? `<div style="padding:10px 12px 4px;">${c.teams.map(t => teamHtml(c, t)).join("")}</div>` : ""}
+    </div>`;
+  };
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Manpower Status</h3>
+        <div style="font-size:12px; color:var(--text2);">Headcount by cluster and team. Billable / Reserve information is visible only here, to HR — employees can't see it.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${manpowerPlanListId ? "" : `<div style="margin:12px 0; padding:10px 12px; border:1px solid var(--yellow); border-radius:8px; font-size:12px; color:var(--text2);">The <strong>HR Manpower Plan</strong> list hasn't been set up yet, so billable numbers can't be saved. See SETUP_MANPOWER_PLAN.md.</div>`}
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin:14px 0;">
+      ${pill("Headcount", total)}${pill("Billable", billable, "var(--green)")}${pill("Reserve", reserve, "var(--accent)")}${pill("Not set", unassigned, "var(--text3)")}${pill("Teams short of billable", shortTeams, shortTeams ? "var(--red, #ef4444)" : "var(--text)")}
+    </div>
+    ${structure.length ? structure.map(clusterHtml).join("") : `<div style="font-size:13px; color:var(--text2);">No employees found.</div>`}`;
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -10214,6 +10473,7 @@ function renderHRModal() {
   if (hrView.mode === "mpDetail") { renderMpDetail(box); return; }
   if (hrView.mode === "qfBoard") { renderQfBoard(box); return; }
   if (hrView.mode === "qfOverview") { renderQfOverview(box); return; }
+  if (hrView.mode === "manpowerStatus") { renderManpowerStatus(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
   if (hrView.mode === "qfList") { renderQuarterlyFeedbackList(box); return; }
   if (hrView.mode === "qfDetail") { renderQuarterlyFeedbackDetail(box); return; }
@@ -10799,7 +11059,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -11183,7 +11443,7 @@ function renderRequests() {
     ...srHrCard(),
     ...mpHrCard(),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
-    { icon: "&#128202;", title: "Manpower Status", desc: "" },
+    mpsCard(),
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
     ...(recognitionCasesListId ? [{ icon: "&#127942;", title: "Recognition Requests", desc: "Review, recognize or return recognition requests.", onclick: "openRecognitionList(false)", badge: recognitionReviewQueue().length }] : []),
     { icon: "&#128193;", title: "NTE / Coaching / PIP Cases", desc: "All disciplinary and coaching cases.",
@@ -11315,10 +11575,6 @@ function renderMyTasks() {
     ${renderReportsOverviewRow()}
     ${renderCalendar()}
     ${renderTodoBoard()}
-    <div class="req-card soon" style="margin-top:22px; max-width:420px;">
-      <div class="req-title"><span>&#128276;</span><span>Task Notification</span><span class="req-tag">Coming soon</span></div>
-      <div class="req-desc">A dedicated notification feed for tasks and deadlines is planned; the lists above already cover deadlines.</div>
-    </div>
     <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE, coaching and recognition items are shown under <strong>Requests</strong>.</div>
     ${renderReportsSettingsRow()}
   </div>`;
