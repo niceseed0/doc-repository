@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-11";
+const BUILD_ID = "2026-10-09-13";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -9465,9 +9465,36 @@ const MPS_CLASSES = ["Billable", "Non-Billable"];
 // Records saved before the rename hold "Reserve" — read them as Non-Billable (they are rewritten with the new value on the next edit).
 function mpsNormClass(v) { return v === "Reserve" ? "Non-Billable" : (v || ""); }
 const MPS_MAX_REQUIRED = 999;
+
+// ── Admin Team ───────────────────────────────────────────────────────────────
+// Admin staff are not billable, so they are taken OUT of the cluster/team list and simply counted as "Admin"
+// (no Billable / Non-Billable choice). A person's Admin group is either a manual choice saved in the plan list
+// (RecordType "AdminMember"; the group name is kept in the Classification column, "None" = explicitly not Admin)
+// or, when there is no manual choice, an automatic match on position / team name.
+const MPS_ADMIN_GROUPS = ["Managing Director", "Head of Operations", "Business Operations Manager", "Company Nurse", "IT", "CXQA", "HR/Admin"]; // top of the list = highest position
+const MPS_ADMIN_NONE = "None";
+function mpsNorm(v) { return String(v || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+// The CEO is not part of the manpower picture at all: not in Head Count, clusters or Admin.
+function mpsIsOrgPerson(e, key) {
+  try { const p = ORG_CHART[key]; return !!(p && p.name) && mpsNorm(p.name) === mpsNorm(e.name); } catch (err) { return false; }
+}
+function mpsIsCeo(e) { return /\bceo\b|chief executive/i.test(e.position || "") || mpsIsOrgPerson(e, "ceo"); }
+function mpsAutoAdminGroup(e) {
+  const pos = mpsNorm(e.position), team = mpsNorm(e.team);
+  if (pos.includes("managingdirector") || mpsIsOrgPerson(e, "md")) return "Managing Director";
+  if (/^headof(business)?operations/.test(pos)) return "Head of Operations";
+  if (pos.includes("businessoperationsmanager")) return "Business Operations Manager";
+  if (pos.includes("nurse")) return "Company Nurse";
+  if (["it", "itteam", "itdepartment", "informationtechnology"].includes(team)) return "IT";
+  if (team === "cxqa") return "CXQA";
+  if (["hradmin", "hradminteam", "hrandadmin"].includes(team)) return "HR/Admin";
+  return null;
+}
 let mpsTargets = new Map();  // `${cluster}||${team}` (cluster "" = none) -> { itemId, required }
 let mpsMembers = new Map();  // employeeId -> { itemId, classification }
-let mpsOpen = { clusters: {}, teams: {} };
+let mpsAdmin = new Map();    // employeeId -> { itemId, group } manual Admin choices (group may be "None")
+let mpsAddEmpId = null;      // person picked in the "Add to Admin" box
+let mpsOpen = { clusters: {}, teams: {}, admin: false, adminGroups: {} };
 let mpsBoxEl = null;
 
 function mpsCanView() { return !!(canAccessHR || isPermissionAdmin); }
@@ -9477,6 +9504,7 @@ function mpsTargetKey(cluster, team) { return `${cluster || ""}||${team || ""}`;
 async function loadManpowerPlan() {
   mpsTargets = new Map();
   mpsMembers = new Map();
+  mpsAdmin = new Map();
   if (!manpowerPlanListId || !mpsCanView()) return; // everyone else never even requests this list
   try {
     let url = `/sites/${siteId}/lists/${manpowerPlanListId}/items?$expand=fields&$top=500`;
@@ -9487,6 +9515,8 @@ async function loadManpowerPlan() {
         if (f["RecordType"] === "TeamTarget") {
           const n = parseInt(f["RequiredBillable"], 10);
           mpsTargets.set(mpsTargetKey(f["Cluster"], f["Team"]), { itemId: it.id, required: Number.isFinite(n) ? n : null });
+        } else if (f["RecordType"] === "AdminMember") {
+          mpsAdmin.set(String(f["EmployeeId"] || ""), { itemId: it.id, group: f["Classification"] || "" });
         } else if (f["RecordType"] === "Member") {
           mpsMembers.set(String(f["EmployeeId"] || ""), { itemId: it.id, classification: mpsNormClass(f["Classification"]) });
         }
@@ -9497,12 +9527,13 @@ async function loadManpowerPlan() {
     console.warn("Could not load HR Manpower Plan (list may not exist yet):", e);
     mpsTargets = new Map();
     mpsMembers = new Map();
+    mpsAdmin = new Map();
   }
 }
 
 // ── structure & numbers ──────────────────────────────────────────────────────
 function mpsStructure() {
-  const active = employees.filter(e => e.status !== "Resigned");
+  const active = employees.filter(e => e.status !== "Resigned" && !mpsIsCeo(e) && !mpsAdminGroupOf(e));
   const clusters = new Map();
   active.forEach(e => {
     const c = e.cluster || "";
@@ -9526,6 +9557,19 @@ function mpsStructure() {
     teams: Array.from(clusters.get(c).entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([team, members]) => ({
       team, members: members.slice().sort((x, y) => (positionRankIndex(x.position) - positionRankIndex(y.position)) || String(x.name).localeCompare(String(y.name)))
     }))
+  }));
+}
+function mpsAdminGroupOf(e) {
+  const rec = mpsAdmin.get(String(e.id));
+  if (rec) return MPS_ADMIN_GROUPS.includes(rec.group) ? rec.group : null; // "None" (or junk) = not Admin
+  return mpsAutoAdminGroup(e);
+}
+// [{ group, members }] for the six Admin groups, in a fixed order (empty groups included).
+function mpsAdminGroups() {
+  const active = employees.filter(e => e.status !== "Resigned" && !mpsIsCeo(e));
+  return MPS_ADMIN_GROUPS.map(group => ({
+    group,
+    members: active.filter(e => mpsAdminGroupOf(e) === group).sort((a, b) => String(a.name).localeCompare(String(b.name)))
   }));
 }
 function mpsClassOf(empId) { const m = mpsMembers.get(String(empId)); return m ? m.classification : ""; }
@@ -9607,6 +9651,53 @@ async function mpsSetClass(empId, value) {
   }
   mpsRerender();
 }
+async function mpsSetAdminGroup(empId, group) {
+  if (!mpsCanEdit()) return;
+  const emp = employees.find(e => String(e.id) === String(empId));
+  if (!emp) return;
+  const auto = mpsAutoAdminGroup(emp);
+  const existing = mpsAdmin.get(String(empId));
+  let target; // value to store, or null = no manual record (fall back to the automatic match)
+  if (group === MPS_ADMIN_NONE) target = auto ? MPS_ADMIN_NONE : null;
+  else if (MPS_ADMIN_GROUPS.includes(group)) target = group === auto ? null : group;
+  else return;
+  setSyncing(true);
+  try {
+    const id = await mpsSave({
+      Title: `A|${emp.id}`, RecordType: "AdminMember", EmployeeId: String(emp.id), EmployeeName: emp.name,
+      Classification: target, UpdatedByName: srMyName(), UpdatedDate: new Date().toISOString()
+    }, existing, target === null);
+    if (target === null) mpsAdmin.delete(String(empId)); else mpsAdmin.set(String(empId), { itemId: id, group: target });
+    setSyncing(false, true);
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+  mpsRerender();
+}
+function mpsPickAdmin(empId) { mpsAddEmpId = String(empId); mpsRerender(); }
+function mpsClearAdminPick() { mpsAddEmpId = null; mpsRerender(); }
+function mpsAdminSearch() {
+  const input = document.getElementById("mpsAdminSearch");
+  const box = document.getElementById("mpsAdminOptions");
+  if (!input || !box) return;
+  const q = input.value.trim().toLowerCase();
+  if (!q) { box.style.display = "none"; return; }
+  const matches = employees.filter(e => e.status !== "Resigned" && !mpsIsCeo(e) && !mpsAdminGroupOf(e) && String(e.name || "").toLowerCase().includes(q)).slice(0, 8);
+  box.innerHTML = matches.length
+    ? matches.map(e => `<div onclick="mpsPickAdmin('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")} · ${escapeHtml(e.team || "")}</span></div>`).join("")
+    : `<div style="padding:8px 10px; font-size:12px; color:var(--text3);">No match (people already in Admin aren't listed).</div>`;
+  box.style.display = "";
+}
+function mpsAddAdmin() {
+  const sel = document.getElementById("mpsAdminGroupPick");
+  if (!mpsAddEmpId || !sel) { toast("Pick a person to add first.", "error"); return; }
+  const id = mpsAddEmpId;
+  mpsAddEmpId = null;
+  mpsSetAdminGroup(id, sel.value);
+}
+function toggleMpsAdmin() { mpsOpen.admin = !mpsOpen.admin; mpsRerender(); }
+function toggleMpsAdminGroup(group) { mpsOpen.adminGroups[group] = !mpsOpen.adminGroups[group]; mpsRerender(); }
 function toggleMpsCluster(cluster) { mpsOpen.clusters[cluster] = !mpsOpen.clusters[cluster]; mpsRerender(); }
 function toggleMpsTeam(cluster, team) { const k = mpsTargetKey(cluster, team); mpsOpen.teams[k] = !mpsOpen.teams[k]; mpsRerender(); }
 function openManpowerStatus() {
@@ -9626,11 +9717,14 @@ function renderManpowerStatus(box) {
   box.style.width = "min(1000px, 96vw)";
   const structure = mpsStructure();
   const editable = mpsCanEdit();
-  let total = 0, billable = 0, nonBillable = 0, unassigned = 0, shortTeams = 0;
+  let billable = 0, nonBillable = 0, unassigned = 0, shortTeams = 0;
   structure.forEach(c => c.teams.forEach(t => {
     const s = mpsTeamStats(c.cluster, t.team, t.members);
-    total += s.total; billable += s.billable; nonBillable += s.nonBillable; unassigned += s.unassigned; if (s.short) shortTeams++;
+    billable += s.billable; nonBillable += s.nonBillable; unassigned += s.unassigned; if (s.short) shortTeams++;
   }));
+  const adminGroups = mpsAdminGroups();
+  const adminTotal = adminGroups.reduce((n, g) => n + g.members.length, 0);
+  const headCount = employees.filter(e => e.status !== "Resigned" && !mpsIsCeo(e)).length; // everyone except the CEO: clusters + Admin + anyone else
   const pill = (label, value, color) => `<div style="flex:1; min-width:110px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface);">
       <div style="font-size:11px; color:var(--text3);">${label}</div><div style="font-size:20px; font-weight:700; color:${color || "var(--text)"};">${value}</div></div>`;
   const classSelect = e => {
@@ -9669,6 +9763,52 @@ function renderManpowerStatus(box) {
       ${members}
     </div>`;
   };
+  const adminHtml = () => {
+    const open = !!mpsOpen.admin;
+    const picked = mpsAddEmpId ? employees.find(e => String(e.id) === String(mpsAddEmpId)) : null;
+    const addBox = editable ? `<div style="margin:0 0 12px; padding:10px 12px; border:1px dashed var(--border); border-radius:8px;">
+        <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Add a person to Admin</div>
+        <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+          <div style="flex:1; min-width:200px;">
+            ${picked ? `<div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:12px;">
+                <span>${escapeHtml(picked.name)} <span style="color:var(--text3);">— ${escapeHtml(picked.position || "")} · ${escapeHtml(picked.team || "")}</span></span>
+                <a href="#" onclick="mpsClearAdminPick(); return false;">change</a></div>`
+              : `<input id="mpsAdminSearch" type="text" placeholder="Search by name…" oninput="mpsAdminSearch()" autocomplete="off" style="font-size:12px;" />
+                 <div id="mpsAdminOptions" style="display:none; border:1px solid var(--border); border-radius:8px; max-height:180px; overflow-y:auto; margin-top:4px; background:var(--surface);"></div>`}
+          </div>
+          <select id="mpsAdminGroupPick" style="font-size:12px;">${MPS_ADMIN_GROUPS.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("")}</select>
+          <button class="btn btn-primary btn-sm" onclick="mpsAddAdmin()">Add</button>
+        </div></div>` : "";
+    const groupHtml = g => {
+      const gOpen = !!mpsOpen.adminGroups[g.group];
+      const gj = jsAttrEscape(g.group);
+      const rows = gOpen ? `<div style="padding:8px 12px 12px 34px; display:flex; flex-direction:column; gap:5px;">
+          ${g.members.map(e => `<div style="display:grid; grid-template-columns:1.4fr 1.4fr 1fr auto; gap:10px; align-items:center; padding:6px 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+              <span>${escapeHtml(e.name)}</span>
+              <span style="color:var(--text2);">${escapeHtml(e.position || "—")}</span>
+              <span style="color:var(--text3);">${escapeHtml(e.status || "—")}</span>
+              <select ${editable ? "" : "disabled"} onchange="mpsSetAdminGroup('${e.id}', this.value)" style="font-size:12px; padding:3px 6px; min-width:150px;">
+                ${MPS_ADMIN_GROUPS.map(x => `<option value="${escapeHtml(x)}" ${x === g.group ? "selected" : ""}>${escapeHtml(x)}</option>`).join("")}
+                <option value="${MPS_ADMIN_NONE}">— Remove from Admin —</option></select></div>`).join("") || `<div style="font-size:12px; color:var(--text3);">Nobody in this group.</div>`}
+        </div>` : "";
+      return `<div style="border:1px solid var(--border); border-radius:8px; margin-bottom:6px; overflow:hidden;">
+        <div onclick="toggleMpsAdminGroup('${gj}')" style="cursor:pointer; display:flex; align-items:center; gap:10px; padding:9px 12px; background:var(--surface);">
+          <span style="font-size:10px; color:var(--text3); width:12px;">${gOpen ? "&#9660;" : "&#9654;"}</span>
+          <span style="font-size:13px; font-weight:600;">${escapeHtml(g.group)}</span>
+          <span style="font-size:11px; color:var(--text3);">${g.members.length} member${g.members.length === 1 ? "" : "s"}</span>
+        </div>${rows}</div>`;
+    };
+    return `<div style="border:1px solid var(--border); border-radius:10px; margin-bottom:10px; overflow:hidden;">
+      <div onclick="toggleMpsAdmin()" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:11px 14px; background:var(--surface);">
+        <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+        <span style="font-size:14px; font-weight:700;">Admin Team</span>
+        <span style="font-size:12px; color:var(--text3);">${adminTotal} member${adminTotal === 1 ? "" : "s"} · ${MPS_ADMIN_GROUPS.length} groups · not billable</span>
+        <span style="flex:1;"></span>
+        <span style="font-size:12px; color:var(--accent);">Admin ${adminTotal}</span>
+      </div>
+      ${open ? `<div style="padding:10px 12px 4px;">${addBox}${adminGroups.map(groupHtml).join("")}</div>` : ""}
+    </div>`;
+  };
   const clusterHtml = c => {
     const open = !!mpsOpen.clusters[c.cluster];
     const stats = c.teams.map(t => mpsTeamStats(c.cluster, t.team, t.members));
@@ -9699,9 +9839,12 @@ function renderManpowerStatus(box) {
     </div>
     ${manpowerPlanListId ? "" : `<div style="margin:12px 0; padding:10px 12px; border:1px solid var(--yellow); border-radius:8px; font-size:12px; color:var(--text2);">The <strong>HR Manpower Plan</strong> list hasn't been set up yet, so billable numbers can't be saved. See SETUP_MANPOWER_PLAN.md.</div>`}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin:14px 0;">
-      ${pill("Headcount", total)}${pill("Billable", billable, "var(--green)")}${pill("Non-Billable", nonBillable, "var(--accent)")}${pill("Not set", unassigned, "var(--text3)")}${pill("Teams short of billable", shortTeams, shortTeams ? "var(--red, #ef4444)" : "var(--text)")}
+      ${pill("Head Count", headCount)}${pill("Admin", adminTotal, "var(--accent)")}${pill("Billable", billable, "var(--green)")}${pill("Non-Billable", nonBillable, "var(--text2)")}
     </div>
-    ${structure.length ? structure.map(clusterHtml).join("") : `<div style="font-size:13px; color:var(--text2);">No employees found.</div>`}`;
+    ${(unassigned || shortTeams) ? `<div style="font-size:12px; color:var(--text3); margin:-6px 0 12px;">${unassigned ? `${unassigned} not classified yet` : ""}${unassigned && shortTeams ? " · " : ""}${shortTeams ? `<span style="color:var(--red, #ef4444); font-weight:600;">${shortTeams} team${shortTeams === 1 ? "" : "s"} short of billable</span>` : ""}</div>` : ""}
+    ${structure.map(clusterHtml).join("")}
+    ${adminHtml()}
+    ${(!structure.length && !adminTotal) ? `<div style="font-size:13px; color:var(--text2);">No employees found.</div>` : ""}`;
 }
 
 function toLocalYMD(d) {
