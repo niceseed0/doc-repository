@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-10";
+const BUILD_ID = "2026-10-09-11";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -9461,7 +9461,9 @@ function renderQfOverview(box) {
 // ═══════════════════════════════════════════════════════════════════════════
 const MPS_NO_CLUSTER = "(No cluster)";
 const MPS_NO_TEAM = "(No team)";
-const MPS_CLASSES = ["Billable", "Reserve"];
+const MPS_CLASSES = ["Billable", "Non-Billable"];
+// Records saved before the rename hold "Reserve" — read them as Non-Billable (they are rewritten with the new value on the next edit).
+function mpsNormClass(v) { return v === "Reserve" ? "Non-Billable" : (v || ""); }
 const MPS_MAX_REQUIRED = 999;
 let mpsTargets = new Map();  // `${cluster}||${team}` (cluster "" = none) -> { itemId, required }
 let mpsMembers = new Map();  // employeeId -> { itemId, classification }
@@ -9486,7 +9488,7 @@ async function loadManpowerPlan() {
           const n = parseInt(f["RequiredBillable"], 10);
           mpsTargets.set(mpsTargetKey(f["Cluster"], f["Team"]), { itemId: it.id, required: Number.isFinite(n) ? n : null });
         } else if (f["RecordType"] === "Member") {
-          mpsMembers.set(String(f["EmployeeId"] || ""), { itemId: it.id, classification: f["Classification"] || "" });
+          mpsMembers.set(String(f["EmployeeId"] || ""), { itemId: it.id, classification: mpsNormClass(f["Classification"]) });
         }
       });
       url = data["@odata.nextLink"] || null;
@@ -9528,11 +9530,11 @@ function mpsStructure() {
 }
 function mpsClassOf(empId) { const m = mpsMembers.get(String(empId)); return m ? m.classification : ""; }
 function mpsTeamStats(cluster, team, members) {
-  let billable = 0, reserve = 0, unassigned = 0;
-  members.forEach(e => { const c = mpsClassOf(e.id); if (c === "Billable") billable++; else if (c === "Reserve") reserve++; else unassigned++; });
+  let billable = 0, nonBillable = 0, unassigned = 0;
+  members.forEach(e => { const c = mpsClassOf(e.id); if (c === "Billable") billable++; else if (c === "Non-Billable") nonBillable++; else unassigned++; });
   const t = mpsTargets.get(mpsTargetKey(cluster, team));
   const required = t && t.required != null ? t.required : null;
-  return { total: members.length, billable, reserve, unassigned, required, short: required != null && billable < required };
+  return { total: members.length, billable, nonBillable, unassigned, required, short: required != null && billable < required };
 }
 function mpsShortTeamCount() {
   if (!mpsCanView() || !manpowerPlanListId) return 0;
@@ -9542,7 +9544,7 @@ function mpsShortTeamCount() {
 }
 function mpsCard() {
   if (!mpsCanView()) return { icon: "&#128202;", title: "Manpower Status", desc: "" };
-  return { icon: "&#128202;", title: "Manpower Status", desc: "Headcount by cluster and team — billable targets, billable and reserve staff.", onclick: "openManpowerStatus()", badge: mpsShortTeamCount() };
+  return { icon: "&#128202;", title: "Manpower Status", desc: "Headcount by cluster and team — billable targets, billable and nonBillable staff.", onclick: "openManpowerStatus()", badge: mpsShortTeamCount() };
 }
 
 // ── editing ──────────────────────────────────────────────────────────────────
@@ -9624,16 +9626,16 @@ function renderManpowerStatus(box) {
   box.style.width = "min(1000px, 96vw)";
   const structure = mpsStructure();
   const editable = mpsCanEdit();
-  let total = 0, billable = 0, reserve = 0, unassigned = 0, shortTeams = 0;
+  let total = 0, billable = 0, nonBillable = 0, unassigned = 0, shortTeams = 0;
   structure.forEach(c => c.teams.forEach(t => {
     const s = mpsTeamStats(c.cluster, t.team, t.members);
-    total += s.total; billable += s.billable; reserve += s.reserve; unassigned += s.unassigned; if (s.short) shortTeams++;
+    total += s.total; billable += s.billable; nonBillable += s.nonBillable; unassigned += s.unassigned; if (s.short) shortTeams++;
   }));
   const pill = (label, value, color) => `<div style="flex:1; min-width:110px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface);">
       <div style="font-size:11px; color:var(--text3);">${label}</div><div style="font-size:20px; font-weight:700; color:${color || "var(--text)"};">${value}</div></div>`;
   const classSelect = e => {
     const cur = mpsClassOf(e.id);
-    return `<select ${editable ? "" : "disabled"} onchange="mpsSetClass('${e.id}', this.value)" style="font-size:12px; padding:3px 6px; min-width:110px; ${cur === "Billable" ? "color:var(--green);" : cur === "Reserve" ? "color:var(--accent);" : "color:var(--text3);"}">
+    return `<select ${editable ? "" : "disabled"} onchange="mpsSetClass('${e.id}', this.value)" style="font-size:12px; padding:3px 6px; min-width:110px; ${cur === "Billable" ? "color:var(--green);" : cur === "Non-Billable" ? "color:var(--accent);" : "color:var(--text3);"}">
       <option value="" ${cur === "" ? "selected" : ""}>— Not set —</option>
       ${MPS_CLASSES.map(c => `<option value="${c}" ${cur === c ? "selected" : ""}>${c}</option>`).join("")}</select>`;
   };
@@ -9658,7 +9660,7 @@ function renderManpowerStatus(box) {
           <span style="font-size:11px; color:var(--text3);">${s.total} member${s.total === 1 ? "" : "s"}</span>
         </div>
         <span style="font-size:12px; font-weight:700; color:${col}; white-space:nowrap;">Billable ${s.billable}${s.required != null ? ` / ${s.required}` : ""}${s.short ? ` (−${s.required - s.billable})` : ""}</span>
-        <span style="font-size:12px; color:var(--accent); white-space:nowrap;">Reserve ${s.reserve}</span>
+        <span style="font-size:12px; color:var(--accent); white-space:nowrap;">Non-Billable ${s.nonBillable}</span>
         ${s.unassigned ? `<span style="font-size:11px; color:var(--text3); white-space:nowrap;">${s.unassigned} not set</span>` : ""}
         <label style="font-size:11px; color:var(--text3); display:flex; align-items:center; gap:5px; white-space:nowrap;" onclick="event.stopPropagation()">Required billable
           <input type="number" min="0" max="${MPS_MAX_REQUIRED}" step="1" ${editable ? "" : "disabled"} value="${s.required == null ? "" : s.required}" placeholder="—"
@@ -9672,7 +9674,7 @@ function renderManpowerStatus(box) {
     const stats = c.teams.map(t => mpsTeamStats(c.cluster, t.team, t.members));
     const count = stats.reduce((n, s) => n + s.total, 0);
     const b = stats.reduce((n, s) => n + s.billable, 0);
-    const r = stats.reduce((n, s) => n + s.reserve, 0);
+    const r = stats.reduce((n, s) => n + s.nonBillable, 0);
     const short = stats.filter(s => s.short).length;
     return `<div style="border:1px solid ${short ? "var(--red, #ef4444)" : "var(--border)"}; border-radius:10px; margin-bottom:10px; overflow:hidden;">
       <div onclick="toggleMpsCluster('${jsAttrEscape(c.cluster)}')" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:11px 14px; background:var(--surface);">
@@ -9682,7 +9684,7 @@ function renderManpowerStatus(box) {
         <span style="flex:1;"></span>
         ${short ? `<span style="font-size:12px; font-weight:700; color:var(--red, #ef4444);">${short} team${short === 1 ? "" : "s"} short of billable</span>` : ""}
         <span style="font-size:12px; color:var(--green);">Billable ${b}</span>
-        <span style="font-size:12px; color:var(--accent);">Reserve ${r}</span>
+        <span style="font-size:12px; color:var(--accent);">Non-Billable ${r}</span>
       </div>
       ${open ? `<div style="padding:10px 12px 4px;">${c.teams.map(t => teamHtml(c, t)).join("")}</div>` : ""}
     </div>`;
@@ -9691,13 +9693,13 @@ function renderManpowerStatus(box) {
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div>
         <h3 style="margin-bottom:2px;">Manpower Status</h3>
-        <div style="font-size:12px; color:var(--text2);">Headcount by cluster and team. Billable / Reserve information is visible only here, to HR — employees can't see it.</div>
+        <div style="font-size:12px; color:var(--text2);">Headcount by cluster and team. Billable / Non-Billable information is visible only here, to HR — employees can't see it.</div>
       </div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     ${manpowerPlanListId ? "" : `<div style="margin:12px 0; padding:10px 12px; border:1px solid var(--yellow); border-radius:8px; font-size:12px; color:var(--text2);">The <strong>HR Manpower Plan</strong> list hasn't been set up yet, so billable numbers can't be saved. See SETUP_MANPOWER_PLAN.md.</div>`}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin:14px 0;">
-      ${pill("Headcount", total)}${pill("Billable", billable, "var(--green)")}${pill("Reserve", reserve, "var(--accent)")}${pill("Not set", unassigned, "var(--text3)")}${pill("Teams short of billable", shortTeams, shortTeams ? "var(--red, #ef4444)" : "var(--text)")}
+      ${pill("Headcount", total)}${pill("Billable", billable, "var(--green)")}${pill("Non-Billable", nonBillable, "var(--accent)")}${pill("Not set", unassigned, "var(--text3)")}${pill("Teams short of billable", shortTeams, shortTeams ? "var(--red, #ef4444)" : "var(--text)")}
     </div>
     ${structure.length ? structure.map(clusterHtml).join("") : `<div style="font-size:13px; color:var(--text2);">No employees found.</div>`}`;
 }
