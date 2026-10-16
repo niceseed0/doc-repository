@@ -500,7 +500,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-13";
+const BUILD_ID = "2026-10-09-14";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -534,6 +534,8 @@ const CONFIG = {
   quarterlyFeedbackListDisplayName: "HR Quarterly Feedback",
   serviceRequestsListDisplayName: "HR Service Requests",
   manpowerRequestsListDisplayName: "HR Manpower Requests",
+  quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
+  recommendationReviewsListDisplayName: "HR Recommendation Reviews", // HR/HOC/MD decisions — reviewers only
   manpowerPlanListDisplayName: "HR Manpower Plan", // billable targets / member classification — HR-only, see SETUP_MANPOWER_PLAN.md
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
@@ -1012,6 +1014,8 @@ let pipCases = []; // see PIP module below
 let serviceRequestsListId = null;
 let manpowerRequestsListId = null;
 let manpowerPlanListId = null;
+let qrRecsListId = null;
+let qrReviewsListId = null;
 let manpowerRequests = []; // Team Change / Resignation Notice — see Manpower Request module below
 let serviceRequests = []; // General Requests / Employee Feedback / Inquiry — see Service Requests module below
 let announcementPostsListId = null;
@@ -1046,7 +1050,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1125,6 +1129,10 @@ async function resolveSiteAndLists() {
   manpowerRequestsListId = mpMatch ? mpMatch.id : null; // optional — Manpower Request card stays "Coming soon" if missing
   const srMatch = (lists.value || []).find(l => l.displayName === CONFIG.serviceRequestsListDisplayName);
   serviceRequestsListId = srMatch ? srMatch.id : null; // optional — the three request cards stay "Coming soon" if missing
+  const qrRecsMatch = (lists.value || []).find(l => l.displayName === CONFIG.quarterlyRecommendationsListDisplayName);
+  qrRecsListId = qrRecsMatch ? qrRecsMatch.id : null; // optional — Quarterly Recommendation stays "Coming soon" if missing
+  const qrRevMatch = (lists.value || []).find(l => l.displayName === CONFIG.recommendationReviewsListDisplayName);
+  qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const pipMatch = (lists.value || []).find(l => l.displayName === CONFIG.pipCasesListDisplayName);
   pipCasesListId = pipMatch ? pipMatch.id : null; // optional — PIP card stays "Coming soon" if missing
   const annCommentsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementCommentsListDisplayName);
@@ -2260,7 +2268,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -9847,6 +9855,657 @@ function renderManpowerStatus(box) {
     ${(!structure.length && !adminTotal) ? `<div style="font-size:13px; color:var(--text2);">No employees found.</div>` : ""}`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// QUARTERLY RECOMMENDATION  (see SETUP_QUARTERLY_RECOMMENDATION.md)
+//   Collect : managers use the Team Board (Q1–Q4 × every team member) and pick
+//             No Recommendation / Salary Increase (reason) / Promotion (reason + recommended position).
+//   Release : HR releases a quarter once the teams are done -> every recommended person goes into ONE list.
+//   Review  : HR -> HOC -> MD (final). Reviewers only ever see recommended people (never "No Recommendation").
+//             Each reviewer approves / rejects per person (rejection needs a reason). After approving they set the
+//             salary level (Salary Increase) or position title (Promotion). A rejection stays visible, read-only,
+//             with who/why to every later reviewer. MD must set the final salary level / position title.
+// PRIVACY: two SharePoint lists. "HR Quarterly Recommendations" holds the recommendations and one "Batch" row per
+//   released quarter; "HR Recommendation Reviews" (decisions, notes, salary/position) is loaded ONLY by HR/HOC/MD.
+//   Managers only receive recommendations for their own team (their own cluster for a Cluster Lead), never about
+//   themselves. Employees receive nothing. Reviewers receive recommended people only (server-side filter).
+// ═══════════════════════════════════════════════════════════════════════════
+const QR_OPTIONS = ["No Recommendation", "Salary Increase", "Promotion"];
+const QR_STAGES = ["HR", "HOC", "MD"];
+const QR_ADMIN_ANY_STAGE = false; // true = a permission admin may act at every stage (not just as HR)
+const QR_TEXT_MAX = 1000;
+let qrRecs = [];
+let qrBatches = new Map();   // `${year}-${quarter}` -> batch
+let qrReviews = new Map();   // `${year}-${quarter}-${empId}` -> { itemId, d: { HR:{decision,by,date,note,detail}, HOC, MD } }
+let qrBoardState = { year: null, open: {} };
+let qrReviewState = { year: null, quarter: null };
+
+// ── roles ────────────────────────────────────────────────────────────────────
+function qrIsHR(me) { return !!(canAccessHR || isPermissionAdmin || (me && mpsAutoAdminGroup(me) === "HR/Admin")); }
+function qrIsHOC(me) {
+  if (!me) return false;
+  if (me.position === CONFIG.positionRank[0]) return true; // HOC = Cluster Lead (and Head of Operations)
+  if (mpsAutoAdminGroup(me) === "Head of Operations") return true;
+  try { const l = ORG_CHART.businessOps && ORG_CHART.businessOps.lead; return !!(l && l.name) && mpsNorm(l.name) === mpsNorm(me.name); } catch (e) { return false; }
+}
+function qrIsMD(me) { return !!me && (mpsAutoAdminGroup(me) === "Managing Director" || mpsIsOrgPerson(me, "md")); }
+function qrMyStages() {
+  const me = myEmployeeRecord();
+  const s = [];
+  const hoc = qrIsHOC(me), md = qrIsMD(me);
+  // HOC and MD hold every HR-stage permission too (release, HR review); the stage just names who normally handles it.
+  if (qrIsHR(me) || hoc || md) s.push("HR");
+  if (hoc) s.push("HOC");
+  if (md) s.push("MD");
+  if (QR_ADMIN_ANY_STAGE && isPermissionAdmin) return QR_STAGES.slice();
+  return s;
+}
+
+// ── data ─────────────────────────────────────────────────────────────────────
+function qrMapRec(it) {
+  const f = it.fields;
+  return {
+    itemId: it.id, employeeId: String(f["EmployeeId"] || ""), employeeName: f["Title"] || "", position: f["Position"] || "", team: f["Team"] || "", cluster: f["Cluster"] || "",
+    year: parseInt(f["Year"], 10) || null, quarter: parseInt(f["Quarter"], 10) || null,
+    recommendation: f["Recommendation"] || "No Recommendation", reason: f["Reason"] || "", recommendedPosition: f["RecommendedPosition"] || "",
+    submittedBy: String(f["SubmittedBy"] || "").toLowerCase(), submittedByName: f["SubmittedByName"] || "", submittedDate: f["SubmittedDate"] || null
+  };
+}
+function qrMapBatch(it) {
+  const f = it.fields;
+  return {
+    itemId: it.id, year: parseInt(f["Year"], 10) || null, quarter: parseInt(f["Quarter"], 10) || null, stage: f["Stage"] || "HR",
+    releasedByName: f["ReleasedByName"] || "", releasedDate: f["ReleasedDate"] || null,
+    done: { HR: { by: f["HRDoneByName"] || "", date: f["HRDoneDate"] || null }, HOC: { by: f["HOCDoneByName"] || "", date: f["HOCDoneDate"] || null }, MD: { by: f["MDDoneByName"] || "", date: f["MDDoneDate"] || null } }
+  };
+}
+function qrMapReview(it) {
+  const f = it.fields;
+  const d = {};
+  QR_STAGES.forEach(s => { d[s] = { decision: f[s + "Decision"] || "", by: f[s + "ByName"] || "", date: f[s + "Date"] || null, note: f[s + "Note"] || "", detail: f[s + "Detail"] || "" }; });
+  return { itemId: it.id, year: parseInt(f["Year"], 10) || null, quarter: parseInt(f["Quarter"], 10) || null, employeeId: String(f["EmployeeId"] || ""), d, applied: { by: f["AppliedByName"] || "", date: f["AppliedDate"] || null } };
+}
+async function qrFetchAll(listId, filter) {
+  let url = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=1000` + (filter ? `&$filter=${filter}` : "");
+  const out = [];
+  while (url) {
+    const data = await graphFetch(url, filter ? { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } } : undefined);
+    (data.value || []).forEach(x => out.push(x));
+    url = data["@odata.nextLink"] || null;
+  }
+  return out;
+}
+async function loadQuarterlyRecommendations() {
+  qrRecs = []; qrBatches = new Map(); qrReviews = new Map();
+  if (!qrRecsListId) return;
+  try {
+    const me = myEmployeeRecord();
+    const esc = v => String(v).replace(/'/g, "''");
+    const stages = qrMyStages();
+    const batchItems = await qrFetchAll(qrRecsListId, "fields/RecordType eq 'Batch'");
+    batchItems.forEach(it => { const b = qrMapBatch(it); if (b.year && b.quarter) qrBatches.set(`${b.year}-${b.quarter}`, b); });
+    const seen = new Set();
+    const addRecs = items => items.forEach(it => { if (!seen.has(it.id)) { seen.add(it.id); qrRecs.push(qrMapRec(it)); } });
+    if (stages.includes("HR")) {
+      addRecs(await qrFetchAll(qrRecsListId, "fields/RecordType eq 'Rec'"));
+    } else {
+      if (stages.length) addRecs(await qrFetchAll(qrRecsListId, "fields/RecordType eq 'Rec' and fields/Recommendation ne 'No Recommendation'"));
+      if (me && canWriteQuarterlyFeedback()) {
+        const scope = (me.position === "Cluster Lead" && me.cluster)
+          ? `fields/RecordType eq 'Rec' and fields/Cluster eq '${esc(me.cluster)}'`
+          : `fields/RecordType eq 'Rec' and fields/Team eq '${esc(me.team)}' and fields/Cluster eq '${esc(me.cluster || "")}'`;
+        addRecs(await qrFetchAll(qrRecsListId, scope));
+      }
+    }
+    if (me) qrRecs = qrRecs.filter(r => String(r.employeeId) !== String(me.id)); // nobody sees recommendations about themselves
+    if (stages.length && qrReviewsListId) {
+      const items = await qrFetchAll(qrReviewsListId, null);
+      items.forEach(it => { const r = qrMapReview(it); if (r.year && r.quarter && r.employeeId && !(me && String(r.employeeId) === String(me.id))) qrReviews.set(`${r.year}-${r.quarter}-${r.employeeId}`, r); });
+    }
+  } catch (e) {
+    console.warn("Could not load Quarterly Recommendations (lists may not exist yet):", e);
+    qrRecs = []; qrBatches = new Map(); qrReviews = new Map();
+  }
+}
+function qrBatch(y, q) { return qrBatches.get(`${y}-${q}`) || null; }
+function qrStageOf(y, q) { const b = qrBatch(y, q); return b ? b.stage : "Collecting"; }
+function qrRec(empId, q, y) { return qrRecs.find(r => String(r.employeeId) === String(empId) && r.quarter === q && r.year === y) || null; }
+function qrReviewOf(y, q, empId) { return qrReviews.get(`${y}-${q}-${empId}`) || null; }
+function qrIsRecommended(r) { return r.recommendation === "Salary Increase" || r.recommendation === "Promotion"; }
+function qrRecommended(y, q) { return qrRecs.filter(r => r.year === y && r.quarter === q && qrIsRecommended(r)); }
+function qrYears() {
+  const cy = new Date().getFullYear();
+  const set = new Set([cy, cy - 1]);
+  qrRecs.forEach(r => { if (r.year) set.add(r.year); });
+  qrBatches.forEach(b => { if (b.year) set.add(b.year); });
+  return Array.from(set).sort((a, b) => b - a);
+}
+function qrDecisionOf(rv, stage) { return (rv && rv.d[stage] && rv.d[stage].decision) || ""; }
+// State of one recommended person: which stage rejected them (if any), what they would be at the end, and the detail so far.
+function qrRowState(rec) {
+  const rv = qrReviewOf(rec.year, rec.quarter, rec.employeeId);
+  let rejectedAt = null;
+  for (const s of QR_STAGES) { if (qrDecisionOf(rv, s) === "Rejected") { rejectedAt = s; break; } if (qrDecisionOf(rv, s) !== "Approved") break; }
+  let detail = "";
+  if (rv) QR_STAGES.forEach(s => { if (qrDecisionOf(rv, s) === "Approved" && rv.d[s].detail) detail = rv.d[s].detail; });
+  const finalApproved = !rejectedAt && QR_STAGES.every(s => qrDecisionOf(rv, s) === "Approved");
+  return { rv, rejectedAt, detail, finalApproved };
+}
+function qrDetailLabel(rec) { return rec.recommendation === "Promotion" ? "Position title" : "Salary level"; }
+
+// ── Team Board (collect) ─────────────────────────────────────────────────────
+function qrBoardTargets() { return qfBoardTargets(); }
+function qrBoardBadge() {
+  try {
+    if (!qrRecsListId || !canWriteQuarterlyFeedback()) return 0;
+    const { quarter, year } = currentQuarterInfo();
+    if (qrStageOf(year, quarter) !== "Collecting") return 0;
+    return qrBoardTargets().filter(e => !qrRec(e.id, quarter, year)).length;
+  } catch (e) { return 0; }
+}
+function openQrBoard() {
+  if (!qrRecsListId || !canWriteQuarterlyFeedback()) return;
+  const now = new Date();
+  if (!qrBoardState.year) { qrBoardState.year = now.getFullYear(); qrBoardState.open = { [Math.floor(now.getMonth() / 3) + 1]: true }; }
+  hrView = { mode: "qrBoard" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function setQrBoardYear(y) {
+  qrBoardState.year = parseInt(y, 10);
+  const cy = new Date().getFullYear();
+  qrBoardState.open = qrBoardState.year === cy ? { [Math.floor(new Date().getMonth() / 3) + 1]: true } : {};
+  renderHRModal();
+}
+function toggleQrQuarter(q) { qrBoardState.open[q] = !qrBoardState.open[q]; renderHRModal(); }
+function qrRecSummaryHtml(rec) {
+  if (!rec) return "";
+  if (rec.recommendation === "Promotion") return `<span style="color:var(--green); font-weight:600;">Promotion</span> <span style="color:var(--text3); font-size:11px;">&rarr; ${escapeHtml(rec.recommendedPosition)}</span>`;
+  if (rec.recommendation === "Salary Increase") return `<span style="color:var(--accent); font-weight:600;">Salary Increase</span>`;
+  return `<span style="color:var(--text3);">No Recommendation</span>`;
+}
+function renderQrBoard(box) {
+  box.style.width = "min(860px, 96vw)";
+  const year = qrBoardState.year || new Date().getFullYear();
+  const targets = qrBoardTargets();
+  const years = qrYears();
+  const section = q => {
+    const started = qfQuarterStarted(year, q);
+    const stage = qrStageOf(year, q);
+    const locked = stage !== "Collecting";
+    const done = targets.filter(e => qrRec(e.id, q, year)).length;
+    const pct = targets.length ? Math.round(done / targets.length * 100) : 0;
+    const open = !!qrBoardState.open[q];
+    const rows = targets.map(e => {
+      const rec = qrRec(e.id, q, year);
+      let status, action = "";
+      if (rec) {
+        status = `<span title="${escapeAttr(rec.reason || "")}">${qrRecSummaryHtml(rec)}</span>`;
+        if (!locked) action = `<button class="btn btn-secondary btn-sm" onclick="qrWrite('${e.id}',${q},${year})">Edit</button>`;
+      } else if (!started) {
+        status = `<span style="color:var(--text3);">Opens ${escapeHtml(qfQuarterRange(year, q).start)}</span>`;
+      } else if (locked) {
+        status = `<span style="color:var(--text3);">Not written</span>`;
+      } else {
+        status = `<span style="color:var(--yellow); font-weight:600;">Not yet</span>`;
+        action = `<button class="btn btn-primary btn-sm" onclick="qrWrite('${e.id}',${q},${year})">Write</button>`;
+      }
+      return `<div style="display:grid; grid-template-columns:1.3fr 1.7fr auto; gap:10px; align-items:center; padding:7px 10px; background:var(--surface2); border:1px solid var(--border); border-radius:6px; font-size:12px;">
+        <span>${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.position || "")}</span></span>
+        <span>${status}</span><span style="text-align:right;">${action}</span></div>`;
+    }).join("");
+    const stageNote = locked ? `<span style="font-size:11px; color:var(--text3); white-space:nowrap;">&#128274; ${stage === "Done" ? "Review finished" : "In review (" + escapeHtml(stage) + ")"}</span>` : `<span style="font-size:11px; color:var(--text3); white-space:nowrap;">due ${escapeHtml(qfDueYMD(year, q))}</span>`;
+    const col = !started ? "var(--text3)" : pct >= 100 ? "var(--green)" : pct >= 60 ? "var(--yellow)" : "var(--red, #ef4444)";
+    return `<div style="border:1px solid var(--border); border-radius:10px; margin-bottom:10px; overflow:hidden;">
+      <div onclick="toggleQrQuarter(${q})" style="cursor:pointer; display:flex; align-items:center; gap:12px; padding:11px 14px; background:var(--surface);">
+        <span style="font-size:10px; color:var(--text3); width:12px;">${open ? "&#9660;" : "&#9654;"}</span>
+        <span style="font-size:14px; font-weight:700; min-width:64px;">${escapeHtml(quarterLabel(q, year))}</span>
+        ${stageNote}
+        <div style="flex:1;"><div style="height:6px; border-radius:3px; background:var(--surface2); overflow:hidden; min-width:80px;"><div style="height:100%; width:${pct}%; background:${col};"></div></div></div>
+        <span style="font-size:12px; font-weight:600; color:${col}; white-space:nowrap;">${started ? `${done}/${targets.length}` : "—"}</span>
+      </div>
+      ${open ? `<div style="padding:10px 12px; display:flex; flex-direction:column; gap:5px;">${rows || `<div style="font-size:12px; color:var(--text3);">No eligible team members.</div>`}</div>` : ""}
+    </div>`;
+  };
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Quarterly Recommendation</h3>
+        <div style="font-size:12px; color:var(--text2);">${targets.length} team member${targets.length === 1 ? "" : "s"} · recommend a salary increase or promotion per quarter</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:14px 0;">
+      <select onchange="setQrBoardYear(this.value)" style="max-width:110px;">${years.map(y => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
+      ${qrMyStages().length ? `<button class="btn btn-secondary btn-sm" onclick="openQrReview()">Review</button>` : ""}
+    </div>
+    ${targets.length ? [1, 2, 3, 4].map(section).join("") : `<div style="font-size:13px; color:var(--text2);">There is nobody on your team you can write a recommendation for yet.</div>`}`;
+}
+
+// ── write form ───────────────────────────────────────────────────────────────
+function qrWrite(empId, q, y) {
+  if (!qrRecsListId || !canWriteQuarterlyFeedback()) return;
+  if (qrStageOf(y, q) !== "Collecting") { toast("This quarter has already been released for review.", "error"); return; }
+  const emp = qrBoardTargets().find(e => String(e.id) === String(empId));
+  if (!emp) return;
+  const existing = qrRec(empId, q, y);
+  let draft = existing ? { option: existing.recommendation, reason: existing.reason, pos: existing.recommendedPosition, prefilled: false } : { option: "No Recommendation", reason: "", pos: "", prefilled: false };
+  if (!existing) {
+    // Pre-fill from the Quarterly Feedback session for the same person and quarter, when one has already been written.
+    const fb = (typeof qfRecordFor === "function") ? qfRecordFor(empId, q, y) : null;
+    if (fb && (fb.recommendation === "Promotion" || fb.recommendation === "Salary Increase")) draft = { option: fb.recommendation, reason: fb.recommendationReason || "", pos: "", prefilled: true };
+  }
+  hrView = { mode: "qrForm", employeeId: String(empId), quarter: q, year: y, draft };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function qrFormCapture() {
+  const h = hrView; if (!h || h.mode !== "qrForm") return;
+  const sel = document.querySelector('input[name="qrOpt"]:checked');
+  const reason = document.getElementById("qrReason"), pos = document.getElementById("qrPos");
+  if (sel) h.draft.option = sel.value;
+  if (reason) h.draft.reason = reason.value;
+  if (pos) h.draft.pos = pos.value;
+}
+function qrFormChange() { qrFormCapture(); renderHRModal(); }
+function renderQrForm(box) {
+  box.style.width = "min(600px, 94vw)";
+  const h = hrView;
+  const emp = employees.find(e => String(e.id) === h.employeeId) || { name: "", position: "" };
+  const d = h.draft;
+  const needReason = d.option !== "No Recommendation";
+  const isPromo = d.option === "Promotion";
+  const positions = CONFIG.positionRank.filter(p => positionRankIndex(p) < positionRankIndex(emp.position));
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Recommendation — ${escapeHtml(emp.name)}</h3>
+        <div style="font-size:12px; color:var(--text2);">${escapeHtml(emp.position || "")} · ${escapeHtml(quarterLabel(h.quarter, h.year))}</div>
+      </div>
+      <button class="btn btn-secondary" onclick="qrFormCancel()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${d.prefilled ? `<div style="margin-top:10px; font-size:12px; color:var(--text2);">Pre-filled from this quarter's Quarterly Feedback — adjust as needed.</div>` : ""}
+    <div class="form-group" style="margin-top:14px;">
+      <label>Recommendation *</label>
+      <div style="display:flex; flex-direction:column; gap:6px; font-size:13px;">
+        ${QR_OPTIONS.map(o => `<label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="qrOpt" value="${escapeAttr(o)}" onchange="qrFormChange()" ${d.option === o ? "checked" : ""} /> ${escapeHtml(o)}</label>`).join("")}
+      </div>
+    </div>
+    ${needReason ? `<div class="form-group"><label>Reason *</label><textarea id="qrReason" style="min-height:90px;" maxlength="${QR_TEXT_MAX}" placeholder="Why do you recommend this?">${escapeHtml(d.reason)}</textarea></div>` : ""}
+    ${isPromo ? `<div class="form-group"><label>Recommended position *</label><input id="qrPos" type="text" list="qrPosList" value="${escapeAttr(d.pos)}" placeholder="e.g. Product Manager" /><datalist id="qrPosList">${positions.map(p => `<option value="${escapeAttr(p)}"></option>`).join("")}</datalist></div>` : ""}
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="qrFormCancel()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitQrRec()">Save</button>
+    </div>`;
+}
+function qrFormCancel() { openQrBoard(); }
+async function submitQrRec() {
+  const h = hrView;
+  if (!h || h.mode !== "qrForm" || !qrRecsListId) return;
+  qrFormCapture();
+  const d = h.draft;
+  const emp = qrBoardTargets().find(e => String(e.id) === h.employeeId);
+  if (!emp) { toast("You can't write a recommendation for this person.", "error"); return; }
+  if (qrStageOf(h.year, h.quarter) !== "Collecting") { toast("This quarter has already been released for review.", "error"); return; }
+  const need = d.option !== "No Recommendation";
+  const reason = need ? (d.reason || "").trim() : "";
+  const pos = d.option === "Promotion" ? (d.pos || "").trim() : "";
+  if (need && reason.length < 3) { toast("Please write the reason.", "error"); return; }
+  if (reason.length > QR_TEXT_MAX) { toast(`Reason is too long (max ${QR_TEXT_MAX} characters).`, "error"); return; }
+  if (d.option === "Promotion" && !pos) { toast("Please enter the recommended position.", "error"); return; }
+  const existing = qrRec(emp.id, h.quarter, h.year);
+  const fields = { Recommendation: d.option, Reason: reason, RecommendedPosition: pos, SubmittedBy: srMyEmail(), SubmittedByName: srMyName(), SubmittedDate: new Date().toISOString() };
+  setSyncing(true);
+  try {
+    if (existing) {
+      await graphFetch(`/sites/${siteId}/lists/${qrRecsListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+      Object.assign(existing, { recommendation: d.option, reason, recommendedPosition: pos, submittedBy: srMyEmail(), submittedByName: srMyName(), submittedDate: fields.SubmittedDate });
+    } else {
+      const base = { Title: emp.name, RecordType: "Rec", Year: String(h.year), Quarter: String(h.quarter), EmployeeId: String(emp.id), Position: emp.position || "", Team: emp.team || "" };
+      if (emp.cluster) base.Cluster = emp.cluster;
+      const all = Object.assign(base, fields);
+      const created = await graphFetch(`/sites/${siteId}/lists/${qrRecsListId}/items`, { method: "POST", body: JSON.stringify({ fields: all }) });
+      qrRecs.push(qrMapRec({ id: created.id, fields: all }));
+    }
+    setSyncing(false, true);
+    toast("Recommendation saved ✓", "success");
+    openQrBoard();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
+// ── review ───────────────────────────────────────────────────────────────────
+async function openQrReview(year, quarter) {
+  if (!qrRecsListId || !qrMyStages().length) return;
+  document.getElementById("hrModal").classList.add("open");
+  setSyncing(true);
+  try { await loadQuarterlyRecommendations(); setSyncing(false, true); } catch (e) { setSyncing(false, false); } // other reviewers may have changed things
+  const now = new Date();
+  if (year && quarter) qrReviewState = { year, quarter };
+  else if (!qrReviewState.year) {
+    // Prefer a quarter that is waiting on me.
+    const mine = qrMyStages();
+    const waiting = Array.from(qrBatches.values()).filter(b => mine.includes(b.stage)).sort((a, b) => (b.year - a.year) || (b.quarter - a.quarter))[0];
+    qrReviewState = waiting ? { year: waiting.year, quarter: waiting.quarter } : { year: now.getFullYear(), quarter: Math.floor(now.getMonth() / 3) + 1 };
+  }
+  hrView = { mode: "qrReview" };
+  renderHRModal();
+}
+function qrReviewSet(patch) { Object.assign(qrReviewState, patch); renderHRModal(); }
+function qrCollectionProgress(y, q) {
+  const list = employees.filter(qfIsEvaluatee);
+  const byCluster = new Map();
+  list.forEach(e => {
+    const c = e.cluster || "(No cluster)", t = e.team || "(No team)";
+    if (!byCluster.has(c)) byCluster.set(c, new Map());
+    const tm = byCluster.get(c);
+    if (!tm.has(t)) tm.set(t, []);
+    tm.get(t).push(e);
+  });
+  const total = list.length, done = list.filter(e => qrRec(e.id, q, y)).length;
+  return { byCluster, total, done };
+}
+function qrChipHtml(stage, x, rec) {
+  if (!x || !x.decision) return "";
+  const ok = x.decision === "Approved";
+  const col = ok ? "var(--green)" : "var(--red, #ef4444)";
+  const who = `${escapeHtml(x.by || "")}${x.date ? " · " + escapeHtml(dateOnly(x.date)) : ""}`;
+  const note = (!ok && x.note) ? `<div style="margin-top:2px; white-space:pre-wrap;">Reason: ${escapeHtml(x.note)}</div>` : "";
+  const det = (ok && x.detail) ? ` — ${escapeHtml(qrDetailLabel(rec))}: <strong>${escapeHtml(x.detail)}</strong>` : "";
+  return `<div style="font-size:11px; padding:4px 8px; border-radius:6px; border:1px solid ${col}; color:var(--text2);"><strong style="color:${col};">${escapeHtml(stage)} ${ok ? "&#10003; Approved" : "&#10007; Rejected"}</strong> <span style="color:var(--text3);">${who}</span>${det}${note}</div>`;
+}
+function renderQrReview(box) {
+  box.style.width = "min(980px, 96vw)";
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  const stage = qrStageOf(y, q);
+  const mine = qrMyStages();
+  const actingStage = QR_STAGES.includes(stage) && mine.includes(stage) ? stage : null;
+  const isHR = mine.includes("HR");
+  const years = qrYears();
+  const qBtns = [1, 2, 3, 4].map(n => {
+    const s = qrStageOf(y, n);
+    const wait = QR_STAGES.includes(s) && mine.includes(s);
+    return `<button class="btn ${n === q ? "btn-primary" : "btn-secondary"} btn-sm" onclick="qrReviewSet({quarter:${n}})">Q${n} <span style="font-size:10px; opacity:.8;">${s === "Collecting" ? "collecting" : s === "Done" ? "done" : escapeHtml(s)}</span>${wait ? " &#9679;" : ""}</button>`;
+  }).join("");
+  let body = "";
+  if (stage === "Collecting") {
+    if (isHR) {
+      const pg = qrCollectionProgress(y, q);
+      const recommended = qrRecommended(y, q).length;
+      const clusters = Array.from(pg.byCluster.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([c, tm]) => {
+        const teams = Array.from(tm.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([t, mem]) => {
+          const dn = mem.filter(e => qrRec(e.id, q, y)).length;
+          const full = dn === mem.length;
+          return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:4px 10px;"><span>${escapeHtml(t)}</span><span style="font-weight:600; color:${full ? "var(--green)" : "var(--yellow)"};">${dn}/${mem.length}${full ? " &#10003;" : ""}</span></div>`;
+        }).join("");
+        return `<div style="border:1px solid var(--border); border-radius:8px; margin-bottom:8px; overflow:hidden;"><div style="padding:6px 10px; font-weight:700; font-size:12px; background:var(--surface);">${escapeHtml(c)}</div>${teams}</div>`;
+      }).join("");
+      body = `<div style="font-size:13px; margin-bottom:10px;">Collecting: <strong>${pg.done}/${pg.total}</strong> written · <strong>${recommended}</strong> recommended. When the teams are done, release the quarter — every recommended person goes into one list for review (HR &rarr; HOC &rarr; MD).</div>
+        ${clusters || `<div style="font-size:12px; color:var(--text3);">No eligible employees.</div>`}
+        <div class="modal-actions"><button class="btn btn-primary" onclick="qrRelease()">Release ${escapeHtml(quarterLabel(q, y))} for review</button></div>`;
+    } else {
+      body = `<div style="font-size:13px; color:var(--text2);">${escapeHtml(quarterLabel(q, y))} is still being collected from the teams. HR will release it for review.</div>`;
+    }
+  } else {
+    const recs = qrRecommended(y, q).map(r => ({ r, st: qrRowState(r) }));
+    const myIdx = actingStage ? QR_STAGES.indexOf(actingStage) : -1;
+    const actionable = x => QR_STAGES.slice(0, myIdx).every(s => qrDecisionOf(x.st.rv, s) === "Approved");
+    recs.sort((a, b) => {
+      const ra = actingStage ? (actionable(a) ? 0 : 1) : (a.st.rejectedAt ? 1 : 0);
+      const rb = actingStage ? (actionable(b) ? 0 : 1) : (b.st.rejectedAt ? 1 : 0);
+      return (ra - rb) || String(a.r.employeeName).localeCompare(String(b.r.employeeName));
+    });
+    const pending = actingStage ? recs.filter(x => actionable(x) && !qrDecisionOf(x.st.rv, actingStage)) : [];
+    const rows = recs.map(({ r, st }) => {
+      const rv = st.rv;
+      const chips = QR_STAGES.map(s => qrChipHtml(s, rv && rv.d[s], r)).filter(Boolean).join("");
+      const can = actingStage && actionable({ r, st });
+      let act = "";
+      if (can) {
+        const mineDec = qrDecisionOf(rv, actingStage);
+        if (!mineDec) act = `<button class="btn btn-primary btn-sm" onclick="qrApprove('${r.employeeId}')">Approve</button> <button class="btn btn-secondary btn-sm" onclick="qrReject('${r.employeeId}')">Reject</button>`;
+        else {
+          const det = rv.d[actingStage].detail || "";
+          act = `<button class="btn btn-secondary btn-sm" onclick="qrUndo('${r.employeeId}')">Undo my decision</button>` +
+            (mineDec === "Approved" ? `<div style="margin-top:6px;"><label style="font-size:11px;">${escapeHtml(qrDetailLabel(r))}${actingStage === "MD" ? " *" : ""}</label><input type="text" value="${escapeAttr(det)}" placeholder="${r.recommendation === "Promotion" ? "New position title" : "New salary level"}" onchange="qrSetDetail('${r.employeeId}', this.value)" style="width:100%;" /></div>` : "");
+        }
+      }
+      const blocked = st.rejectedAt && (!actingStage || QR_STAGES.indexOf(st.rejectedAt) < myIdx) ? `<div style="font-size:11px; color:var(--text3); margin-top:4px;">Rejected at ${escapeHtml(st.rejectedAt)} — shown for reference only.</div>` : "";
+      const appl = (st.finalApproved && st.rv && st.rv.applied && st.rv.applied.date) ? st.rv.applied : null;
+      const applyUi = (stage === "Done" && st.finalApproved) ? (appl
+        ? `<div style="margin-top:6px; font-size:12px; color:var(--green);">&#10003; Applied to HR profile by ${escapeHtml(appl.by)} · ${escapeHtml(dateOnly(appl.date))}${isHR ? ` <button class="btn btn-secondary btn-sm" onclick="qrMarkApplied('${r.employeeId}', false)">Undo</button>` : ""}</div>`
+        : `<div style="margin-top:6px; font-size:12px; color:var(--yellow);">Waiting for HR to update the HR profile${isHR ? ` <button class="btn btn-primary btn-sm" onclick="qrMarkApplied('${r.employeeId}', true)">Mark as applied</button>` : ""}</div>`) : "";
+      const final = stage === "Done" ? (st.finalApproved ? `<span style="color:var(--green); font-weight:700;">&#10003; Final: ${escapeHtml(qrDetailLabel(r))} — ${escapeHtml(st.detail || "—")}</span>${applyUi}` : `<span style="color:var(--red, #ef4444); font-weight:700;">&#10007; Not approved</span>`) : "";
+      return `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; background:var(--surface2); ${st.rejectedAt ? "opacity:.85;" : ""}">
+        <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+          <div><strong>${escapeHtml(r.employeeName)}</strong> <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(r.position)} · ${escapeHtml(r.team)}${r.cluster ? " (" + escapeHtml(r.cluster) + ")" : ""}</span></div>
+          <div style="font-size:12px;">${qrRecSummaryHtml(r)}</div>
+        </div>
+        <div style="font-size:12px; color:var(--text2); margin-top:4px; white-space:pre-wrap;">${escapeHtml(r.reason)}</div>
+        <div style="font-size:11px; color:var(--text3); margin-top:2px;">Recommended by ${escapeHtml(r.submittedByName)}</div>
+        ${chips ? `<div style="display:flex; flex-direction:column; gap:4px; margin-top:8px;">${chips}</div>` : ""}
+        ${blocked}
+        ${final ? `<div style="margin-top:8px; font-size:12px;">${final}</div>` : ""}
+        ${act ? `<div style="margin-top:8px;">${act}</div>` : ""}
+      </div>`;
+    }).join("");
+    const approved = actingStage ? recs.filter(x => actionable(x) && qrDecisionOf(x.st.rv, actingStage) === "Approved").length : 0;
+    const rejected = actingStage ? recs.filter(x => actionable(x) && qrDecisionOf(x.st.rv, actingStage) === "Rejected").length : 0;
+    const next = actingStage ? QR_STAGES[QR_STAGES.indexOf(actingStage) + 1] : null;
+    const finals = stage === "Done" ? recs.filter(x => x.st.finalApproved) : [];
+    const pendingApply = finals.filter(x => !(x.st.rv.applied && x.st.rv.applied.date));
+    const banner = stage === "Done" ? `<div style="font-size:13px; margin-bottom:10px;">Review finished. ${finals.length ? `HR profile updates: <strong>${finals.length - pendingApply.length}/${finals.length}</strong> applied. Update each person's HR profile (position / salary history), then mark it as applied.` : "No one was approved."}${isHR && pendingApply.length ? ` <button class="btn btn-secondary btn-sm" onclick="qrMarkAllApplied()">Mark all ${pendingApply.length} as applied</button>` : ""}</div>`
+      : actingStage ? `<div style="font-size:13px; margin-bottom:10px;">Your turn: <strong>${escapeHtml(actingStage)} review</strong> — ${pending.length} undecided · ${approved} approved · ${rejected} rejected.</div>`
+      : `<div style="font-size:13px; margin-bottom:10px;">Currently with <strong>${escapeHtml(stage)}</strong> — read-only for you.</div>`;
+    body = `${banner}
+      ${actingStage && pending.length ? `<div style="margin-bottom:10px;"><button class="btn btn-secondary btn-sm" onclick="qrApproveAll()">Approve all undecided (${pending.length})</button></div>` : ""}
+      ${rows || `<div style="font-size:13px; color:var(--text3);">Nobody was recommended this quarter.</div>`}
+      ${actingStage ? `<div class="modal-actions"><button class="btn btn-primary" onclick="qrCompleteStage()">${next ? `Complete ${escapeHtml(actingStage)} review &rarr; send to ${escapeHtml(next)}` : "Finalize (MD)"}</button></div>` : ""}`;
+  }
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div>
+        <h3 style="margin-bottom:2px;">Quarterly Recommendation — Review</h3>
+        <div style="font-size:12px; color:var(--text2);">Only recommended people are listed · order HR &rarr; HOC &rarr; MD</div>
+      </div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0;">
+      <select onchange="qrReviewSet({year:parseInt(this.value,10)})" style="max-width:110px;">${years.map(v => `<option value="${v}" ${v === y ? "selected" : ""}>${v}</option>`).join("")}</select>
+      ${qBtns}
+    </div>
+    ${body}`;
+}
+async function qrRelease() {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  if (!qrMyStages().includes("HR") || !qrRecsListId || qrStageOf(y, q) !== "Collecting") return;
+  const recommended = qrRecommended(y, q).length;
+  if (!recommended) { toast("Nobody is recommended for this quarter yet.", "error"); return; }
+  const pg = qrCollectionProgress(y, q);
+  const warn = pg.done < pg.total ? `\n\nWarning: only ${pg.done} of ${pg.total} recommendations have been written. Teams will no longer be able to add or change theirs.` : "";
+  if (!confirm(`Release ${quarterLabel(q, y)} for review? ${recommended} recommended people will go to HR, then HOC, then MD.${warn}`)) return;
+  const fields = { Title: `${quarterLabel(q, y)} batch`, RecordType: "Batch", Year: String(y), Quarter: String(q), Stage: "HR", ReleasedByName: srMyName(), ReleasedDate: new Date().toISOString() };
+  setSyncing(true);
+  try {
+    const created = await graphFetch(`/sites/${siteId}/lists/${qrRecsListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    const b = qrMapBatch({ id: created.id, fields });
+    qrBatches.set(`${y}-${q}`, b);
+    setSyncing(false, true);
+    toast("Released for review ✓", "success");
+    renderHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not release: " + err.message, "error"); }
+}
+function qrActingFor(empId) {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  const stage = qrStageOf(y, q);
+  if (!QR_STAGES.includes(stage) || !qrMyStages().includes(stage) || !qrReviewsListId) return null;
+  const rec = qrRec(empId, q, y);
+  if (!rec || !qrIsRecommended(rec)) return null;
+  const st = qrRowState(rec);
+  const idx = QR_STAGES.indexOf(stage);
+  if (!QR_STAGES.slice(0, idx).every(s => qrDecisionOf(st.rv, s) === "Approved")) return null; // earlier rejection/undecided => read-only here
+  return { stage, rec, st, y, q };
+}
+async function qrWriteReview(ctx, patch) {
+  const { stage, rec, y, q } = ctx;
+  const fields = {};
+  if ("decision" in patch) { fields[stage + "Decision"] = patch.decision; fields[stage + "ByName"] = patch.decision ? srMyName() : ""; fields[stage + "Date"] = patch.decision ? new Date().toISOString() : ""; }
+  if ("note" in patch) fields[stage + "Note"] = patch.note;
+  if ("detail" in patch) fields[stage + "Detail"] = patch.detail;
+  let rv = qrReviewOf(y, q, rec.employeeId);
+  if (rv) {
+    await graphFetch(`/sites/${siteId}/lists/${qrReviewsListId}/items/${rv.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+  } else {
+    const all = Object.assign({ Title: `${rec.employeeName} — ${quarterLabel(q, y)}`, Year: String(y), Quarter: String(q), EmployeeId: String(rec.employeeId), EmployeeName: rec.employeeName }, fields);
+    const created = await graphFetch(`/sites/${siteId}/lists/${qrReviewsListId}/items`, { method: "POST", body: JSON.stringify({ fields: all }) });
+    rv = qrMapReview({ id: created.id, fields: all });
+    qrReviews.set(`${y}-${q}-${rec.employeeId}`, rv);
+    return;
+  }
+  const cur = rv.d[stage];
+  if ("decision" in patch) { cur.decision = patch.decision; cur.by = patch.decision ? srMyName() : ""; cur.date = patch.decision ? fields[stage + "Date"] : null; }
+  if ("note" in patch) cur.note = patch.note;
+  if ("detail" in patch) cur.detail = patch.detail;
+}
+async function qrApprove(empId) {
+  const ctx = qrActingFor(empId); if (!ctx) return;
+  const prev = ctx.st.detail || (ctx.rec.recommendation === "Promotion" ? ctx.rec.recommendedPosition : "");
+  setSyncing(true);
+  try { await qrWriteReview(ctx, { decision: "Approved", note: "", detail: prev }); setSyncing(false, true); renderHRModal(); }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function qrReject(empId) {
+  const ctx = qrActingFor(empId); if (!ctx) return;
+  const reason = (prompt(`Reason for rejecting ${ctx.rec.employeeName}:`) || "").trim();
+  if (reason.length < 3) { toast("A reason is required to reject.", "error"); return; }
+  if (reason.length > QR_TEXT_MAX) { toast(`Reason is too long (max ${QR_TEXT_MAX} characters).`, "error"); return; }
+  setSyncing(true);
+  try { await qrWriteReview(ctx, { decision: "Rejected", note: reason, detail: "" }); setSyncing(false, true); renderHRModal(); }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function qrUndo(empId) {
+  const ctx = qrActingFor(empId); if (!ctx) return;
+  setSyncing(true);
+  try { await qrWriteReview(ctx, { decision: "", note: "", detail: "" }); setSyncing(false, true); renderHRModal(); }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function qrSetDetail(empId, value) {
+  const ctx = qrActingFor(empId); if (!ctx) return;
+  if (qrDecisionOf(ctx.st.rv, ctx.stage) !== "Approved") return;
+  const v = String(value || "").trim().slice(0, 200);
+  setSyncing(true);
+  try { await qrWriteReview(ctx, { detail: v }); setSyncing(false, true); }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function qrApproveAll() {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  const todo = qrRecommended(y, q).filter(r => { const c = qrActingFor(r.employeeId); return c && !qrDecisionOf(c.st.rv, c.stage); });
+  if (!todo.length) return;
+  if (!confirm(`Approve all ${todo.length} undecided recommendations?`)) return;
+  setSyncing(true);
+  try {
+    for (const r of todo) {
+      const ctx = qrActingFor(r.employeeId); if (!ctx) continue;
+      await qrWriteReview(ctx, { decision: "Approved", note: "", detail: ctx.st.detail || (r.recommendation === "Promotion" ? r.recommendedPosition : "") });
+    }
+    setSyncing(false, true); renderHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); renderHRModal(); }
+}
+async function qrCompleteStage() {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  const stage = qrStageOf(y, q);
+  if (!QR_STAGES.includes(stage) || !qrMyStages().includes(stage)) return;
+  const rows = qrRecommended(y, q).filter(r => qrActingFor(r.employeeId));
+  const undecided = rows.filter(r => !qrDecisionOf(qrRowState(r).rv, stage));
+  if (undecided.length) { toast(`${undecided.length} recommendation${undecided.length === 1 ? " is" : "s are"} still undecided.`, "error"); return; }
+  if (stage === "MD") {
+    const missing = rows.filter(r => { const rv = qrRowState(r).rv; return qrDecisionOf(rv, "MD") === "Approved" && !(rv.d.MD.detail || "").trim(); });
+    if (missing.length) { toast(`Please set the salary level / position title for ${missing.length} approved ${missing.length === 1 ? "person" : "people"}.`, "error"); return; }
+  }
+  const next = QR_STAGES[QR_STAGES.indexOf(stage) + 1] || "Done";
+  if (!confirm(next === "Done" ? `Finalize ${quarterLabel(q, y)}? Results will be locked.` : `Complete the ${stage} review and send ${quarterLabel(q, y)} to ${next}?`)) return;
+  const b = qrBatch(y, q);
+  const now = new Date().toISOString();
+  const fields = { Stage: next }; fields[stage + "DoneByName"] = srMyName(); fields[stage + "DoneDate"] = now;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${qrRecsListId}/items/${b.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+    b.stage = next; b.done[stage] = { by: srMyName(), date: now };
+    setSyncing(false, true);
+    toast(next === "Done" ? "Finalized ✓" : `Sent to ${next} ✓`, "success");
+    renderHRModal();
+    try { renderTabs(); } catch (e) { /* ignore */ }
+  } catch (err) { setSyncing(false, false); toast("Could not complete: " + err.message, "error"); }
+}
+
+// HR updates Employees / Position History by hand, then confirms here (the app never changes them automatically).
+async function qrSetApplied(rec, on) {
+  const rv = qrReviewOf(rec.year, rec.quarter, rec.employeeId);
+  if (!rv) return;
+  const now = new Date().toISOString();
+  const fields = { AppliedByName: on ? srMyName() : "", AppliedDate: on ? now : "" };
+  await graphFetch(`/sites/${siteId}/lists/${qrReviewsListId}/items/${rv.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+  rv.applied = { by: on ? srMyName() : "", date: on ? now : null };
+}
+function qrApplyCandidate(empId) {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  if (qrStageOf(y, q) !== "Done" || !qrMyStages().includes("HR") || !qrReviewsListId) return null;
+  const rec = qrRec(empId, q, y);
+  if (!rec || !qrIsRecommended(rec) || !qrRowState(rec).finalApproved) return null;
+  return rec;
+}
+async function qrMarkApplied(empId, on) {
+  const rec = qrApplyCandidate(empId); if (!rec) return;
+  if (on && !confirm(`Confirm that ${rec.employeeName}'s HR profile has been updated?`)) return;
+  setSyncing(true);
+  try { await qrSetApplied(rec, on); setSyncing(false, true); renderHRModal(); try { renderTabs(); } catch (e) { /* ignore */ } }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function qrMarkAllApplied() {
+  const y = qrReviewState.year, q = qrReviewState.quarter;
+  const todo = qrRecommended(y, q).filter(r => qrApplyCandidate(r.employeeId) && !(qrRowState(r).rv.applied || {}).date);
+  if (!todo.length) return;
+  if (!confirm(`Confirm that all ${todo.length} HR profiles have been updated?`)) return;
+  setSyncing(true);
+  try { for (const r of todo) await qrSetApplied(r, true); setSyncing(false, true); renderHRModal(); try { renderTabs(); } catch (e) { /* ignore */ } }
+  catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); renderHRModal(); }
+}
+
+// ── cards / to-dos ───────────────────────────────────────────────────────────
+function qrTodoItems() {
+  const rows = [];
+  if (!qrRecsListId) return rows;
+  const mine = qrMyStages();
+  if (!mine.length) return rows;
+  qrBatches.forEach(b => {
+    if (QR_STAGES.includes(b.stage) && mine.includes(b.stage)) rows.push({ label: `Quarterly Recommendation — your ${b.stage} review is waiting`, sub: quarterLabel(b.quarter, b.year), click: `openQrReview(${b.year},${b.quarter})` });
+  });
+  if (mine.includes("HR")) {
+    qrBatches.forEach(b => {
+      if (b.stage !== "Done") return;
+      const n = qrRecommended(b.year, b.quarter).filter(r => { const st = qrRowState(r); return st.finalApproved && !(st.rv.applied && st.rv.applied.date); }).length;
+      if (n) rows.push({ label: `Quarterly Recommendation — ${n} approved result${n === 1 ? "" : "s"} to apply to HR profiles`, sub: quarterLabel(b.quarter, b.year), click: `openQrReview(${b.year},${b.quarter})` });
+    });
+    const { quarter, year } = currentQuarterInfo();
+    if (qrStageOf(year, quarter) === "Collecting") {
+      const pg = qrCollectionProgress(year, quarter);
+      if (pg.total && pg.done >= pg.total && qrRecommended(year, quarter).length) rows.push({ label: "Quarterly Recommendation — all teams are done, ready to release", sub: quarterLabel(quarter, year), click: `openQrReview(${year},${quarter})` });
+    }
+  }
+  return rows;
+}
+function qrMgmtCard() {
+  const base = { icon: "&#127775;", title: "Quarterly Recommendation", desc: "Recommend a salary increase or promotion per quarter — reviewed by HR, HOC and MD." };
+  if (!qrRecsListId) return { icon: base.icon, title: base.title, desc: "" };
+  base.actions = [{ label: "Team Board", onclick: "openQrBoard()", badge: qrBoardBadge() }];
+  return base;
+}
+function qrReviewCards() {
+  if (!qrRecsListId || !qrReviewsListId || !qrMyStages().length) return [];
+  return [{ icon: "&#9989;", title: "Quarterly Recommendation Review", desc: "Approve or reject recommended people — HR → HOC → MD.", onclick: "openQrReview()", badge: qrTodoItems().length }];
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -10617,6 +11276,9 @@ function renderHRModal() {
   if (hrView.mode === "mpList") { renderMpList(box); return; }
   if (hrView.mode === "mpDetail") { renderMpDetail(box); return; }
   if (hrView.mode === "qfBoard") { renderQfBoard(box); return; }
+  if (hrView.mode === "qrBoard") { renderQrBoard(box); return; }
+  if (hrView.mode === "qrForm") { renderQrForm(box); return; }
+  if (hrView.mode === "qrReview") { renderQrReview(box); return; }
   if (hrView.mode === "qfOverview") { renderQfOverview(box); return; }
   if (hrView.mode === "manpowerStatus") { renderManpowerStatus(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
@@ -11204,7 +11866,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -11496,7 +12158,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -11549,6 +12211,7 @@ function renderRequestsTodo() {
   myPipTodo().forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
   srTodoItems().forEach(r => rows.push(r));
   mpTodoItems().forEach(r => rows.push(r));
+  qrTodoItems().forEach(r => rows.push(r));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -11582,11 +12245,13 @@ function renderRequests() {
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#127919;", title: "Performance Management", desc: "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Write a session for anyone eligible on your team — recognition requests are separate.",
-      actions: quarterlyFeedbackListId ? [{ label: "Team Board", onclick: "openQfBoard()", badge: qfBoardBadge() }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }, ...(qfCanOverview() ? [{ label: "Overview", onclick: "openQfOverview()" }] : [])] : undefined }
+      actions: quarterlyFeedbackListId ? [{ label: "Team Board", onclick: "openQfBoard()", badge: qfBoardBadge() }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }, ...(qfCanOverview() ? [{ label: "Overview", onclick: "openQfOverview()" }] : [])] : undefined },
+    qrMgmtCard()
   ];
   const hr = [
     ...srHrCard(),
     ...mpHrCard(),
+    ...qrReviewCards(),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     mpsCard(),
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
@@ -11606,7 +12271,7 @@ function renderRequests() {
     ${renderRequestsTodo()}
     ${reqGroup("Employee", "Available to everyone", employee)}
     ${isMgmt ? reqGroup("Management", "Assistant Product Manager and above", management) : ""}
-    ${isHR ? reqGroup("HR / Admin", "HR and administrators", hr) : ""}
+    ${isHR ? reqGroup("HR / Admin", "HR and administrators", hr) : (qrReviewCards().length ? reqGroup("Review", "Quarterly Recommendation reviewers", qrReviewCards()) : "")}
   </div>`;
 }
 
