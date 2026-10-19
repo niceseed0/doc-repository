@@ -142,6 +142,10 @@
   .cal-ev-deadline { background: color-mix(in srgb, var(--red, #ef4444) 22%, transparent); }
   .cal-ev-holiday { background: color-mix(in srgb, var(--red, #ef4444) 30%, transparent); font-weight: 700; }
   .cal-cell.cal-holiday { background: color-mix(in srgb, var(--red, #ef4444) 8%, transparent); }
+  .cal-ev-personal { background: color-mix(in srgb, var(--yellow) 28%, transparent); }
+  .cal-ev-meeting { background: color-mix(in srgb, var(--green) 26%, transparent); }
+  .cal-add { font-size: 14px; line-height: 20px; color: var(--text3); cursor: pointer; opacity: .25; padding: 0 4px; }
+  .cal-cell:hover .cal-add { opacity: 1; }
   .cal-more { font-size: 10px; color: var(--text3); cursor: pointer; text-decoration: underline; }
   .cal-more:hover { color: var(--accent); }
   .cal-cell { min-height: 120px; }
@@ -500,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-14";
+const BUILD_ID = "2026-10-09-15";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -535,6 +539,9 @@ const CONFIG = {
   serviceRequestsListDisplayName: "HR Service Requests",
   manpowerRequestsListDisplayName: "HR Manpower Requests",
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
+  personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
+  meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  itInventoryListDisplayName: "IT Inventory", // workstations + storage list
   recommendationReviewsListDisplayName: "HR Recommendation Reviews", // HR/HOC/MD decisions — reviewers only
   manpowerPlanListDisplayName: "HR Manpower Plan", // billable targets / member classification — HR-only, see SETUP_MANPOWER_PLAN.md
   groupFieldCandidates: ["Team"],
@@ -1014,6 +1021,9 @@ let pipCases = []; // see PIP module below
 let serviceRequestsListId = null;
 let manpowerRequestsListId = null;
 let manpowerPlanListId = null;
+let peListId = null;
+let mrListId = null;
+let itListId = null;
 let qrRecsListId = null;
 let qrReviewsListId = null;
 let manpowerRequests = []; // Team Change / Resignation Notice — see Manpower Request module below
@@ -1050,7 +1060,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1133,6 +1143,12 @@ async function resolveSiteAndLists() {
   qrRecsListId = qrRecsMatch ? qrRecsMatch.id : null; // optional — Quarterly Recommendation stays "Coming soon" if missing
   const qrRevMatch = (lists.value || []).find(l => l.displayName === CONFIG.recommendationReviewsListDisplayName);
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
+  const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
+  peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const mrMatch = (lists.value || []).find(l => l.displayName === CONFIG.meetingRoomsListDisplayName);
+  mrListId = mrMatch ? mrMatch.id : null; // optional — Meeting Rooms card stays "Coming soon" if missing
+  const itMatch = (lists.value || []).find(l => l.displayName === CONFIG.itInventoryListDisplayName);
+  itListId = itMatch ? itMatch.id : null; // optional — IT Inventory card hidden if missing
   const pipMatch = (lists.value || []).find(l => l.displayName === CONFIG.pipCasesListDisplayName);
   pipCasesListId = pipMatch ? pipMatch.id : null; // optional — PIP card stays "Coming soon" if missing
   const annCommentsMatch = (lists.value || []).find(l => l.displayName === CONFIG.announcementCommentsListDisplayName);
@@ -2268,7 +2284,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadItInventory()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -6016,7 +6032,7 @@ function unifiedTaskAlerts() {
   }));
   const qa = qfAlert();
   const quarterly = qa ? [qa] : [];
-  return [...weekly, ...general, ...quarterly].sort((a, b) => a.sortMs - b.sortMs);
+  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
 }
 function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -6504,7 +6520,7 @@ function calendarEventsFor(ymd) {
   const fromGeneral = myGeneralTaskAssignments()
     .filter(({ t }) => toLocalYMD(new Date(t.dueDateTime)) === ymd)
     .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline", onclick: `openGeneralTaskDetail('${t.itemId}')` }));
-  return [...fromHolidays, ...fromRecurring, ...fromGeneral];
+  return [...fromHolidays, ...fromRecurring, ...fromGeneral, ...peCalendarEvents(ymd), ...mrMyCalendarEvents(ymd)];
 }
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -10506,6 +10522,601 @@ function qrReviewCards() {
   return [{ icon: "&#9989;", title: "Quarterly Recommendation Review", desc: "Approve or reject recommended people — HR → HOC → MD.", onclick: "openQrReview()", badge: qrTodoItems().length }];
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PERSONAL SCHEDULE · MEETING ROOMS · IT INVENTORY   (first rough version — see SETUP_OFFICE_AND_INVENTORY.md)
+//  - Personal schedule: anyone adds their own items to the My Tasks calendar; with "Remind me" ticked the item shows
+//    up as a to-do (Requests, My Tasks alerts, Home "My Tasks of the Week") from 3 days before until it is marked done.
+//    Loaded per person (server filter on OwnerEmail) — nobody else's items ever reach the browser.
+//  - Meeting rooms: Large / Small. APM+ (and HOC / MD / admins) book; everyone sees the usage. A booking is either
+//    one-time (date) or a weekly regular meeting (weekday, optional end date) that shows up automatically every week.
+//  - IT inventory: workstations (name / user / team / PC + spec) and a storage list for unused items. Only IT, HR/Admin,
+//    Head of Operations, MD and permission admins can open it. Floor plan is a placeholder until the drawing arrives.
+// ═══════════════════════════════════════════════════════════════════════════
+let peEvents = [];
+let mrBookings = [];
+let itItems = [];
+let mrState = { ymd: null };
+let itState = { tab: "ws", q: "", zone: "", status: "" };
+
+// ── Personal schedule ────────────────────────────────────────────────────────
+function peMapItem(it) {
+  const f = it.fields;
+  return { itemId: it.id, title: f["Title"] || "", date: f["EventDate"] || "", start: f["StartTime"] || "", end: f["EndTime"] || "", notes: f["Notes"] || "",
+    ownerEmail: String(f["OwnerEmail"] || "").toLowerCase(), remind: f["Remind"] === "Yes", done: f["ReminderDone"] === "Yes" };
+}
+async function loadPersonalEvents() {
+  const me = srMyEmail();
+  if (!peListId || !me) { peEvents = []; return; }
+  try {
+    const items = await qrFetchAll(peListId, `fields/OwnerEmail eq '${String(me).replace(/'/g, "''")}'`);
+    peEvents = items.map(peMapItem);
+  } catch (e) {
+    console.warn("Could not load HR Personal Events (list may not exist yet):", e);
+    peEvents = [];
+  }
+}
+function peEventsOn(ymd) { return peEvents.filter(e => e.date === ymd).sort((a, b) => (a.start || "").localeCompare(b.start || "")); }
+function peCalendarEvents(ymd) {
+  return peEventsOn(ymd).map(e => ({ title: `${e.start ? e.start + " " : ""}${e.title}${e.remind && !e.done ? " ⏰" : ""}`, type: "personal", onclick: `openPeForm('${e.itemId}')` }));
+}
+function peDueMs(e) { return new Date(`${e.date}T${e.start || "23:59"}:00`).getTime(); }
+function peReminders() { return peEvents.filter(e => e.remind && !e.done && e.date); }
+function peAlerts() {
+  return peReminders().map(e => ({ e, level: alertLevelForDueMs(peDueMs(e)) })).filter(x => x.level);
+}
+function peTodoItems() {
+  return peAlerts().map(({ e }) => ({ label: `My schedule — ${e.title}`, sub: `${e.date}${e.start ? " " + e.start : ""}`, click: `openPeForm('${e.itemId}')` }));
+}
+function peUnifiedAlerts() {
+  return peAlerts().map(({ e, level }) => ({ level, sortMs: peDueMs(e), onclick: `openPeForm('${e.itemId}')`, title: `⏰ ${e.title}`, sub: "My schedule",
+    dueLabel: `${e.date}${e.start ? " " + e.start : ""}`, badge: level === "due" ? "Due now" : level === "d1" ? "D-1" : "D-3" }));
+}
+function peWeekItems() {
+  const limit = Date.now() + 7 * 86400000;
+  return peReminders().filter(e => peDueMs(e) <= limit).map(e => ({ title: `⏰ ${e.title}`, sub: "My schedule", dueMs: peDueMs(e), onclick: `openPeForm('${e.itemId}')` }));
+}
+function openPeForm(id, ymd) {
+  if (!peListId) { toast("The personal schedule list hasn't been set up yet (see SETUP_OFFICE_AND_INVENTORY.md).", "error"); return; }
+  const ex = id ? peEvents.find(e => e.itemId === String(id)) : null;
+  const d = ex ? { title: ex.title, date: ex.date, start: ex.start, end: ex.end, notes: ex.notes, remind: ex.remind } : { title: "", date: ymd || toLocalYMD(new Date()), start: "", end: "", notes: "", remind: false };
+  hrView = { mode: "peForm", id: ex ? ex.itemId : null, draft: d };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function peCapture() {
+  const h = hrView; if (!h || h.mode !== "peForm") return;
+  const g = id => document.getElementById(id);
+  if (g("peTitle")) h.draft.title = g("peTitle").value;
+  if (g("peDate")) h.draft.date = g("peDate").value;
+  if (g("peStart")) h.draft.start = g("peStart").value;
+  if (g("peEnd")) h.draft.end = g("peEnd").value;
+  if (g("peNotes")) h.draft.notes = g("peNotes").value;
+  if (g("peRemind")) h.draft.remind = !!g("peRemind").checked;
+}
+function renderPeForm(box) {
+  box.style.width = "min(520px, 94vw)";
+  const h = hrView, d = h.draft;
+  const ex = h.id ? peEvents.find(e => e.itemId === h.id) : null;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <h3 style="margin:0;">${ex ? "My schedule" : "Add to my schedule"}</h3>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="font-size:12px; color:var(--text3); margin:4px 0 12px;">Only you can see this.</div>
+    <div class="form-group"><label>Title *</label><input id="peTitle" type="text" maxlength="120" value="${escapeAttr(d.title)}" /></div>
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1.2;"><label>Date *</label><input id="peDate" type="date" value="${escapeAttr(d.date)}" /></div>
+      <div class="form-group" style="flex:1;"><label>Start</label><input id="peStart" type="time" value="${escapeAttr(d.start)}" /></div>
+      <div class="form-group" style="flex:1;"><label>End</label><input id="peEnd" type="time" value="${escapeAttr(d.end)}" /></div>
+    </div>
+    <div class="form-group"><label>Notes</label><textarea id="peNotes" style="min-height:60px;" maxlength="1000">${escapeHtml(d.notes)}</textarea></div>
+    <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;"><input id="peRemind" type="checkbox" ${d.remind ? "checked" : ""} /> Remind me &mdash; show it in my to-dos (from 3 days before)</label>
+    ${ex && ex.remind ? `<div style="margin-top:8px; font-size:12px; color:${ex.done ? "var(--green)" : "var(--yellow)"};">${ex.done ? "&#10003; Reminder done" : "Reminder active"}</div>` : ""}
+    <div class="modal-actions">
+      ${ex ? `<button class="btn btn-secondary" onclick="deletePe()" style="margin-right:auto;">Delete</button>` : ""}
+      ${ex && ex.remind ? `<button class="btn btn-secondary" onclick="togglePeDone()">${ex.done ? "Reopen reminder" : "Mark done"}</button>` : ""}
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="savePe()">Save</button>
+    </div>`;
+}
+async function savePe() {
+  const h = hrView; if (!h || h.mode !== "peForm" || !peListId) return;
+  peCapture();
+  const d = h.draft;
+  const title = (d.title || "").trim();
+  if (!title) { toast("Please enter a title.", "error"); return; }
+  if (!d.date) { toast("Please pick a date.", "error"); return; }
+  if (d.start && d.end && d.end <= d.start) { toast("End time must be after the start time.", "error"); return; }
+  const ex = h.id ? peEvents.find(e => e.itemId === h.id) : null;
+  const fields = { Title: title, EventDate: d.date, StartTime: d.start || "", EndTime: d.end || "", Notes: (d.notes || "").trim(), Remind: d.remind ? "Yes" : "No" };
+  if (ex && (ex.date !== d.date || ex.start !== d.start)) fields.ReminderDone = ""; // moved => the reminder starts over
+  setSyncing(true);
+  try {
+    if (ex) {
+      await graphFetch(`/sites/${siteId}/lists/${peListId}/items/${ex.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+      Object.assign(ex, { title, date: d.date, start: d.start || "", end: d.end || "", notes: fields.Notes, remind: d.remind });
+      if ("ReminderDone" in fields) ex.done = false;
+    } else {
+      const all = Object.assign({ OwnerEmail: srMyEmail() }, fields);
+      const created = await graphFetch(`/sites/${siteId}/lists/${peListId}/items`, { method: "POST", body: JSON.stringify({ fields: all }) });
+      peEvents.push(peMapItem({ id: created.id, fields: all }));
+    }
+    setSyncing(false, true);
+    toast("Saved ✓", "success");
+    closeHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function deletePe() {
+  const h = hrView; const ex = h && h.id ? peEvents.find(e => e.itemId === h.id) : null;
+  if (!ex || !confirm("Delete this item from your schedule?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${peListId}/items/${ex.itemId}`, { method: "DELETE" });
+    peEvents = peEvents.filter(e => e !== ex);
+    setSyncing(false, true); closeHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+async function togglePeDone() {
+  const h = hrView; const ex = h && h.id ? peEvents.find(e => e.itemId === h.id) : null;
+  if (!ex) return;
+  const next = !ex.done;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${peListId}/items/${ex.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ ReminderDone: next ? "Yes" : "" }) });
+    ex.done = next;
+    setSyncing(false, true); closeHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+
+// ── Meeting rooms ────────────────────────────────────────────────────────────
+const MR_ROOMS = ["Large Meeting Room", "Small Meeting Room"];
+const MR_HOUR_START = 6, MR_HOUR_END = 22, MR_ROW_PX = 34;
+function mrMapItem(it) {
+  const f = it.fields;
+  const wd = parseInt(f["Weekday"], 10);
+  return { itemId: it.id, title: f["Title"] || "", room: f["Room"] || MR_ROOMS[0], kind: f["Kind"] === "Regular" ? "Regular" : "OneOff", weekday: isNaN(wd) ? null : wd,
+    date: f["EventDate"] || "", until: f["RepeatUntil"] || "", start: f["StartTime"] || "", end: f["EndTime"] || "", participants: f["Participants"] || "",
+    organizerEmail: String(f["OrganizerEmail"] || "").toLowerCase(), organizerName: f["OrganizerName"] || "" };
+}
+async function loadMeetingRooms() {
+  if (!mrListId) { mrBookings = []; return; }
+  try { mrBookings = (await qrFetchAll(mrListId, null)).map(mrMapItem); }
+  catch (e) { console.warn("Could not load HR Meeting Rooms (list may not exist yet):", e); }
+}
+function mrCanBook() {
+  const me = myEmployeeRecord();
+  return !!mrListId && (canDraftNte() || qrIsHOC(me) || qrIsMD(me) || isPermissionAdmin);
+}
+function mrCanManage(b) { return isPermissionAdmin || canAccessHR || (b && b.organizerEmail === srMyEmail()); }
+function mrOccursOn(b, ymd) {
+  if (b.kind === "Regular") {
+    if (new Date(ymd + "T00:00:00").getDay() !== b.weekday) return false;
+    if (b.date && ymd < b.date) return false;
+    if (b.until && ymd > b.until) return false;
+    return true;
+  }
+  return b.date === ymd;
+}
+function mrOn(ymd, room) { return mrBookings.filter(b => (!room || b.room === room) && mrOccursOn(b, ymd)).sort((a, b) => (a.start || "").localeCompare(b.start || "")); }
+function mrOverlap(a, b) { return a.start < b.end && b.start < a.end; }
+// First clash between a candidate booking and existing ones over the next ~120 days (or its single date).
+function mrFindConflict(c, ignoreId) {
+  const days = [];
+  if (c.kind === "Regular") {
+    const from = c.date && c.date > toLocalYMD(new Date()) ? new Date(c.date + "T00:00:00") : new Date();
+    for (let i = 0; i < 120; i++) { const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() + i); days.push(toLocalYMD(d)); }
+  } else days.push(c.date);
+  for (const ymd of days) {
+    if (!mrOccursOn(c, ymd)) continue;
+    const hit = mrBookings.find(b => b.itemId !== ignoreId && b.room === c.room && mrOccursOn(b, ymd) && mrOverlap(b, c));
+    if (hit) return { ymd, b: hit };
+  }
+  return null;
+}
+function mrMyCalendarEvents(ymd) {
+  if (!mrListId || !mrBookings.length) return [];
+  const me = myEmployeeRecord(); const email = srMyEmail();
+  const nm = me ? String(me.name || "").trim().toLowerCase() : "";
+  return mrOn(ymd).filter(b => b.organizerEmail === email || (nm.length >= 3 && String(b.participants).toLowerCase().includes(nm)))
+    .map(b => ({ title: `${b.start} ${b.title} (${b.room.split(" ")[0]} room)`, type: "meeting", onclick: `openMrDetail('${b.itemId}','${ymd}','cal')` }));
+}
+async function openMeetingRooms(ymd) {
+  if (!mrListId) return;
+  document.getElementById("hrModal").classList.add("open");
+  setSyncing(true);
+  try { await loadMeetingRooms(); setSyncing(false, true); } catch (e) { setSyncing(false, false); }
+  mrState.ymd = ymd || mrState.ymd || toLocalYMD(new Date());
+  hrView = { mode: "mrView" };
+  renderHRModal();
+}
+function mrGoto(ymd) { if (!ymd) return; mrState.ymd = ymd; renderHRModal(); }
+function mrShift(days) { const d = new Date(mrState.ymd + "T00:00:00"); d.setDate(d.getDate() + days); mrGoto(toLocalYMD(d)); }
+function mrTimeToMin(t) { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : 0; }
+function mrColumnHtml(room, ymd) {
+  const list = mrOn(ymd, room);
+  const total = (MR_HOUR_END - MR_HOUR_START) * MR_ROW_PX;
+  let lines = "";
+  for (let h = MR_HOUR_START; h < MR_HOUR_END; h++) lines += `<div style="position:absolute; left:0; right:0; top:${(h - MR_HOUR_START) * MR_ROW_PX}px; border-top:1px solid var(--border); font-size:9px; color:var(--text3); padding-left:3px;">${String(h).padStart(2, "0")}:00</div>`;
+  const blocks = list.map(b => {
+    const s = Math.max(mrTimeToMin(b.start), MR_HOUR_START * 60), e = Math.min(mrTimeToMin(b.end), MR_HOUR_END * 60);
+    if (e <= s) return "";
+    const top = (s - MR_HOUR_START * 60) / 60 * MR_ROW_PX, hgt = Math.max(20, (e - s) / 60 * MR_ROW_PX - 2);
+    return `<div onclick="openMrDetail('${b.itemId}','${ymd}','view')" title="${escapeAttr(b.title)}" style="position:absolute; left:34px; right:4px; top:${top}px; height:${hgt}px; overflow:hidden; cursor:pointer; background:color-mix(in srgb, var(--accent) 28%, var(--surface)); border:1px solid var(--accent); border-radius:6px; padding:2px 6px; font-size:11px; line-height:1.25;">
+      <strong>${b.kind === "Regular" ? "&#8635; " : ""}${escapeHtml(b.title)}</strong><br><span style="color:var(--text2);">${escapeHtml(b.start)}&ndash;${escapeHtml(b.end)} · ${escapeHtml(b.organizerName)}</span></div>`;
+  }).join("");
+  return `<div style="flex:1; min-width:260px;">
+    <div style="font-size:13px; font-weight:700; margin-bottom:6px;">${escapeHtml(room)} <span style="font-weight:400; color:var(--text3);">(${list.length})</span></div>
+    <div style="position:relative; height:${total}px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; overflow:hidden;">${lines}${blocks}</div>
+  </div>`;
+}
+function renderMrView(box) {
+  box.style.width = "min(960px, 96vw)";
+  const ymd = mrState.ymd;
+  const sel = new Date(ymd + "T00:00:00");
+  const monday = new Date(sel.getFullYear(), sel.getMonth(), sel.getDate() - ((sel.getDay() + 6) % 7));
+  const week = [0, 1, 2, 3, 4, 5, 6].map(i => { const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i); return toLocalYMD(d); });
+  const label = sel.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div><h3 style="margin-bottom:2px;">Meeting Rooms</h3><div style="font-size:12px; color:var(--text2);">${escapeHtml(label)} · &#8635; = weekly regular meeting</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0;">
+      <button class="btn btn-secondary btn-sm" onclick="mrShift(-1)">&lsaquo;</button>
+      <button class="btn btn-secondary btn-sm" onclick="mrGoto('${toLocalYMD(new Date())}')">Today</button>
+      <button class="btn btn-secondary btn-sm" onclick="mrShift(1)">&rsaquo;</button>
+      <input type="date" value="${escapeAttr(ymd)}" onchange="mrGoto(this.value)" style="max-width:150px;" />
+      ${mrCanBook() ? `<button class="btn btn-primary btn-sm" onclick="openMrForm(null,'${ymd}')" style="margin-left:auto;">+ Book a room</button>` : ""}
+    </div>
+    <div style="display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;">
+      ${week.map(w => { const n = mrOn(w).length; const d = new Date(w + "T00:00:00"); return `<button class="btn ${w === ymd ? "btn-primary" : "btn-secondary"} btn-sm" onclick="mrGoto('${w}')">${d.toLocaleDateString("en-US", { weekday: "short" })} ${d.getDate()}${n ? ` <span style="opacity:.8;">(${n})</span>` : ""}</button>`; }).join("")}
+    </div>
+    <div style="display:flex; gap:14px; flex-wrap:wrap; max-height:64vh; overflow-y:auto;">${MR_ROOMS.map(r => mrColumnHtml(r, ymd)).join("")}</div>
+    ${mrCanBook() ? "" : `<div style="font-size:11px; color:var(--text3); margin-top:10px;">Managers (APM and above) can book rooms.</div>`}`;
+}
+function openMrDetail(id, ymd, from) {
+  hrView = { mode: "mrDetail", id: String(id), ymd, from: from || "view" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function mrBackFromDetail() { if (hrView && hrView.from === "view") openMeetingRooms(hrView.ymd); else closeHRModal(); }
+function renderMrDetail(box) {
+  box.style.width = "min(520px, 94vw)";
+  const b = mrBookings.find(x => x.itemId === hrView.id);
+  if (!b) { box.innerHTML = `<div style="padding:10px;">This booking no longer exists.</div><div class="modal-actions"><button class="btn btn-secondary" onclick="closeHRModal()">Close</button></div>`; return; }
+  const when = b.kind === "Regular"
+    ? `Every ${WEEKDAY_NAMES[b.weekday]}${b.date ? ` from ${b.date}` : ""}${b.until ? ` until ${b.until}` : ""}`
+    : b.date;
+  const row = (k, v) => `<div style="display:flex; gap:10px; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px;"><span style="width:110px; color:var(--text3);">${k}</span><span style="flex:1; white-space:pre-wrap;">${v}</span></div>`;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+      <h3 style="margin:0;">${b.kind === "Regular" ? "&#8635; " : ""}${escapeHtml(b.title)}</h3>
+      <button class="btn btn-secondary" onclick="mrBackFromDetail()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${row("Room", escapeHtml(b.room))}${row("When", escapeHtml(when))}${row("Time", `${escapeHtml(b.start)} &ndash; ${escapeHtml(b.end)}`)}
+    ${row("Participants", escapeHtml(b.participants || "—"))}${row("Booked by", escapeHtml(b.organizerName))}
+    <div class="modal-actions">
+      ${mrCanManage(b) ? `<button class="btn btn-secondary" onclick="deleteMrBooking()" style="margin-right:auto;">${b.kind === "Regular" ? "Delete whole series" : "Delete"}</button><button class="btn btn-secondary" onclick="openMrForm('${b.itemId}')">Edit</button>` : ""}
+      <button class="btn btn-primary" onclick="mrBackFromDetail()">Close</button>
+    </div>`;
+}
+async function deleteMrBooking() {
+  const b = mrBookings.find(x => x.itemId === hrView.id);
+  if (!b || !mrCanManage(b)) return;
+  if (!confirm(b.kind === "Regular" ? "Delete this weekly regular meeting (all weeks)?" : "Delete this booking?")) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${mrListId}/items/${b.itemId}`, { method: "DELETE" });
+    mrBookings = mrBookings.filter(x => x !== b);
+    setSyncing(false, true);
+    if (hrView && hrView.from === "view") openMeetingRooms(hrView.ymd); else closeHRModal();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+function openMrForm(id, ymd) {
+  if (!mrListId) return;
+  const ex = id ? mrBookings.find(b => b.itemId === String(id)) : null;
+  if (ex ? !mrCanManage(ex) : !mrCanBook()) return;
+  const day = ymd || mrState.ymd || toLocalYMD(new Date());
+  const d = ex ? { title: ex.title, room: ex.room, kind: ex.kind, date: ex.date, weekday: ex.weekday == null ? 1 : ex.weekday, until: ex.until, start: ex.start, end: ex.end, participants: ex.participants }
+    : { title: "", room: MR_ROOMS[0], kind: "OneOff", date: day, weekday: new Date(day + "T00:00:00").getDay(), until: "", start: "09:00", end: "10:00", participants: "" };
+  hrView = { mode: "mrForm", id: ex ? ex.itemId : null, draft: d };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function mrCapture() {
+  const h = hrView; if (!h || h.mode !== "mrForm") return;
+  const g = id => document.getElementById(id);
+  const d = h.draft;
+  if (g("mrTitle")) d.title = g("mrTitle").value;
+  if (g("mrRoom")) d.room = g("mrRoom").value;
+  const k = document.querySelector('input[name="mrKind"]:checked'); if (k) d.kind = k.value;
+  if (g("mrDate")) d.date = g("mrDate").value;
+  if (g("mrWeekday")) d.weekday = parseInt(g("mrWeekday").value, 10);
+  if (g("mrUntil")) d.until = g("mrUntil").value;
+  if (g("mrStart")) d.start = g("mrStart").value;
+  if (g("mrEnd")) d.end = g("mrEnd").value;
+  if (g("mrPart")) d.participants = g("mrPart").value;
+}
+function mrFormChange() { mrCapture(); renderHRModal(); }
+function renderMrForm(box) {
+  box.style.width = "min(560px, 94vw)";
+  const h = hrView, d = h.draft, reg = d.kind === "Regular";
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+      <h3 style="margin:0;">${h.id ? "Edit booking" : "Book a meeting room"}</h3>
+      <button class="btn btn-secondary" onclick="openMeetingRooms()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group"><label>Meeting name *</label><input id="mrTitle" type="text" maxlength="120" value="${escapeAttr(d.title)}" /></div>
+    <div class="form-group"><label>Room *</label><select id="mrRoom">${MR_ROOMS.map(r => `<option ${r === d.room ? "selected" : ""}>${escapeHtml(r)}</option>`).join("")}</select></div>
+    <div class="form-group"><label>Type</label>
+      <div style="display:flex; gap:18px; font-size:13px;">
+        <label style="display:flex; gap:5px; cursor:pointer;"><input type="radio" name="mrKind" value="OneOff" onchange="mrFormChange()" ${reg ? "" : "checked"} /> One-time</label>
+        <label style="display:flex; gap:5px; cursor:pointer;"><input type="radio" name="mrKind" value="Regular" onchange="mrFormChange()" ${reg ? "checked" : ""} /> Weekly regular meeting</label>
+      </div></div>
+    ${reg ? `<div style="display:flex; gap:10px;">
+        <div class="form-group" style="flex:1;"><label>Every *</label><select id="mrWeekday">${WEEKDAY_NAMES.map((n, i) => `<option value="${i}" ${i === d.weekday ? "selected" : ""}>${n}</option>`).join("")}</select></div>
+        <div class="form-group" style="flex:1;"><label>Starting</label><input id="mrDate" type="date" value="${escapeAttr(d.date)}" /></div>
+        <div class="form-group" style="flex:1;"><label>Until (optional)</label><input id="mrUntil" type="date" value="${escapeAttr(d.until)}" /></div>
+      </div>` : `<div class="form-group"><label>Date *</label><input id="mrDate" type="date" value="${escapeAttr(d.date)}" /></div>`}
+    <div style="display:flex; gap:10px;">
+      <div class="form-group" style="flex:1;"><label>Start *</label><input id="mrStart" type="time" value="${escapeAttr(d.start)}" /></div>
+      <div class="form-group" style="flex:1;"><label>End *</label><input id="mrEnd" type="time" value="${escapeAttr(d.end)}" /></div>
+    </div>
+    <div class="form-group"><label>Participants</label><textarea id="mrPart" style="min-height:60px;" maxlength="1000" placeholder="Names, separated by commas (they will see it on their calendar)">${escapeHtml(d.participants)}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openMeetingRooms()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMrBooking()">Save</button>
+    </div>`;
+}
+async function saveMrBooking() {
+  const h = hrView; if (!h || h.mode !== "mrForm" || !mrListId) return;
+  mrCapture();
+  const d = h.draft;
+  const title = (d.title || "").trim();
+  const ex = h.id ? mrBookings.find(b => b.itemId === h.id) : null;
+  if (ex ? !mrCanManage(ex) : !mrCanBook()) return;
+  if (!title) { toast("Please enter the meeting name.", "error"); return; }
+  if (!d.start || !d.end || d.end <= d.start) { toast("Please set a valid start and end time.", "error"); return; }
+  if (d.kind === "OneOff") {
+    if (!d.date) { toast("Please pick a date.", "error"); return; }
+    if (d.date < toLocalYMD(new Date())) { toast("The date can't be in the past.", "error"); return; }
+  } else {
+    if (isNaN(d.weekday)) { toast("Please choose the weekday.", "error"); return; }
+    if (d.until && d.date && d.until < d.date) { toast("'Until' must be after the start date.", "error"); return; }
+  }
+  const cand = { kind: d.kind, weekday: d.kind === "Regular" ? d.weekday : null, date: d.date || "", until: d.kind === "Regular" ? (d.until || "") : "", room: d.room, start: d.start, end: d.end };
+  const clash = mrFindConflict(cand, ex ? ex.itemId : null);
+  if (clash) { toast(`${d.room} is already booked on ${clash.ymd} ${clash.b.start}–${clash.b.end} (${clash.b.title}).`, "error"); return; }
+  const fields = { Title: title, Room: d.room, Kind: d.kind, Weekday: d.kind === "Regular" ? String(d.weekday) : "", EventDate: d.date || "", RepeatUntil: cand.until, StartTime: d.start, EndTime: d.end, Participants: (d.participants || "").trim() };
+  setSyncing(true);
+  try {
+    if (ex) {
+      await graphFetch(`/sites/${siteId}/lists/${mrListId}/items/${ex.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+      Object.assign(ex, mrMapItem({ id: ex.itemId, fields: Object.assign({ OrganizerEmail: ex.organizerEmail, OrganizerName: ex.organizerName }, fields) }));
+    } else {
+      const all = Object.assign({ OrganizerEmail: srMyEmail(), OrganizerName: srMyName() }, fields);
+      const created = await graphFetch(`/sites/${siteId}/lists/${mrListId}/items`, { method: "POST", body: JSON.stringify({ fields: all }) });
+      mrBookings.push(mrMapItem({ id: created.id, fields: all }));
+    }
+    setSyncing(false, true);
+    toast("Booked ✓", "success");
+    openMeetingRooms(d.kind === "OneOff" ? d.date : mrState.ymd);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+function mrCard() {
+  const base = { icon: "&#127970;", title: "Meeting Rooms", desc: "Large / Small room usage — managers can book." };
+  if (!mrListId) return { icon: base.icon, title: base.title, desc: "" };
+  base.actions = [{ label: "View Usage", onclick: "openMeetingRooms()" }];
+  if (mrCanBook()) base.actions.push({ label: "Book a Room", onclick: "openMrForm()" });
+  return base;
+}
+
+// ── IT inventory ─────────────────────────────────────────────────────────────
+const IT_STATUS = ["In use", "Spare", "Broken", "In repair"];
+const IT_CONDITION = ["Good", "Fair", "Needs repair"];
+// key -> SharePoint column
+const IT_F = { name: "Title", zone: "Zone", userName: "UserName", team: "Team", pcName: "PCName", deviceType: "DeviceType", cpu: "CPU", ram: "RAM", disk: "Disk", gpu: "GPU", os: "OS",
+  monitor: "Monitor", other: "OtherDevices", serial: "SerialNo", status: "Status", notes: "Notes", category: "Category", qty: "Quantity", condition: "Condition", location: "StorageLocation" };
+const IT_WS_FIELDS = [["name", "Workstation name *"], ["zone", "Zone / area"], ["userName", "User", "user"], ["team", "Team"], ["pcName", "PC name (hostname)"],
+  ["deviceType", "Device type", ["Desktop", "Laptop", "Other"]], ["cpu", "CPU"], ["ram", "RAM"], ["disk", "Storage"], ["gpu", "GPU"], ["os", "OS"], ["monitor", "Monitor(s)"],
+  ["other", "Other devices"], ["serial", "Serial no."], ["status", "Status", IT_STATUS], ["notes", "Notes", "area"]];
+const IT_ST_FIELDS = [["name", "Item *"], ["category", "Category"], ["qty", "Quantity", "number"], ["condition", "Condition", IT_CONDITION], ["location", "Stored at"], ["serial", "Serial no."], ["notes", "Notes", "area"]];
+function itCanUse() {
+  const me = myEmployeeRecord();
+  if (canAccessHR || isPermissionAdmin) return true;
+  return !!me && ["IT", "Head of Operations", "Managing Director"].includes(mpsAutoAdminGroup(me));
+}
+function itMapItem(it) {
+  const f = it.fields;
+  const o = { itemId: it.id, type: f["RecordType"] === "Storage" ? "Storage" : "Workstation", updatedBy: f["UpdatedByName"] || "", updatedDate: f["UpdatedDate"] || null };
+  Object.keys(IT_F).forEach(k => { o[k] = f[IT_F[k]] != null ? f[IT_F[k]] : ""; });
+  o.qty = parseInt(f["Quantity"], 10) || 0;
+  return o;
+}
+async function loadItInventory() {
+  if (!itListId || !itCanUse()) { itItems = []; return; }
+  try { itItems = (await qrFetchAll(itListId, null)).map(itMapItem); }
+  catch (e) { console.warn("Could not load IT Inventory (list may not exist yet):", e); }
+}
+function itOfType(t) { return itItems.filter(i => i.type === t); }
+async function openItInventory(tab) {
+  if (!itListId || !itCanUse()) return;
+  document.getElementById("hrModal").classList.add("open");
+  setSyncing(true);
+  try { await loadItInventory(); setSyncing(false, true); } catch (e) { setSyncing(false, false); }
+  if (tab) itState.tab = tab;
+  hrView = { mode: "itInv" };
+  renderHRModal();
+}
+function itSetTab(t) { itState.tab = t; itState.q = ""; itState.zone = ""; itState.status = ""; renderHRModal(); }
+function itFilterChanged() {
+  const q = document.getElementById("itQ"), z = document.getElementById("itZone"), s = document.getElementById("itStatus");
+  if (q) itState.q = q.value; if (z) itState.zone = z.value; if (s) itState.status = s.value;
+  const out = document.getElementById("itResults");
+  if (out) out.innerHTML = itResultsHtml(); // only the results change, so the search box keeps focus (Korean IME safe)
+}
+function itMatches(i) {
+  const q = (itState.q || "").trim().toLowerCase();
+  if (itState.zone && i.zone !== itState.zone) return false;
+  if (itState.status && (i.status || "") !== itState.status) return false;
+  if (!q) return true;
+  return [i.name, i.userName, i.team, i.pcName, i.cpu, i.serial, i.category, i.location, i.zone].some(v => String(v || "").toLowerCase().includes(q));
+}
+function itResultsHtml() {
+  if (itState.tab === "st") {
+    const list = itOfType("Storage").filter(itMatches).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!list.length) return `<div style="font-size:13px; color:var(--text3);">No stored items.</div>`;
+    return `<div class="table-container"><table><thead><tr><th>Item</th><th>Category</th><th>Qty</th><th>Condition</th><th>Stored at</th><th>Serial</th></tr></thead><tbody>
+      ${list.map(i => `<tr onclick="openItDetail('${i.itemId}')" style="cursor:pointer;"><td>${escapeHtml(i.name)}</td><td>${escapeHtml(i.category)}</td><td>${i.qty}</td><td>${escapeHtml(i.condition)}</td><td>${escapeHtml(i.location)}</td><td>${escapeHtml(i.serial)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  const list = itOfType("Workstation").filter(itMatches);
+  if (!list.length) return `<div style="font-size:13px; color:var(--text3);">No workstations.</div>`;
+  const groups = new Map();
+  list.forEach(i => { const z = i.zone || "(No zone)"; if (!groups.has(z)) groups.set(z, []); groups.get(z).push(i); });
+  const dot = s => s === "In use" ? "var(--green)" : s === "Spare" ? "var(--accent)" : s === "Broken" ? "var(--red, #ef4444)" : s === "In repair" ? "var(--yellow)" : "var(--text3)";
+  return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([z, arr]) => `
+    <div style="font-size:12px; font-weight:700; color:var(--text2); margin:12px 0 6px;">${escapeHtml(z)} <span style="font-weight:400; color:var(--text3);">(${arr.length})</span></div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:8px;">
+      ${arr.sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true })).map(i => `
+        <div onclick="openItDetail('${i.itemId}')" style="cursor:pointer; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+          <div style="display:flex; justify-content:space-between; gap:6px; font-size:13px; font-weight:700;"><span>${escapeHtml(i.name)}</span><span title="${escapeAttr(i.status || "")}" style="width:9px; height:9px; border-radius:50%; background:${dot(i.status)}; margin-top:4px;"></span></div>
+          <div style="font-size:12px;">${i.userName ? escapeHtml(i.userName) : `<span style="color:var(--text3);">— vacant</span>`}${i.team ? ` <span style="color:var(--text3);">· ${escapeHtml(i.team)}</span>` : ""}</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:3px;">${escapeHtml(i.pcName || "—")}${i.cpu || i.ram ? ` · ${escapeHtml([i.cpu, i.ram].filter(Boolean).join(" / "))}` : ""}</div>
+        </div>`).join("")}
+    </div>`).join("");
+}
+function renderItInv(box) {
+  box.style.width = "min(1000px, 96vw)";
+  const ws = itOfType("Workstation"), st = itOfType("Storage");
+  const cnt = s => ws.filter(i => i.status === s).length;
+  const zones = Array.from(new Set(ws.map(i => i.zone).filter(Boolean))).sort();
+  const tabBtn = (t, l) => `<button class="btn ${itState.tab === t ? "btn-primary" : "btn-secondary"} btn-sm" onclick="itSetTab('${t}')">${l}</button>`;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div><h3 style="margin-bottom:2px;">IT Inventory</h3><div style="font-size:12px; color:var(--text2);">${ws.length} workstations · ${cnt("In use")} in use · ${cnt("Spare")} spare · ${cnt("Broken") + cnt("In repair")} broken / in repair · ${st.length} stored item types</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0 10px;">
+      ${tabBtn("ws", "Workstations")}${tabBtn("st", "Storage (unused items)")}
+      <button class="btn btn-primary btn-sm" onclick="openItForm(null,'${itState.tab === "st" ? "Storage" : "Workstation"}')" style="margin-left:auto;">+ ${itState.tab === "st" ? "Add item" : "Add workstation"}</button>
+    </div>
+    ${itState.tab === "ws" ? `<div style="border:2px dashed var(--border); border-radius:10px; padding:18px; text-align:center; font-size:12px; color:var(--text3); margin-bottom:10px;">&#128506; Office floor plan will appear here once the drawing is added — each workstation will then be placed on it.</div>` : ""}
+    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+      <input id="itQ" type="text" placeholder="Search name, user, team, PC, spec…" value="${escapeAttr(itState.q)}" oninput="itFilterChanged()" autocomplete="off" style="flex:1; min-width:200px;" />
+      ${itState.tab === "ws" ? `<select id="itZone" onchange="itFilterChanged()" style="max-width:170px;"><option value="">All zones</option>${zones.map(z => `<option ${z === itState.zone ? "selected" : ""}>${escapeHtml(z)}</option>`).join("")}</select>
+      <select id="itStatus" onchange="itFilterChanged()" style="max-width:140px;"><option value="">All status</option>${IT_STATUS.map(s => `<option ${s === itState.status ? "selected" : ""}>${s}</option>`).join("")}</select>` : ""}
+    </div>
+    <div id="itResults" style="max-height:56vh; overflow-y:auto;">${itResultsHtml()}</div>`;
+}
+function openItDetail(id) {
+  hrView = { mode: "itDetail", id: String(id) };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderItDetail(box) {
+  box.style.width = "min(560px, 94vw)";
+  const i = itItems.find(x => x.itemId === hrView.id);
+  if (!i) { box.innerHTML = `<div style="padding:10px;">Not found.</div><div class="modal-actions"><button class="btn btn-secondary" onclick="openItInventory()">Back</button></div>`; return; }
+  const defs = i.type === "Storage" ? IT_ST_FIELDS : IT_WS_FIELDS;
+  const rows = defs.map(([k, label]) => {
+    const v = k === "qty" ? String(i.qty) : i[k];
+    return `<div style="display:flex; gap:10px; padding:6px 0; border-bottom:1px solid var(--border); font-size:13px;"><span style="width:140px; color:var(--text3);">${escapeHtml(label.replace(" *", ""))}</span><span style="flex:1; white-space:pre-wrap;">${escapeHtml(v || "—")}</span></div>`;
+  }).join("");
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+      <h3 style="margin:0;">${escapeHtml(i.name)}</h3>
+      <button class="btn btn-secondary" onclick="openItInventory()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${rows}
+    <div style="font-size:11px; color:var(--text3); margin-top:8px;">Last updated ${i.updatedBy ? "by " + escapeHtml(i.updatedBy) : ""} ${i.updatedDate ? escapeHtml(dateOnly(i.updatedDate)) : ""}</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="deleteItItem()" style="margin-right:auto;">Delete</button>
+      <button class="btn btn-secondary" onclick="openItForm('${i.itemId}')">Edit</button>
+      <button class="btn btn-primary" onclick="openItInventory()">Close</button>
+    </div>`;
+}
+function openItForm(id, type) {
+  if (!itListId || !itCanUse()) return;
+  const ex = id ? itItems.find(x => x.itemId === String(id)) : null;
+  const t = ex ? ex.type : (type || "Workstation");
+  const draft = {};
+  (t === "Storage" ? IT_ST_FIELDS : IT_WS_FIELDS).forEach(([k]) => { draft[k] = ex ? (k === "qty" ? String(ex.qty) : ex[k]) : (k === "status" ? "In use" : k === "condition" ? "Good" : k === "qty" ? "1" : k === "deviceType" ? "Desktop" : ""); });
+  hrView = { mode: "itForm", id: ex ? ex.itemId : null, type: t, draft };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function itUserChanged() {
+  const u = document.getElementById("itf_userName"), t = document.getElementById("itf_team");
+  if (!u || !t) return;
+  const e = employees.find(x => String(x.name || "").toLowerCase() === String(u.value || "").trim().toLowerCase());
+  if (e && e.team) t.value = e.team;
+}
+function renderItForm(box) {
+  box.style.width = "min(600px, 94vw)";
+  const h = hrView;
+  const defs = h.type === "Storage" ? IT_ST_FIELDS : IT_WS_FIELDS;
+  const field = ([k, label, kind]) => {
+    const id = `itf_${k}`, v = h.draft[k] || "";
+    let inp;
+    if (Array.isArray(kind)) inp = `<select id="${id}">${kind.map(o => `<option ${o === v ? "selected" : ""}>${escapeHtml(o)}</option>`).join("")}</select>`;
+    else if (kind === "area") inp = `<textarea id="${id}" style="min-height:56px;" maxlength="1000">${escapeHtml(v)}</textarea>`;
+    else if (kind === "number") inp = `<input id="${id}" type="number" min="0" value="${escapeAttr(v)}" />`;
+    else if (kind === "user") inp = `<input id="${id}" type="text" list="itUserList" value="${escapeAttr(v)}" onchange="itUserChanged()" autocomplete="off" /><datalist id="itUserList">${employees.filter(e => e.status !== "Resigned").map(e => `<option value="${escapeAttr(e.name)}"></option>`).join("")}</datalist>`;
+    else inp = `<input id="${id}" type="text" maxlength="200" value="${escapeAttr(v)}" />`;
+    return `<div class="form-group"><label>${escapeHtml(label)}</label>${inp}</div>`;
+  };
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+      <h3 style="margin:0;">${h.id ? "Edit" : "Add"} ${h.type === "Storage" ? "stored item" : "workstation"}</h3>
+      <button class="btn btn-secondary" onclick="openItInventory()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 12px; max-height:62vh; overflow-y:auto;">${defs.map(field).join("")}</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="openItInventory()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveItItem()">Save</button>
+    </div>`;
+}
+async function saveItItem() {
+  const h = hrView; if (!h || h.mode !== "itForm" || !itListId || !itCanUse()) return;
+  const defs = h.type === "Storage" ? IT_ST_FIELDS : IT_WS_FIELDS;
+  const vals = {};
+  defs.forEach(([k]) => { const el = document.getElementById(`itf_${k}`); vals[k] = el ? String(el.value || "").trim() : (h.draft[k] || ""); });
+  if (!vals.name) { toast("Please enter a name.", "error"); return; }
+  if (h.type === "Storage" && vals.qty !== "" && (isNaN(parseInt(vals.qty, 10)) || parseInt(vals.qty, 10) < 0)) { toast("Quantity must be a number.", "error"); return; }
+  const fields = { RecordType: h.type, UpdatedByName: srMyName(), UpdatedDate: new Date().toISOString() };
+  defs.forEach(([k]) => { fields[IT_F[k]] = vals[k]; });
+  const ex = h.id ? itItems.find(x => x.itemId === h.id) : null;
+  setSyncing(true);
+  try {
+    if (ex) {
+      await graphFetch(`/sites/${siteId}/lists/${itListId}/items/${ex.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+      Object.assign(ex, itMapItem({ id: ex.itemId, fields: Object.assign({ PosX: "", PosY: "" }, fields) }));
+    } else {
+      const created = await graphFetch(`/sites/${siteId}/lists/${itListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+      itItems.push(itMapItem({ id: created.id, fields }));
+    }
+    setSyncing(false, true);
+    toast("Saved ✓", "success");
+    itState.tab = h.type === "Storage" ? "st" : "ws";
+    openItInventory();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function deleteItItem() {
+  const i = itItems.find(x => x.itemId === hrView.id);
+  if (!i || !itCanUse() || !confirm(`Delete "${i.name}"?`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${itListId}/items/${i.itemId}`, { method: "DELETE" });
+    itItems = itItems.filter(x => x !== i);
+    setSyncing(false, true); openItInventory();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+function itCards() {
+  if (!itListId || !itCanUse()) return [];
+  return [{ icon: "&#128421;", title: "IT Inventory", desc: "Workstations, PC specs and the storage list of unused items.",
+    actions: [{ label: "Workstations", onclick: "openItInventory('ws')" }, { label: "Storage", onclick: "openItInventory('st')" }] }];
+}
+
 function toLocalYMD(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -11279,6 +11890,13 @@ function renderHRModal() {
   if (hrView.mode === "qrBoard") { renderQrBoard(box); return; }
   if (hrView.mode === "qrForm") { renderQrForm(box); return; }
   if (hrView.mode === "qrReview") { renderQrReview(box); return; }
+  if (hrView.mode === "peForm") { renderPeForm(box); return; }
+  if (hrView.mode === "mrView") { renderMrView(box); return; }
+  if (hrView.mode === "mrDetail") { renderMrDetail(box); return; }
+  if (hrView.mode === "mrForm") { renderMrForm(box); return; }
+  if (hrView.mode === "itInv") { renderItInv(box); return; }
+  if (hrView.mode === "itDetail") { renderItDetail(box); return; }
+  if (hrView.mode === "itForm") { renderItForm(box); return; }
   if (hrView.mode === "qfOverview") { renderQfOverview(box); return; }
   if (hrView.mode === "manpowerStatus") { renderManpowerStatus(box); return; }
   if (hrView.mode === "qfNew") { renderQuarterlyFeedbackNewForm(box); return; }
@@ -11866,7 +12484,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -12158,7 +12776,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length + peTodoItems().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -12212,6 +12830,7 @@ function renderRequestsTodo() {
   srTodoItems().forEach(r => rows.push(r));
   mpTodoItems().forEach(r => rows.push(r));
   qrTodoItems().forEach(r => rows.push(r));
+  peTodoItems().forEach(r => rows.push(r));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
@@ -12231,6 +12850,7 @@ function renderRequests() {
   const employee = [
     ...srEmployeeCards(),
     ...srAssignedCard(),
+    mrCard(),
     { icon: "&#128214;", title: "View Employee Handbook", desc: "Open the Employee Handbook in a new tab.", onclick: "window.open('handbook.html','_blank','noopener')" },
     ...(generalTasksListId && myGeneralTaskAssignments().length ? [{ icon: "&#128203;", title: "My Task Assignments", desc: "Tasks assigned to you — acknowledge, decline, or submit.", onclick: "openGeneralTaskList(false)", badge: myPendingGeneralTasks().length }] : [])
   ];
@@ -12252,6 +12872,7 @@ function renderRequests() {
     ...srHrCard(),
     ...mpHrCard(),
     ...qrReviewCards(),
+    ...itCards(),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     mpsCard(),
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
@@ -12272,6 +12893,7 @@ function renderRequests() {
     ${reqGroup("Employee", "Available to everyone", employee)}
     ${isMgmt ? reqGroup("Management", "Assistant Product Manager and above", management) : ""}
     ${isHR ? reqGroup("HR / Admin", "HR and administrators", hr) : (qrReviewCards().length ? reqGroup("Review", "Quarterly Recommendation reviewers", qrReviewCards()) : "")}
+    ${!isHR && itCards().length ? reqGroup("IT", "IT team", itCards()) : ""}
   </div>`;
 }
 
@@ -12306,7 +12928,7 @@ function renderDayEvents(box) {
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
       <h3 style="margin:0;">${escapeHtml(label)}</h3>
-      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      <div style="display:flex; gap:6px;">${peListId ? `<button class="btn btn-primary btn-sm" onclick="openPeForm(null,'${ymd}')">+ My schedule</button>` : ""}<button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button></div>
     </div>
     <div style="display:flex; flex-direction:column; gap:6px;">
       ${events.length ? events.map(e => `<div ${e.onclick ? `onclick="closeHRModal(); ${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""} display:flex; align-items:center; gap:8px; padding:9px 12px; border:1px solid var(--border); border-radius:8px; background:var(--surface2);">
@@ -12336,7 +12958,7 @@ function renderCalendar() {
     const hasHoliday = events.some(e => e.type === "holiday");
     const weekend = d.getDay() === 0 || d.getDay() === 6;
     body += `<div class="cal-cell${inMonth ? "" : " cal-out"}${weekend ? " cal-weekend" : ""}${hasHoliday ? " cal-holiday" : ""}${ymd === todayYmd ? " cal-today" : ""}">
-      <div class="cal-num">${d.getDate()}</div>
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;"><div class="cal-num">${d.getDate()}</div>${inMonth && peListId ? `<span class="cal-add" title="Add to my schedule" onclick="event.stopPropagation(); openPeForm(null,'${ymd}')">+</span>` : ""}</div>
       ${events.slice(0, CAL_MAX_INLINE_EVENTS).map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}" ${e.onclick ? `onclick="event.stopPropagation(); ${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""}">${escapeHtml(e.title)}</div>`).join("")}
       ${events.length > CAL_MAX_INLINE_EVENTS ? `<div class="cal-more" onclick="openDayEvents('${ymd}')">+${events.length - CAL_MAX_INLINE_EVENTS} more</div>` : ""}
     </div>`;
@@ -12348,6 +12970,7 @@ function renderCalendar() {
         <button class="btn btn-secondary btn-sm" onclick="calNav(-1)" title="Previous month">&lsaquo;</button>
         <button class="btn btn-secondary btn-sm" onclick="calToday()" ${isThisMonth ? "disabled" : ""}>Today</button>
         <button class="btn btn-secondary btn-sm" onclick="calNav(1)" title="Next month">&rsaquo;</button>
+        ${peListId ? `<button class="btn btn-primary btn-sm" onclick="openPeForm(null)" style="margin-left:8px;">+ My schedule</button>` : ""}
       </div>
     </div>
     <div class="cal-grid">${head}${body}</div>
@@ -13149,6 +13772,7 @@ function myWeekTaskItems() {
   if (qp && qp.remaining.length) {
     items.push({ title: `Quarterly Feedback — ${qp.doneCount}/${qp.total} done`, sub: quarterLabel(qp.quarter, qp.year), dueMs: new Date(qp.due + "T23:59:59").getTime(), onclick: `openQfBoard()` });
   }
+  peWeekItems().forEach(x => items.push(x));
   return items.sort((a, b) => a.dueMs - b.dueMs);
 }
 function renderMyWeekList(items, emptyLabel) {
