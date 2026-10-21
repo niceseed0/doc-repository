@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-17";
+const BUILD_ID = "2026-10-09-18";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13071,7 +13071,8 @@ function renderTabs() {
     { key: "hub", label: "Work Hub", click: "switchSection('hub')", badge: hubBadgeCount() + hubSevere() },
     { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: taskAlertBadgeCount() },
     { key: "requests", label: "Requests", click: "switchSection('requests')" },
-    { key: "docs", label: "Document Repository", click: "switchSection('docs')" }
+    { key: "docs", label: "Document Repository", click: "switchSection('docs')" },
+    { key: "istqb", label: "ISTQB Training", click: "window.open('istqb.html','_blank','noopener')" }
   ].filter(n => !n.hidden);
   document.getElementById("mainNav").innerHTML = navItems.map(n =>
     `<div class="tab ${n.key === section ? "active" : ""}" onclick="${n.click}">${escapeHtml(n.label)}${n.badge > 0 ? `<span class="req-badge">${n.badge}</span>` : ""}</div>`
