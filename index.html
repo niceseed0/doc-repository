@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-15";
+const BUILD_ID = "2026-10-09-17";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -541,6 +541,8 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  hubIgnoredListDisplayName: "HR Hub Ignored", // per-person "ignore this stuck item", see SETUP_WORK_HUB.md
+  hubRemindersListDisplayName: "HR Reminders", // "Remind owner" nudges shown as to-dos, see SETUP_WORK_HUB.md
   itInventoryListDisplayName: "IT Inventory", // workstations + storage list
   recommendationReviewsListDisplayName: "HR Recommendation Reviews", // HR/HOC/MD decisions — reviewers only
   manpowerPlanListDisplayName: "HR Manpower Plan", // billable targets / member classification — HR-only, see SETUP_MANPOWER_PLAN.md
@@ -1022,6 +1024,8 @@ let serviceRequestsListId = null;
 let manpowerRequestsListId = null;
 let manpowerPlanListId = null;
 let peListId = null;
+let hubIgnoreListId = null;
+let hubReminderListId = null;
 let mrListId = null;
 let itListId = null;
 let qrRecsListId = null;
@@ -1060,7 +1064,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1145,6 +1149,10 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const hiMatch = (lists.value || []).find(l => l.displayName === CONFIG.hubIgnoredListDisplayName);
+  hubIgnoreListId = hiMatch ? hiMatch.id : null; // optional — Ignore is off if missing
+  const hrMatch = (lists.value || []).find(l => l.displayName === CONFIG.hubRemindersListDisplayName);
+  hubReminderListId = hrMatch ? hrMatch.id : null; // optional — Remind is off if missing
   const mrMatch = (lists.value || []).find(l => l.displayName === CONFIG.meetingRoomsListDisplayName);
   mrListId = mrMatch ? mrMatch.id : null; // optional — Meeting Rooms card stays "Coming soon" if missing
   const itMatch = (lists.value || []).find(l => l.displayName === CONFIG.itInventoryListDisplayName);
@@ -2284,7 +2292,7 @@ async function deleteTestTeam() {
 // signed-in identity baked in, so they need re-fetching whenever that identity changes — unlike
 // General Tasks and Recurring Tasks, whose visibility is computed client-side on every render.
 async function reloadIdentityScopedLists() {
-  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadItInventory()]);
+  await Promise.all([loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadItInventory(), loadHubState()]);
 }
 async function enterTestMode(employeeId) {
   if (!realIsPermissionAdmin) return;
@@ -10669,12 +10677,13 @@ async function togglePeDone() {
 }
 
 // ── Meeting rooms ────────────────────────────────────────────────────────────
-const MR_ROOMS = ["Large Meeting Room", "Small Meeting Room"];
+const MR_ROOMS = ["Big Conference Room", "Small Conference Room"];
+const MR_LEGACY_ROOM = { "Large Meeting Room": "Big Conference Room", "Small Meeting Room": "Small Conference Room" };
 const MR_HOUR_START = 6, MR_HOUR_END = 22, MR_ROW_PX = 34;
 function mrMapItem(it) {
   const f = it.fields;
   const wd = parseInt(f["Weekday"], 10);
-  return { itemId: it.id, title: f["Title"] || "", room: f["Room"] || MR_ROOMS[0], kind: f["Kind"] === "Regular" ? "Regular" : "OneOff", weekday: isNaN(wd) ? null : wd,
+  return { itemId: it.id, title: f["Title"] || "", room: MR_LEGACY_ROOM[f["Room"]] || f["Room"] || MR_ROOMS[0], kind: f["Kind"] === "Regular" ? "Regular" : "OneOff", weekday: isNaN(wd) ? null : wd,
     date: f["EventDate"] || "", until: f["RepeatUntil"] || "", start: f["StartTime"] || "", end: f["EndTime"] || "", participants: f["Participants"] || "",
     organizerEmail: String(f["OrganizerEmail"] || "").toLowerCase(), organizerName: f["OrganizerName"] || "" };
 }
@@ -10718,7 +10727,7 @@ function mrMyCalendarEvents(ymd) {
   const me = myEmployeeRecord(); const email = srMyEmail();
   const nm = me ? String(me.name || "").trim().toLowerCase() : "";
   return mrOn(ymd).filter(b => b.organizerEmail === email || (nm.length >= 3 && String(b.participants).toLowerCase().includes(nm)))
-    .map(b => ({ title: `${b.start} ${b.title} (${b.room.split(" ")[0]} room)`, type: "meeting", onclick: `openMrDetail('${b.itemId}','${ymd}','cal')` }));
+    .map(b => ({ title: `${b.start} ${b.title} (${b.room.split(" ")[0]} conf. room)`, type: "meeting", onclick: `openMrDetail('${b.itemId}','${ymd}','cal')` }));
 }
 async function openMeetingRooms(ymd) {
   if (!mrListId) return;
@@ -10758,7 +10767,7 @@ function renderMrView(box) {
   const label = sel.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
-      <div><h3 style="margin-bottom:2px;">Meeting Rooms</h3><div style="font-size:12px; color:var(--text2);">${escapeHtml(label)} · &#8635; = weekly regular meeting</div></div>
+      <div><h3 style="margin-bottom:2px;">Conference Rooms</h3><div style="font-size:12px; color:var(--text2);">${escapeHtml(label)} · &#8635; = weekly regular meeting</div></div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0;">
@@ -10772,7 +10781,7 @@ function renderMrView(box) {
       ${week.map(w => { const n = mrOn(w).length; const d = new Date(w + "T00:00:00"); return `<button class="btn ${w === ymd ? "btn-primary" : "btn-secondary"} btn-sm" onclick="mrGoto('${w}')">${d.toLocaleDateString("en-US", { weekday: "short" })} ${d.getDate()}${n ? ` <span style="opacity:.8;">(${n})</span>` : ""}</button>`; }).join("")}
     </div>
     <div style="display:flex; gap:14px; flex-wrap:wrap; max-height:64vh; overflow-y:auto;">${MR_ROOMS.map(r => mrColumnHtml(r, ymd)).join("")}</div>
-    ${mrCanBook() ? "" : `<div style="font-size:11px; color:var(--text3); margin-top:10px;">Managers (APM and above) can book rooms.</div>`}`;
+    ${mrCanBook() ? "" : `<div style="font-size:11px; color:var(--text3); margin-top:10px;">Managers (APM and above) can book conference rooms.</div>`}`;
 }
 function openMrDetail(id, ymd, from) {
   hrView = { mode: "mrDetail", id: String(id), ymd, from: from || "view" };
@@ -10843,7 +10852,7 @@ function renderMrForm(box) {
   const h = hrView, d = h.draft, reg = d.kind === "Regular";
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
-      <h3 style="margin:0;">${h.id ? "Edit booking" : "Book a meeting room"}</h3>
+      <h3 style="margin:0;">${h.id ? "Edit booking" : "Book a conference room"}</h3>
       <button class="btn btn-secondary" onclick="openMeetingRooms()" style="padding:4px 10px;">✕</button>
     </div>
     <div class="form-group"><label>Meeting name *</label><input id="mrTitle" type="text" maxlength="120" value="${escapeAttr(d.title)}" /></div>
@@ -10904,7 +10913,7 @@ async function saveMrBooking() {
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
 }
 function mrCard() {
-  const base = { icon: "&#127970;", title: "Meeting Rooms", desc: "Large / Small room usage — managers can book." };
+  const base = { icon: "&#127970;", title: "Conference Rooms", desc: "Big / Small conference room usage — managers can book." };
   if (!mrListId) return { icon: base.icon, title: base.title, desc: "" };
   base.actions = [{ label: "View Usage", onclick: "openMeetingRooms()" }];
   if (mrCanBook()) base.actions.push({ label: "Book a Room", onclick: "openMrForm()" });
@@ -11115,6 +11124,454 @@ function itCards() {
   if (!itListId || !itCanUse()) return [];
   return [{ icon: "&#128421;", title: "IT Inventory", desc: "Workstations, PC specs and the storage list of unused items.",
     actions: [{ label: "Workstations", onclick: "openItInventory('ws')" }, { label: "Storage", onclick: "openItInventory('st')" }] }];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORK HUB  (see SETUP_WORK_HUB.md)
+//   One place per level: employees see only their own to-dos / waiting items; managers also see their team's
+//   open work; HOC / HR / MD (elite) see the whole structure. The centrepiece is the "Stuck in approval" list:
+//   anything that has sat on someone for 3+ days WITHOUT a deadline (approvals, reviews, acknowledgements, replies).
+//   Amber from 3 days, red from 7. Visible even when it isn't mine; the viewer can remind the owner (a to-do in the
+//   owner's portal) or Ignore it for themselves (per person, per step — it comes back if the item moves on).
+//   Data sources are the modules' own lists (already scoped per person on the server) plus two small lists:
+//   "HR Hub Ignored" (personal) and "HR Reminders" (sent / received).
+// ═══════════════════════════════════════════════════════════════════════════
+const HUB_AMBER_DAYS = 3, HUB_RED_DAYS = 7, HUB_REMIND_COOLDOWN_HOURS = 24, HUB_REMINDER_MAX_DAYS = 14;
+let hubIgnored = new Map();   // key -> { itemId }
+let hubReminders = [];        // reminders I sent or received
+let hubState = { q: "", type: "", quarter: null, ignoredOpen: false, limit: 25 };
+
+// ── persistence ──────────────────────────────────────────────────────────────
+function hubMapReminder(it) {
+  const f = it.fields;
+  return { itemId: it.id, key: f["ItemKey"] || "", title: f["Title"] || "", targetEmail: String(f["TargetEmail"] || "").toLowerCase(), targetName: f["TargetName"] || "",
+    fromEmail: String(f["FromEmail"] || "").toLowerCase(), fromName: f["FromName"] || "", created: f["CreatedDate"] || null, seen: f["Seen"] === "Yes" };
+}
+async function loadHubState() {
+  const me = srMyEmail();
+  if (!me) { hubIgnored = new Map(); hubReminders = []; return; }
+  const esc = String(me).replace(/'/g, "''");
+  try {
+    if (hubIgnoreListId) {
+      const items = await qrFetchAll(hubIgnoreListId, `fields/OwnerEmail eq '${esc}'`);
+      const m = new Map(); items.forEach(it => { const k = it.fields["ItemKey"]; if (k) m.set(k, { itemId: it.id }); }); hubIgnored = m;
+    } else hubIgnored = new Map();
+    if (hubReminderListId) {
+      const got = await Promise.all([qrFetchAll(hubReminderListId, `fields/TargetEmail eq '${esc}'`), qrFetchAll(hubReminderListId, `fields/FromEmail eq '${esc}'`)]);
+      const seen = new Set(), out = [];
+      got.flat().forEach(it => { if (!seen.has(it.id)) { seen.add(it.id); out.push(hubMapReminder(it)); } });
+      hubReminders = out;
+    } else hubReminders = [];
+  } catch (e) { console.warn("Could not load Work Hub state (lists may not exist yet):", e); }
+}
+
+// ── people / owners ──────────────────────────────────────────────────────────
+function hubActive() { return employees.filter(e => e.status !== "Resigned" && e.email); }
+function hubIsHoc(e) { return e.position === CONFIG.positionRank[0] || mpsAutoAdminGroup(e) === "Head of Operations"; }
+function hubIsHr(e) { return mpsAutoAdminGroup(e) === "HR/Admin"; }
+function hubIsMd(e) { return mpsAutoAdminGroup(e) === "Managing Director"; }
+function hubRoleEmails(role) {
+  const list = hubActive();
+  let pick;
+  if (role === "HOC") pick = hubIsHoc;
+  else if (role === "MD") pick = hubIsMd;
+  else if (role === "APPROVER") pick = e => hubIsHoc(e) || hubIsHr(e);
+  else pick = hubIsHr; // HR
+  let r = list.filter(pick).map(e => e.email.toLowerCase());
+  if (!r.length && role === "HR") r = list.filter(hubIsHoc).map(e => e.email.toLowerCase());
+  return r;
+}
+const HUB_ROLE_LABEL = { HOC: "HOC (Cluster Lead)", MD: "MD", APPROVER: "HOC / HR", HR: "HR / Admin" };
+function hubOwner(spec) {
+  if (spec.role) return { label: HUB_ROLE_LABEL[spec.role] || spec.role, emails: hubRoleEmails(spec.role) };
+  const e = spec.email ? wsEmpByEmail(spec.email) : (spec.empId ? wsEmpById(spec.empId) : null);
+  const email = String((e && e.email) || spec.email || "").toLowerCase();
+  return { label: e ? e.name : (email ? emailPrefix(email) : "—"), emails: email ? [email] : [] };
+}
+function hubDays(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+// Whitelisted openers: reminders only ever store "type:id", never code.
+function hubOpenCall(type, id, extra) {
+  const safe = String(id).replace(/[^A-Za-z0-9_-]/g, "");
+  switch (type) {
+    case "NTE": return `openNteCaseFromRequests('${safe}')`;
+    case "Coaching": return `openCoachingCaseFromRequests('${safe}')`;
+    case "PIP": return `openPipCaseFromRequests('${safe}')`;
+    case "Recognition": return `openRecognitionFromRequests('${safe}')`;
+    case "Service": return `openSrDetail('${safe}')`;
+    case "Manpower": return `openMpDetail('${safe}')`;
+    case "Task": return `openGeneralTaskDetail('${safe}')`;
+    case "Recommendation": { const m = /^(\d{4})-(\d)$/.exec(String(id)); return m ? `openQrReview(${m[1]},${m[2]})` : ""; }
+    default: return "";
+  }
+}
+
+// ── the stuck list ───────────────────────────────────────────────────────────
+function hubIsElite() { return !!(canApproveNte() || isPermissionAdmin || qrMyStages().length); }
+function hubCanSeeStuck() { return hubIsElite() || canDraftNte(); }
+function hubScopeOk(empId) {
+  const mode = wsScopeMode();
+  if (!mode) return false;
+  const me = myEmployeeRecord();
+  const e = wsEmpById(empId);
+  if (!e || (me && String(e.id) === String(me.id))) return false;
+  return mode === "elite" || (!!me && e.team === me.team && (me.cluster || "") === (e.cluster || ""));
+}
+// Everything currently waiting on somebody, with the date it arrived at its current step.
+function hubAllStuck() {
+  const out = [];
+  const add = (type, id, step, since, emp, ref, ownerSpec, scopeEmpId) => {
+    const days = hubDays(since);
+    if (days === null) return;
+    out.push({ key: `${type}:${id}`, type, id, step, since, days, emp, ref: ref || "", owner: hubOwner(ownerSpec), scopeEmpId: scopeEmpId || null, elitOnly: scopeEmpId === undefined });
+  };
+  const nm = id => (wsEmpById(id) || {}).name || "";
+  nteCases.forEach(c => {
+    if (c.status === "Pending Approval") add("NTE", c.itemId, "Pending Approval", c.requestedDate, nm(c.employeeId) || c.title, c.refNo, { role: "APPROVER" }, c.employeeId);
+    else if (c.status === "Responded") add("NTE", c.itemId, "Response awaiting review", c.responseDate, nm(c.employeeId) || c.title, c.refNo, { role: "APPROVER" }, c.employeeId);
+  });
+  coachingCases.forEach(c => {
+    if (c.status === "Issued") add("Coaching", c.itemId, "Awaiting employee acknowledgement", c.issuedDate, nm(c.employeeId) || c.title, c.refNo, { empId: c.employeeId }, c.employeeId);
+    else if (c.status === "Declined") add("Coaching", c.itemId, "Declined — awaiting manager", c.acknowledgedDate || c.issuedDate, nm(c.employeeId) || c.title, c.refNo, { email: c.issuedBy }, c.employeeId);
+  });
+  pipCases.forEach(c => {
+    if (c.status === "Issued") add("PIP", c.itemId, "Awaiting employee acknowledgement", c.issuedDate, nm(c.employeeId) || c.title, c.refNo, { empId: c.employeeId }, c.employeeId);
+    else if (c.status === "EmployeeSigned") add("PIP", c.itemId, "Awaiting manager review", c.employeeSignedDate || c.issuedDate, nm(c.employeeId) || c.title, c.refNo, { email: c.issuedBy }, c.employeeId);
+    else if (c.status === "ManagerReviewed") add("PIP", c.itemId, "Awaiting final review", c.managerReviewDate || c.issuedDate, nm(c.employeeId) || c.title, c.refNo, { role: "APPROVER" }, c.employeeId);
+  });
+  recognitionCases.forEach(c => {
+    if (c.status === "Pending") {
+      const first = (c.recipients || [])[0];
+      add("Recognition", c.itemId, "Awaiting review", c.requestedDate, recRecipientNames(c), c.refNo, { role: "APPROVER" }, first ? first.id : undefined);
+    }
+  });
+  (serviceRequests || []).forEach(r => {
+    if (r.status === "Completed") return;
+    const t = SR_TYPES[r.requestType] ? SR_TYPES[r.requestType].label : r.requestType;
+    if (r.status === "UnderReview") add("Service", r.itemId, `${t} — awaiting reply`, r.reviewStartedDate || r.assignedDate || r.submittedDate, r.requesterName, r.refNo, r.assigneeEmail ? { email: r.assigneeEmail } : { role: "HR" });
+    else add("Service", r.itemId, `${t} — not picked up`, r.submittedDate, r.requesterName, r.refNo, r.assigneeEmail ? { email: r.assigneeEmail } : { role: "HR" });
+  });
+  (manpowerRequests || []).forEach(r => {
+    if (r.status === "Pending") add("Manpower", r.itemId, "Team change — awaiting approval", r.submittedDate, r.employeeName, r.refNo, { role: "APPROVER" }, r.employeeId);
+  });
+  (generalTasks || []).forEach(t => (t.assignees || []).forEach(a => {
+    if (a.status === "DeclinePending") add("Task", t.itemId, "Decline awaiting requester approval", a.respondedDate, a.name || a.email || "", t.refNo, { email: t.requestedBy }, undefined);
+  }));
+  qrBatches.forEach(b => {
+    const ql = quarterLabel(b.quarter, b.year), id = `${b.year}-${b.quarter}`;
+    const decided = QR_STAGES.includes(b.stage) ? qrRecommended(b.year, b.quarter) : [];
+    if (b.stage === "HR") add("Recommendation", id, "HR review", b.releasedDate, `Quarterly Recommendation ${ql}`, "", { role: "HR" });
+    else if (b.stage === "HOC") add("Recommendation", id, "HOC review", b.done.HR.date, `Quarterly Recommendation ${ql}`, "", { role: "HOC" });
+    else if (b.stage === "MD") add("Recommendation", id, "MD final review", b.done.HOC.date, `Quarterly Recommendation ${ql}`, "", { role: "MD" });
+    else if (b.stage === "Done") {
+      const pend = qrRecommended(b.year, b.quarter).filter(r => { const st = qrRowState(r); return st.finalApproved && !(st.rv && st.rv.applied && st.rv.applied.date); }).length;
+      if (pend) add("Recommendation", id, `HR profile update pending (${pend})`, b.done.MD.date, `Quarterly Recommendation ${ql}`, "", { role: "HR" });
+    }
+  });
+  return out;
+}
+function hubStuck() {
+  if (!hubCanSeeStuck()) return [];
+  const me = srMyEmail();
+  const elite = hubIsElite();
+  return hubAllStuck().filter(x => {
+    if (x.days < HUB_AMBER_DAYS) return false;
+    if (x.owner.emails.includes(me)) return true;                   // mine: always visible
+    if (x.scopeEmpId) return hubScopeOk(x.scopeEmpId);               // about someone in my scope
+    return elite;                                                   // company-level items: elite only
+  }).sort((a, b) => b.days - a.days);
+}
+function hubVisibleStuck() { return hubStuck().filter(x => !hubIgnored.has(x.key + "|" + x.step)); }
+function hubIgnoredStuck() { return hubStuck().filter(x => hubIgnored.has(x.key + "|" + x.step)); }
+function hubSevere() { return hubVisibleStuck().filter(x => x.days >= HUB_RED_DAYS).length; }
+
+// ── ignore / remind ──────────────────────────────────────────────────────────
+function hubFindStuck(ik) { return hubAllStuck().find(x => (x.key + "|" + x.step) === ik) || null; }
+async function hubIgnore(ik) {
+  if (!hubIgnoreListId) { toast("The ignore list hasn't been set up yet (see SETUP_WORK_HUB.md).", "error"); return; }
+  const x = hubFindStuck(ik); if (!x || hubIgnored.has(ik)) return;
+  setSyncing(true);
+  try {
+    const fields = { Title: `${x.type} ${x.ref || x.emp}`.slice(0, 120), OwnerEmail: srMyEmail(), ItemKey: ik, IgnoredDate: new Date().toISOString() };
+    const created = await graphFetch(`/sites/${siteId}/lists/${hubIgnoreListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    hubIgnored.set(ik, { itemId: created.id });
+    setSyncing(false, true); renderContent(); try { renderTabs(); } catch (e) { /* ignore */ }
+  } catch (err) { setSyncing(false, false); toast("Could not ignore: " + err.message, "error"); }
+}
+async function hubUnignore(ik) {
+  const rec = hubIgnored.get(ik); if (!rec) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${hubIgnoreListId}/items/${rec.itemId}`, { method: "DELETE" });
+    hubIgnored.delete(ik);
+    setSyncing(false, true); renderContent(); try { renderTabs(); } catch (e) { /* ignore */ }
+  } catch (err) { setSyncing(false, false); toast("Could not restore: " + err.message, "error"); }
+}
+function hubLastReminder(key) {
+  const me = srMyEmail();
+  const mine = hubReminders.filter(r => r.fromEmail === me && r.key === key && r.created).sort((a, b) => String(b.created).localeCompare(String(a.created)));
+  return mine[0] || null;
+}
+function hubRemindedAgoLabel(key) {
+  const r = hubLastReminder(key); if (!r) return "";
+  const h = Math.floor((Date.now() - new Date(r.created).getTime()) / 3600000);
+  return h < 1 ? "reminded just now" : h < 24 ? `reminded ${h}h ago` : `reminded ${Math.floor(h / 24)}d ago`;
+}
+async function hubRemind(ik) {
+  if (!hubReminderListId) { toast("The reminders list hasn't been set up yet (see SETUP_WORK_HUB.md).", "error"); return; }
+  const x = hubFindStuck(ik); if (!x) return;
+  const me = srMyEmail();
+  const targets = x.owner.emails.filter(e => e !== me);
+  if (!targets.length) { toast("There's nobody else to remind for this item.", "error"); return; }
+  const last = hubLastReminder(x.key);
+  if (last && (Date.now() - new Date(last.created).getTime()) < HUB_REMIND_COOLDOWN_HOURS * 3600000) { toast("You already sent a reminder for this in the last 24 hours.", "error"); return; }
+  if (!confirm(`Send a reminder to ${x.owner.label}${x.owner.emails.length > 1 ? ` (${targets.length} people)` : ""}?`)) return;
+  setSyncing(true);
+  try {
+    const now = new Date().toISOString();
+    for (const t of targets) {
+      const fields = { Title: `${x.type}: ${x.emp} — ${x.step}`.slice(0, 250), ItemKey: x.key, TargetEmail: t, TargetName: (wsEmpByEmail(t) || {}).name || emailPrefix(t), FromEmail: me, FromName: srMyName(), CreatedDate: now, Seen: "" };
+      const created = await graphFetch(`/sites/${siteId}/lists/${hubReminderListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+      hubReminders.push(hubMapReminder({ id: created.id, fields }));
+    }
+    setSyncing(false, true); toast("Reminder sent ✓", "success"); renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not send: " + err.message, "error"); }
+}
+function hubMyReminders() {
+  const me = srMyEmail();
+  const live = new Set(hubAllStuck().map(x => x.key));
+  const limit = Date.now() - HUB_REMINDER_MAX_DAYS * 86400000;
+  return hubReminders.filter(r => r.targetEmail === me && !r.seen && live.has(r.key) && (!r.created || new Date(r.created).getTime() >= limit))
+    .sort((a, b) => String(b.created).localeCompare(String(a.created)));
+}
+async function hubDismissReminder(id) {
+  const r = hubReminders.find(x => x.itemId === String(id)); if (!r) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${hubReminderListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ Seen: "Yes" }) });
+    r.seen = true; setSyncing(false, true); renderContent(); try { renderTabs(); } catch (e) { /* ignore */ }
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+function hubTodoItems() {
+  return hubMyReminders().map(r => {
+    const [type, id] = r.key.split(/:(.*)/);
+    return { label: `Reminder from ${r.fromName}: ${r.title}`.slice(0, 120), sub: "Reminder", click: hubOpenCall(type, id) || "void 0" };
+  });
+}
+
+// ── building blocks ──────────────────────────────────────────────────────────
+function hubDeadlineRows() {
+  const rows = [];
+  recurringTaskAlerts().forEach(x => rows.push({ level: x.level, title: x.title, sub: `${x.sub} · due ${x.dueDate}`, click: x.onclick, sortMs: new Date(x.dueDate + "T23:59:59").getTime() }));
+  generalTaskAlerts().forEach(({ t, level }) => rows.push({ level, title: t.content.slice(0, 60) + (t.content.length > 60 ? "…" : ""), sub: `${t.refNo} · due ${fmtDueDateTime(t.dueDateTime)}`, click: `openGeneralTaskDetail('${t.itemId}')`, sortMs: genTaskDueMs(t) }));
+  return rows.sort((a, b) => a.sortMs - b.sortMs);
+}
+function hubNeedsAction() {
+  const todos = requestsTodoRows().filter(r => r.sub !== "Reminder").map(r => ({ level: null, title: r.label, sub: r.sub, click: r.click }));
+  const have = new Set(todos.map(r => r.click));
+  const endToday = new Date(); endToday.setHours(23, 59, 59, 999);
+  const endTomorrow = endToday.getTime() + 86400000, endWeek = endToday.getTime() + 7 * 86400000;
+  const dl = [];
+  try {
+    myWeekTaskItems().forEach(x => {
+      const click = String(x.onclick || "");
+      if (have.has(click) || x.dueMs > endWeek) return;
+      const level = x.dueMs <= endToday.getTime() ? "due" : x.dueMs <= endTomorrow ? "d1" : "soon";
+      dl.push({ level, title: x.title, sub: [x.sub, "due " + dateOnly(new Date(x.dueMs).toISOString())].filter(Boolean).join(" \u00b7 "), click, dueMs: x.dueMs });
+    });
+  } catch (e) { /* ignore */ }
+  dl.sort((a, b) => a.dueMs - b.dueMs);
+  return [...dl.filter(r => r.level === "due"), ...dl.filter(r => r.level === "d1"), ...todos, ...dl.filter(r => r.level === "soon")];
+}
+function hubWaitingMine() {
+  const rows = [];
+  wsMyRequestGroups().forEach(g => g.items.forEach(i => { if (i.color === WS_ACCENT || i.color === WS_YELLOW) rows.push({ label: g.label, title: i.title, ref: i.ref, text: i.text, click: i.click, ms: i.ms }); }));
+  const me = srMyEmail();
+  (manpowerRequests || []).filter(r => r.requesterEmail === me && ["Pending", "Approved", "Scheduled"].includes(r.status))
+    .forEach(r => rows.push({ label: "Manpower Request", title: r.employeeName, ref: r.refNo, text: r.status === "Pending" ? "Awaiting approval" : r.status === "Approved" ? "Approved · scheduled" : "Scheduled", click: `openMpDetail('${r.itemId}')`, ms: r.submittedDate || "" }));
+  return rows.sort((a, b) => String(b.ms).localeCompare(String(a.ms)));
+}
+function hubBadgeCount() { try { return hubNeedsAction().length; } catch (e) { return 0; } }
+function hubUrgChip(level) {
+  if (level === "due") return `<span class="hub-chip red">Due / overdue</span>`;
+  if (level === "d1") return `<span class="hub-chip yel">Tomorrow</span>`;
+  if (level === "soon") return `<span class="hub-chip">Within 7 days</span>`;
+  return "";
+}
+function hubKpi(n, label, cls) { return `<div class="hub-kpi ${cls || ""}"><div class="hub-n">${n}</div><div class="hub-l">${escapeHtml(label)}</div></div>`; }
+function hubCard(title, hint, inner, extra) {
+  return `<div class="hub-card" ${extra || ""}><div class="hub-h">${title}</div>${hint ? `<div class="hub-hint">${hint}</div>` : ""}${inner}</div>`;
+}
+function hubRow(chip, title, sub, right, click) {
+  return `<div class="hub-row" ${click ? `onclick="${click}" style="cursor:pointer;"` : ""}>${chip || ""}<div class="hub-grow"><div class="hub-t">${escapeHtml(title)}</div><div class="hub-s">${escapeHtml(sub || "")}</div></div>${right || ""}</div>`;
+}
+
+// ── sections ─────────────────────────────────────────────────────────────────
+function hubStuckSection() {
+  if (!hubCanSeeStuck()) return "";
+  const list = hubVisibleStuck();
+  const ign = hubIgnoredStuck();
+  const row = x => {
+    const red = x.days >= HUB_RED_DAYS;
+    const ik = jsAttrEscape(x.key + "|" + x.step);
+    const ago = hubRemindedAgoLabel(x.key);
+    const mine = x.owner.emails.includes(srMyEmail());
+    return `<div class="hub-row" style="border-left:3px solid ${red ? "var(--red, #ef4444)" : "var(--yellow)"};">
+      <span class="hub-chip ${red ? "red" : "yel"}">${x.days} days</span>
+      <div class="hub-grow" ${hubOpenCall(x.type, x.id) ? `onclick="${hubOpenCall(x.type, x.id)}" style="cursor:pointer;"` : ""}>
+        <div class="hub-t">${escapeHtml(x.type === "Recommendation" ? x.emp : x.type + " — " + x.emp)} <span class="hub-s">${escapeHtml(x.ref)}</span></div>
+        <div class="hub-s">${escapeHtml(x.step)} · waiting on <strong>${escapeHtml(mine ? "you" : x.owner.label)}</strong>${ago ? ` · ${escapeHtml(ago)}` : ""}</div>
+      </div>
+      ${mine ? `<span class="hub-chip">yours</span>` : `<button class="btn btn-secondary btn-sm" onclick="hubRemind('${ik}')">Remind</button>`}
+      <button class="btn btn-secondary btn-sm" title="I don't need to chase this — hide it for me" onclick="hubIgnore('${ik}')">Ignore</button>
+    </div>`;
+  };
+  const ignHtml = ign.length ? `<div style="margin-top:8px;"><span class="hub-link" onclick="hubState.ignoredOpen=!hubState.ignoredOpen; renderContent();">${hubState.ignoredOpen ? "▼" : "▶"} Ignored by me (${ign.length})</span>
+      ${hubState.ignoredOpen ? ign.map(x => `<div class="hub-row" style="opacity:.8;"><span class="hub-chip">${x.days} days</span><div class="hub-grow"><div class="hub-t">${escapeHtml(x.type + " — " + x.emp)}</div><div class="hub-s">${escapeHtml(x.step)} · ${escapeHtml(x.owner.label)}</div></div><button class="btn btn-secondary btn-sm" onclick="hubUnignore('${jsAttrEscape(x.key + "|" + x.step)}')">Restore</button></div>`).join("") : ""}</div>` : "";
+  return hubCard(`&#9888; Stuck in approval <span class="hub-hint" style="display:inline;">&mdash; ${list.length} waiting ${HUB_AMBER_DAYS}+ days</span>`,
+    `Things sitting on someone with no deadline. Amber from ${HUB_AMBER_DAYS} days, red from ${HUB_RED_DAYS}. <b>Remind</b> puts a to-do in the owner's portal; <b>Ignore</b> hides it just for you (it returns if the item moves to its next step).`,
+    (list.length ? list.slice(0, 40).map(row).join("") : `<div class="hub-hint" style="color:var(--green);">&#10003; Nothing is stuck.</div>`) + ignHtml,
+    list.some(x => x.days >= HUB_RED_DAYS) ? `style="border-color:var(--red, #ef4444);"` : "");
+}
+function hubPipelines() {
+  if (!hubCanSeeStuck()) return "";
+  const rows = wsTableRows();
+  const byType = new Map();
+  rows.forEach(r => {
+    if (!byType.has(r.type)) byType.set(r.type, new Map());
+    const m = byType.get(r.type);
+    const k = r.done ? "Completed" : r.step;
+    m.set(k, (m.get(k) || 0) + 1);
+  });
+  const labelOf = t => (WS_TYPE_LABEL && WS_TYPE_LABEL[t]) || t;
+  const typeBlocks = Array.from(byType.entries()).map(([t, m]) => {
+    const open = Array.from(m.entries()).filter(([k]) => k !== "Completed").reduce((a, [, n]) => a + n, 0);
+    return `<div style="margin-bottom:8px;"><div class="hub-t">${escapeHtml(labelOf(t))} <span class="hub-s">${open} open · ${m.get("Completed") || 0} completed</span></div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">${Array.from(m.entries()).filter(([k]) => k !== "Completed").map(([k, n]) => `<span class="hub-chip">${escapeHtml(k)} ${n}</span>`).join("") || `<span class="hub-s">nothing open</span>`}</div></div>`;
+  }).join("");
+  const stageNames = ["Collect", "HR", "HOC", "MD", "HR update"];
+  const qr = Array.from(qrBatches.values()).filter(b => b.stage !== "Done" || qrRecommended(b.year, b.quarter).some(r => { const s = qrRowState(r); return s.finalApproved && !(s.rv && s.rv.applied && s.rv.applied.date); }))
+    .sort((a, b) => (b.year - a.year) || (b.quarter - a.quarter)).map(b => {
+      const idx = b.stage === "HR" ? 1 : b.stage === "HOC" ? 2 : b.stage === "MD" ? 3 : 4;
+      return `<div style="margin-bottom:8px;"><div class="hub-t">Quarterly Recommendation ${escapeHtml(quarterLabel(b.quarter, b.year))}</div>
+        <div class="hub-stage">${stageNames.map((s, i) => `<div class="${i < idx ? "done" : i === idx ? "cur" : ""}">${escapeHtml(s)}</div>`).join("")}</div></div>`;
+    }).join("");
+  const inner = (typeBlocks + qr) || `<div class="hub-hint">Nothing in progress.</div>`;
+  return hubCard("Where everything sits", "Open items by step — scoped to your team (or the whole company for HOC / HR / MD).", inner);
+}
+function hubProgressEmployees() {
+  const me = myEmployeeRecord();
+  if (canViewAllQuarterlyFeedback() || qrMyStages().length) return employees.filter(qfIsEvaluatee);
+  if (qfIsClusterLead()) return qfOverviewEmployees();
+  return me ? employees.filter(e => qfIsEvaluatee(e) && e.team === me.team && (e.cluster || "") === (me.cluster || "") && String(e.id) !== String(me.id)) : [];
+}
+function hubProgressSection() {
+  if (!hubCanSeeStuck()) return "";
+  const now = new Date();
+  const y = now.getFullYear();
+  const q = hubState.quarter || (Math.floor(now.getMonth() / 3) + 1);
+  const kind = hubState.progressKind || "qf";
+  const list = hubProgressEmployees();
+  const doneOf = e => kind === "qr" ? !!qrRec(e.id, q, y) : !!qfRecordFor(e.id, q, y);
+  const clusters = new Map();
+  list.forEach(e => {
+    const c = e.cluster || "(No cluster)", t = e.team || "(No team)";
+    if (!clusters.has(c)) clusters.set(c, new Map());
+    const tm = clusters.get(c); if (!tm.has(t)) tm.set(t, []); tm.get(t).push(e);
+  });
+  const bar = (d, n) => { const p = n ? Math.round(d / n * 100) : 0; const col = n === 0 ? "var(--text3)" : p >= 100 ? "var(--green)" : p >= 60 ? "var(--yellow)" : "var(--red, #ef4444)"; return `<div class="hub-bar"><i style="width:${p}%;background:${col};"></i></div>`; };
+  const html = Array.from(clusters.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([c, tm]) => {
+    const all = Array.from(tm.values()).flat(); const d = all.filter(doneOf).length;
+    return `<details open><summary><div class="hub-prog"><b>${escapeHtml(c)}</b>${bar(d, all.length)}<b>${d}/${all.length}</b></div></summary>
+      ${Array.from(tm.entries()).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([t, mem]) => { const dd = mem.filter(doneOf).length; const missing = mem.filter(e => !doneOf(e)).map(e => e.name);
+        return `<div class="hub-prog sub" title="${escapeAttr(missing.length ? "Missing: " + missing.join(", ") : "All done")}"><span>${escapeHtml(t)}</span>${bar(dd, mem.length)}<span style="${dd < mem.length ? "color:var(--red, #ef4444);" : ""}">${dd}/${mem.length}</span></div>`; }).join("")}</details>`;
+  }).join("");
+  const btn = (k, l) => `<button class="btn ${kind === k ? "btn-primary" : "btn-secondary"} btn-sm" onclick="hubState.progressKind='${k}'; renderContent();">${l}</button>`;
+  const qbtn = n => `<button class="btn ${q === n ? "btn-primary" : "btn-secondary"} btn-sm" onclick="hubState.quarter=${n}; renderContent();">Q${n}</button>`;
+  return hubCard("Progress by cluster &rarr; team", `Who has written their ${kind === "qr" ? "recommendation" : "feedback"} for ${y}. Hover a team to see who is missing.`,
+    `<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${btn("qf", "Quarterly Feedback")}${btn("qr", "Quarterly Recommendation")}<span style="width:10px;"></span>${[1, 2, 3, 4].map(qbtn).join("")}</div>${html || `<div class="hub-hint">No one to show.</div>`}`);
+}
+function hubOpenItemsResults() {
+  let rows = wsTableRows().filter(r => !r.done);
+  const q = (hubState.q || "").trim().toLowerCase();
+  if (hubState.type) rows = rows.filter(r => r.type === hubState.type);
+  if (q) rows = rows.filter(r => [r.employee, r.type, r.step, r.owner].some(v => String(v || "").toLowerCase().includes(q)));
+  const shown = rows.slice(0, hubState.limit);
+  if (!rows.length) return `<div class="hub-hint">No open items match.</div>`;
+  return shown.map(r => `<div class="hub-row" ${r.click ? `onclick="${r.click}" style="cursor:pointer;"` : ""}>
+      <span class="hub-chip">${escapeHtml((WS_TYPE_LABEL && WS_TYPE_LABEL[r.type]) || r.type)}</span>
+      <div class="hub-grow"><div class="hub-t">${escapeHtml(r.employee)}</div><div class="hub-s">${escapeHtml(r.step)} · ${escapeHtml(r.owner)}</div></div>
+      <span class="hub-s">${escapeHtml(dateOnly(r.ms) || "")}</span></div>`).join("") +
+    (rows.length > shown.length ? `<div class="hub-link" onclick="hubState.limit+=25; hubRefreshResults();">Show more (${rows.length - shown.length})</div>` : "");
+}
+function hubRefreshResults() {
+  const q = document.getElementById("hubQ"), t = document.getElementById("hubType");
+  if (q) hubState.q = q.value; if (t) hubState.type = t.value;
+  hubState.limit = 25;
+  const out = document.getElementById("hubResults");
+  if (out) out.innerHTML = hubOpenItemsResults();
+}
+function hubOpenItemsSection() {
+  if (!hubCanSeeStuck()) return "";
+  const types = Array.from(new Set(wsTableRows().filter(r => !r.done).map(r => r.type))).sort();
+  return hubCard("All open items", "Search by person, step or owner. Completed and approved items live in the HR report instead.",
+    `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+      <input id="hubQ" type="text" placeholder="Search name, step or owner…" value="${escapeAttr(hubState.q)}" oninput="hubRefreshResults()" autocomplete="off" style="flex:1; min-width:200px;" />
+      <select id="hubType" onchange="hubRefreshResults()" style="max-width:190px;"><option value="">All types</option>${types.map(t => `<option value="${escapeAttr(t)}" ${t === hubState.type ? "selected" : ""}>${escapeHtml((WS_TYPE_LABEL && WS_TYPE_LABEL[t]) || t)}</option>`).join("")}</select>
+    </div><div id="hubResults">${hubOpenItemsResults()}</div>`);
+}
+function renderWorkHub() {
+  const mode = wsScopeMode();
+  const needs = hubNeedsAction();
+  const waiting = hubWaitingMine();
+  const stuck = hubCanSeeStuck() ? hubVisibleStuck() : [];
+  const overdue = needs.filter(r => r.level === "due").length;
+  const heading = mode === "elite" ? "Company view" : mode === "team" ? "Your team" : "Your work";
+  const needsHtml = needs.length ? needs.slice(0, 20).map(r => hubRow(hubUrgChip(r.level) || `<span class="hub-chip">To do</span>`, r.title, r.sub, "", r.click)).join("") + (needs.length > 20 ? `<div class="hub-hint">+ ${needs.length - 20} more</div>` : "") : `<div class="hub-hint" style="color:var(--green);">&#10003; Nothing needs your action.</div>`;
+  const waitHtml = waiting.length ? waiting.slice(0, 8).map(r => hubRow(`<span class="hub-chip">${escapeHtml(r.label)}</span>`, r.title, `${r.ref} · ${r.text}`, "", r.click)).join("") : `<div class="hub-hint">Nothing of yours is waiting on someone else.</div>`;
+  const remHtml = hubMyReminders().map(r => `<div class="hub-row" style="border-left:3px solid var(--accent);"><span class="hub-chip">Reminder</span><div class="hub-grow" ${(() => { const [t, i] = r.key.split(/:(.*)/); const c = hubOpenCall(t, i); return c ? `onclick="${c}" style="cursor:pointer;"` : ""; })()}><div class="hub-t">${escapeHtml(r.title)}</div><div class="hub-s">from ${escapeHtml(r.fromName)} · ${escapeHtml(dateOnly(r.created) || "")}</div></div><button class="btn btn-secondary btn-sm" onclick="hubDismissReminder('${jsAttrEscape(r.itemId)}')">Dismiss</button></div>`).join("");
+  return `<div style="max-width:1280px; margin:0 auto;">
+    <style>
+      .hub-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px; }
+      .hub-kpi { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px; }
+      .hub-kpi .hub-n { font-size:26px; font-weight:800; line-height:1.1; }
+      .hub-kpi .hub-l { font-size:12px; color:var(--text2); }
+      .hub-kpi.red .hub-n { color:var(--red, #ef4444); } .hub-kpi.yel .hub-n { color:var(--yellow); } .hub-kpi.acc .hub-n { color:var(--accent); }
+      .hub-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; } @media (max-width:860px) { .hub-grid { grid-template-columns:1fr; } }
+      .hub-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+      .hub-h { font-size:14px; font-weight:700; } .hub-hint { font-size:11.5px; color:var(--text3); margin:2px 0 10px; }
+      .hub-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); margin-bottom:6px; font-size:13px; }
+      .hub-grow { flex:1; min-width:0; } .hub-t { font-weight:600; } .hub-s { font-size:11.5px; color:var(--text3); font-weight:400; }
+      .hub-link { cursor:pointer; font-size:12px; color:var(--accent); }
+      .hub-chip { font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:10px; background:color-mix(in srgb,var(--accent) 18%,transparent); color:var(--accent); white-space:nowrap; }
+      .hub-chip.red { background:color-mix(in srgb,var(--red, #ef4444) 18%,transparent); color:var(--red, #ef4444); }
+      .hub-chip.yel { background:color-mix(in srgb,var(--yellow) 22%,transparent); color:var(--yellow); }
+      .hub-bar { height:8px; background:var(--surface2); border-radius:4px; overflow:hidden; border:1px solid var(--border); } .hub-bar i { display:block; height:100%; }
+      .hub-prog { display:grid; grid-template-columns:150px 1fr 56px; gap:10px; align-items:center; font-size:12.5px; margin:6px 0; } .hub-prog.sub { padding-left:18px; font-size:12px; color:var(--text2); }
+      .hub-stage { display:flex; margin:4px 0 2px; } .hub-stage div { flex:1; text-align:center; font-size:11px; padding:5px 3px; border:1px solid var(--border); background:var(--surface2); color:var(--text3); }
+      .hub-stage div.done { background:color-mix(in srgb,var(--green) 18%,transparent); color:var(--green); font-weight:700; } .hub-stage div.cur { background:color-mix(in srgb,var(--accent) 22%,transparent); color:var(--accent); font-weight:700; }
+    </style>
+    <h2 style="margin:4px 0 4px;">Work Hub</h2>
+    <div style="font-size:12px; color:var(--text3); margin-bottom:14px;">${escapeHtml(heading)}</div>
+    <div class="hub-kpis">
+      ${hubKpi(needs.length, "Needs my action", "acc")}
+      ${hubCanSeeStuck() ? hubKpi(stuck.length, `Stuck ${HUB_AMBER_DAYS}+ days`, stuck.some(x => x.days >= HUB_RED_DAYS) ? "red" : stuck.length ? "yel" : "") : ""}
+      ${hubKpi(overdue, "Due today / overdue", overdue ? "red" : "")}
+      ${hubKpi(waiting.length, "My items waiting on others", "")}
+    </div>
+    ${remHtml ? hubCard("Reminders for you", "Someone asked you to move these along.", remHtml) : ""}
+    ${hubStuckSection()}
+    <div class="hub-grid">
+      ${hubCard("Needs my action", "Overdue and due first, then approvals / reviews / signatures, then deadlines within 7 days", needsHtml)}
+      ${hubCard("Waiting for others", "Things I submitted and where they are now", waitHtml)}
+    </div>
+    ${hubCanSeeStuck() ? `<div class="hub-grid">${hubPipelines()}${hubProgressSection()}</div>` : ""}
+    ${hubOpenItemsSection()}
+  </div>`;
 }
 
 function toLocalYMD(d) {
@@ -12484,7 +12941,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -12565,12 +13022,13 @@ function tabLabel(key) { return key === "Welcome" ? "Overview" : key === "__DOCC
 
 // Tabs that are not part of the Document Repository (no Add Entry / Export CSV etc.)
 function isNonDocTab(key) {
-  return key === "Welcome" || key === "__ORG__" || key === "__MYTASKS__" || key === "__REQUESTS__" || key === "__DOCCENTER__";
+  return key === "Welcome" || key === "__ORG__" || key === "__MYTASKS__" || key === "__HUB__" || key === "__REQUESTS__" || key === "__DOCCENTER__";
 }
 function currentSection() {
   if (activeTab === "Welcome") return "overview";
   if (activeTab === "__ORG__") return "org";
   if (activeTab === "__MYTASKS__") return "tasks";
+  if (activeTab === "__HUB__") return "hub";
   if (activeTab === "__REQUESTS__") return "requests";
   return "docs";
 }
@@ -12579,6 +13037,7 @@ function switchSection(key) {
   if (key === "overview") return switchTab("Welcome");
   if (key === "org") return switchTab("__ORG__");
   if (key === "tasks") return switchTab("__MYTASKS__");
+  if (key === "hub") return switchTab("__HUB__");
   if (key === "requests") return switchTab("__REQUESTS__");
   if (key === "docs") {
     const target = (lastDocTab && (teamChoices.includes(lastDocTab) || lastDocTab === "__DOCCENTER__")) ? lastDocTab : "__DOCCENTER__";
@@ -12604,14 +13063,14 @@ function itemsForTab(tabKey) {
 
 function renderTabs() {
   const section = currentSection();
-  const badge = requestsBadgeCount();
   const navItems = [
     { key: "overview", label: "Home", click: "switchSection('overview')" },
     { key: "org", label: "Organization", click: "switchSection('org')", hidden: !employeesListId },
     { key: "profile", label: "My Profile", click: "openMyProfile()", hidden: !employeesListId },
     { key: "team", label: "My Team", click: "openMyTeam()", hidden: !employeesListId },
+    { key: "hub", label: "Work Hub", click: "switchSection('hub')", badge: hubBadgeCount() + hubSevere() },
     { key: "tasks", label: "My Tasks", click: "switchSection('tasks')", badge: taskAlertBadgeCount() },
-    { key: "requests", label: "Requests", click: "switchSection('requests')", badge },
+    { key: "requests", label: "Requests", click: "switchSection('requests')" },
     { key: "docs", label: "Document Repository", click: "switchSection('docs')" }
   ].filter(n => !n.hidden);
   document.getElementById("mainNav").innerHTML = navItems.map(n =>
@@ -12776,7 +13235,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length + peTodoItems().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length + peTodoItems().length + hubMyReminders().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -12818,7 +13277,7 @@ function reqGroup(title, sub, items) {
   return `<div class="req-group"><h3>${escapeHtml(title)}</h3><div class="req-sub">${escapeHtml(sub)}</div><div class="req-grid">${items.map(reqCard).join("")}</div></div>`;
 }
 
-function renderRequestsTodo() {
+function requestsTodoRows() {
   const rows = [];
   myPendingNteCases().forEach(c => rows.push({ label: `Notice to Explain — response due ${dateOnly(c.responseDueDate) || "soon"}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   myPendingCoachingCases().forEach(c => rows.push({ label: "Coaching form — please review and acknowledge", sub: c.refNo, click: `openCoachingCaseFromRequests('${c.itemId}')` }));
@@ -12836,10 +13295,14 @@ function renderRequestsTodo() {
   recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   myReturnedRecognition().forEach(c => rows.push({ label: `Recognition request returned — ${recRecipientNames(c)}`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   nteApprovalQueue().forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
-  if (!rows.length) return "";
-  return `<div class="req-card req-todo" style="margin-bottom:26px;">
-    <div class="req-title"><span>&#128276;</span><span>Needs your action</span><span class="req-badge">${rows.length}</span></div>
-    <div style="margin-top:8px;">${rows.map(r => `<div class="req-todo-row" onclick="${r.click}"><span>${escapeHtml(r.label)}</span><span style="font-size:11px; color:var(--text3);">${escapeHtml(r.sub)}</span></div>`).join("")}</div>
+  hubTodoItems().forEach(r => rows.push(r));
+  return rows;
+}
+function renderRequestsTodo() {
+  const n = hubBadgeCount();
+  if (!n) return "";
+  return `<div class="req-card req-todo" style="margin-bottom:26px; cursor:pointer;" onclick="switchSection('hub')">
+    <div class="req-title"><span>&#128276;</span><span>You have ${n} item${n === 1 ? "" : "s"} needing action \u2014 open Work Hub</span><span class="req-badge">${n}</span></div>
   </div>`;
 }
 
@@ -13007,8 +13470,7 @@ function renderMyTasks() {
     <h2 style="margin:4px 0 18px;">My Tasks</h2>
     ${renderReportsOverviewRow()}
     ${renderCalendar()}
-    ${renderTodoBoard()}
-    <div style="font-size:12px; color:var(--text3); margin-top:14px;">Pending NTE, coaching and recognition items are shown under <strong>Requests</strong>.</div>
+    <div style="font-size:12px; color:var(--text3); margin-top:14px;">Your to-dos, approvals, deadlines and anything stuck now live in <a href="#" onclick="switchSection('hub'); return false;" style="color:var(--accent);">Work Hub</a>.</div>
     ${renderReportsSettingsRow()}
   </div>`;
 }
@@ -13018,6 +13480,7 @@ function renderContent() {
   if (activeTab === "Welcome") main.innerHTML = renderWelcome();
   else if (activeTab === "__ORG__") main.innerHTML = renderOrganization();
   else if (activeTab === "__DOCCENTER__") main.innerHTML = renderDocumentCenter();
+  else if (activeTab === "__HUB__") main.innerHTML = renderWorkHub();
   else if (activeTab === "__MYTASKS__") main.innerHTML = renderMyTasks();
   else if (activeTab === "__REQUESTS__") main.innerHTML = renderRequests();
   else if (activeTab === "__HISTORY__") main.innerHTML = renderHistory();
@@ -13785,27 +14248,22 @@ function renderMyWeekList(items, emptyLabel) {
   </div>`;
 }
 function renderMyTasksOfWeek() {
-  const items = myWeekTaskItems();
-  const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999);
-  const weekEnd = new Date(todayEnd.getTime() + 7 * 86400000);
-  const dueTodayOrOverdue = items.filter(x => x.dueMs <= todayEnd.getTime());
-  const dueThisWeek = items.filter(x => x.dueMs > todayEnd.getTime() && x.dueMs <= weekEnd.getTime());
-  const reviewItems = myReviewQueueItems();
-  const box = (key, label, color, list) => `<div>
-    <div onclick="toggleMyWeekSection('${key}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
-      <span style="font-size:13px; font-weight:600;">${escapeHtml(label)}</span>
-      <span style="font-size:18px; font-weight:800; color:${color};">${list.length}</span>
-    </div>
-    ${myWeekExpanded[key] ? renderMyWeekList(list, "Nothing here.") : ""}
-  </div>`;
+  const needs = hubNeedsAction();
+  const due = needs.filter(r => r.level === "due").length;
+  const stuck = hubCanSeeStuck() ? hubVisibleStuck().length : 0;
+  const rem = hubMyReminders().length;
+  const tile = (n, label, color) => `<div onclick="switchSection('hub')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+      <span style="font-size:13px; font-weight:600;">${escapeHtml(label)}</span><span style="font-size:18px; font-weight:800; color:${color};">${n}</span></div>`;
   return `<div class="welcome-card">
     <div class="welcome-card-header"><h2>My Tasks of the Week</h2></div>
-    <div style="font-size:12px; color:var(--text3); margin: 2px 0 14px;">Click a number to see what's behind it.</div>
+    <div style="font-size:12px; color:var(--text3); margin: 2px 0 14px;">Everything is in the Work Hub \u2014 click any row to open it.</div>
     <div style="display:flex; flex-direction:column; gap:10px;">
-      ${box("today", "Due Today / Overdue", "var(--red, #ef4444)", dueTodayOrOverdue)}
-      ${box("week", "Due Within 7 Days", "var(--yellow)", dueThisWeek)}
-      ${reviewItems.length ? box("review", "To Review / Approve", "var(--accent)", reviewItems) : ""}
+      ${tile(needs.length, "Needs my action", "var(--accent)")}
+      ${tile(due, "Due today / overdue", "var(--red, #ef4444)")}
+      ${hubCanSeeStuck() ? tile(stuck, "Stuck in approval", stuck ? "var(--yellow)" : "var(--green)") : ""}
+      ${rem ? tile(rem, "Reminders for me", "var(--accent)") : ""}
     </div>
+    <button class="btn btn-primary btn-sm" style="margin-top:12px;" onclick="switchSection('hub')">Open Work Hub</button>
   </div>`;
 }
 
