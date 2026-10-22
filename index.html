@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-22-20";
+const BUILD_ID = "2026-10-22-21";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -11904,27 +11904,57 @@ async function deleteLeaveUsage(itemId) {
   }
 }
 
+// Entry types for the "Transfer / log a change" form. "update" is the original behaviour (diffs against the
+// current record and overwrites it). "hire" and "past" only write a History line and never touch the current
+// Team / Position / Status — used to backfill someone's starting position or older promotions/transfers.
+function onHRChangeModeChange() {
+  const modeEl = document.getElementById("hrChangeMode");
+  if (!modeEl) return;
+  const mode = modeEl.value;
+  const hints = {
+    update: "Pick any cluster/team to move this person there. Recorded in Employee History with the date and reason below, and the current record is updated.",
+    hire: "Logs the starting team and position as a \"New Hire\" line on the effective date (use the hire date). The current record is NOT changed, and it is not counted as a transfer or promotion.",
+    past: "Adds an older change to the history only — the current record is NOT changed. Choose the NEW team/position below and type what it was before."
+  };
+  document.getElementById("hrChangeModeHint").textContent = hints[mode] || "";
+  document.getElementById("hrChangePrevWrap").style.display = mode === "past" ? "block" : "none";
+  document.getElementById("hrChangeStatusWrap").style.display = mode === "update" ? "block" : "none";
+}
+
 async function submitLogChange() {
   const emp = employees.find(e => e.id === hrView.employeeId);
   if (!emp) return;
   const cluster = document.getElementById("hrChangeCluster").value;
   const team = selectedTeamValue("hrChangeTeam", "hrChangeTeamNew");
   const position = selectedTeamValue("hrChangePosition", "hrChangePositionNew");
-  const status = document.getElementById("hrChangeStatus").value;
+  const mode = (document.getElementById("hrChangeMode") || { value: "update" }).value;
+  const historyOnly = mode !== "update";
+  const status = historyOnly ? emp.status : document.getElementById("hrChangeStatus").value;
   const effectiveDate = document.getElementById("hrChangeDate").value;
   const reason = document.getElementById("hrChangeReason").value.trim();
   const separationDate = document.getElementById("hrChangeSeparationDate") ? document.getElementById("hrChangeSeparationDate").value : "";
   const separationReason = document.getElementById("hrChangeSeparationReason") ? document.getElementById("hrChangeSeparationReason").value.trim() : "";
   if (!team || !position || !status || !effectiveDate) { toast("Fill in team, position, status, and effective date.", "error"); return; }
-  if (status === "Resigned" && !separationDate) { toast("Enter a separation date.", "error"); return; }
+  if (!historyOnly && status === "Resigned" && !separationDate) { toast("Enter a separation date.", "error"); return; }
   setSyncing(true);
   try {
     const oldLabel = emp.cluster ? `${emp.cluster} / ${emp.team || "—"}` : (emp.team || "—");
     const newLabel = cluster ? `${cluster} / ${team}` : team;
     const changes = [];
-    if (team !== emp.team || cluster !== (emp.cluster || "")) changes.push(`Transferred: ${oldLabel} → ${newLabel}`);
-    if (position !== emp.position) changes.push(`Position: ${emp.position || "—"} → ${position}`);
-    if (status !== emp.status) changes.push(`Status: ${emp.status} → ${status}`);
+    if (mode === "hire") {
+      // Deliberately avoids the "Transferred:" / "Position:" markers the HR Reports parse, so a hire line is not counted as a move.
+      changes.push(`New Hire: ${newLabel} — ${position}`);
+    } else if (mode === "past") {
+      const prevTeam = document.getElementById("hrChangePrevTeam").value.trim();
+      const prevPos = document.getElementById("hrChangePrevPosition").value.trim();
+      if (prevTeam) changes.push(`Transferred: ${prevTeam} → ${newLabel}`);
+      if (prevPos) changes.push(`Position: ${prevPos} → ${position}`);
+      if (!changes.length) { setSyncing(false); toast("Type the previous team and/or previous position for a past change.", "error"); return; }
+    } else {
+      if (team !== emp.team || cluster !== (emp.cluster || "")) changes.push(`Transferred: ${oldLabel} → ${newLabel}`);
+      if (position !== emp.position) changes.push(`Position: ${emp.position || "—"} → ${position}`);
+      if (status !== emp.status) changes.push(`Status: ${emp.status} → ${status}`);
+    }
     const description = changes.length ? changes.join(" · ") : "Record updated (no field changes)";
     if (positionHistoryListId) {
       await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items`, {
@@ -11932,21 +11962,23 @@ async function submitLogChange() {
         body: JSON.stringify({ fields: { Title: emp.name, EmployeeId: String(emp.id), EffectiveDate: effectiveDate, Description: reason ? `${description} (${reason})` : description } })
       });
     }
-    const patchFields = {
-      Team: team, Cluster: cluster, Position: position, Status: status,
-      SeparationDate: status === "Resigned" ? separationDate : null,
-      SeparationReason: status === "Resigned" ? separationReason : ""
-    };
-    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, {
-      method: "PATCH",
-      body: JSON.stringify(patchFields)
-    });
-    emp.team = team;
-    emp.cluster = cluster;
-    emp.position = position;
-    emp.status = status;
-    emp.separationDate = patchFields.SeparationDate;
-    emp.separationReason = patchFields.SeparationReason;
+    if (!historyOnly) {
+      const patchFields = {
+        Team: team, Cluster: cluster, Position: position, Status: status,
+        SeparationDate: status === "Resigned" ? separationDate : null,
+        SeparationReason: status === "Resigned" ? separationReason : ""
+      };
+      await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, {
+        method: "PATCH",
+        body: JSON.stringify(patchFields)
+      });
+      emp.team = team;
+      emp.cluster = cluster;
+      emp.position = position;
+      emp.status = status;
+      emp.separationDate = patchFields.SeparationDate;
+      emp.separationReason = patchFields.SeparationReason;
+    }
     setSyncing(false, true);
     toast("Change logged ✓", "success");
     if (status === "Resigned") {
@@ -12413,7 +12445,19 @@ function renderHRModal() {
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
       <div style="font-size:12px; color:var(--text2); margin-bottom:16px;">${escapeHtml(emp.name)} · ${escapeHtml(emp.position || "—")}</div>
-      <div style="font-size:11px; color:var(--text2); margin-bottom:12px;">Pick any cluster/team to move this person there. Recorded in their Employee History with the date and reason below.</div>
+      <div class="form-group">
+        <label>Entry type</label>
+        <select id="hrChangeMode" onchange="onHRChangeModeChange()">
+          <option value="update">Change — update current record</option>
+          <option value="hire">New hire — starting team &amp; position (history only)</option>
+          <option value="past">Past change — add to history only (current record unchanged)</option>
+        </select>
+      </div>
+      <div id="hrChangeModeHint" style="font-size:11px; color:var(--text2); margin-bottom:12px;"></div>
+      <div id="hrChangePrevWrap" style="display:none;">
+        <div class="form-group"><label>Previous team (leave blank if the team didn't change)</label><input id="hrChangePrevTeam" type="text" placeholder="e.g. HR &amp; Admin  or  John's Cluster / NDREAM" /></div>
+        <div class="form-group"><label>Previous position (leave blank if the position didn't change)</label><input id="hrChangePrevPosition" type="text" placeholder="e.g. Product Manager" /></div>
+      </div>
       <div class="form-group">
         <label>Cluster (leave blank for non-cluster teams)</label>
         <select id="hrChangeCluster" onchange="updateClusterTeamOptions('hrChangeCluster','hrChangeTeam')">
@@ -12435,6 +12479,7 @@ function renderHRModal() {
           <input id="hrChangePositionNew" type="text" placeholder="New position title" />
         </div>
       </div>
+      <div id="hrChangeStatusWrap">
       <div class="form-group">
         <label>Employment Status</label>
         <select id="hrChangeStatus" onchange="renderHRChangeSeparationFields()">
@@ -12446,6 +12491,7 @@ function renderHRModal() {
         </select>
       </div>
       <div id="hrChangeSeparationFields"></div>
+      </div>
       <div class="form-group"><label>Effective date</label><input id="hrChangeDate" type="date" value="${new Date().toISOString().slice(0,10)}" /></div>
       <div class="form-group"><label>Reason (optional)</label><input id="hrChangeReason" type="text" placeholder="e.g. team restructuring, promotion" /></div>
       <div class="modal-actions">
@@ -12456,6 +12502,7 @@ function renderHRModal() {
     updateClusterTeamOptions('hrChangeCluster', 'hrChangeTeam', emp.team);
     updatePositionOptions('hrChangePosition', emp.position);
     renderHRChangeSeparationFields();
+    onHRChangeModeChange();
   }
 
   if (hrView.mode === "testMode") { renderTestModePicker(box); return; }
