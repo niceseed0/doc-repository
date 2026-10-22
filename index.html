@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-22-21";
+const BUILD_ID = "2026-10-22-22";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12195,6 +12195,38 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "allTeams") {
+    box.style.width = "min(760px, 95vw)";
+    const groups = new Map();
+    employees.filter(e => e.status !== "Resigned").forEach(e => {
+      const key = e.cluster ? `${e.cluster} / ${e.team || "—"}` : (e.team || "—");
+      if (!groups.has(key)) groups.set(key, { key, team: e.team || "", cluster: e.cluster || "", members: [] });
+      groups.get(key).members.push(e);
+    });
+    const order = g => { const i = CONFIG.teamOrder.indexOf(g.cluster || g.team); return i === -1 ? CONFIG.teamOrder.length : i; };
+    const list = [...groups.values()].sort((a, b) => order(a) - order(b) || a.key.localeCompare(b.key));
+    const total = list.reduce((n, g) => n + g.members.length, 0);
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+        <div>
+          <h3 style="margin-bottom:2px;">My Team — all teams</h3>
+          <div style="font-size:12px; color:var(--text2);">${list.length} teams · ${total} active member${total === 1 ? "" : "s"}</div>
+        </div>
+        <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+      </div>
+      <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+        ${list.map(g => `
+          <details open style="border:1px solid var(--border); border-radius:10px; padding:8px 10px;">
+            <summary style="cursor:pointer; font-size:13px; font-weight:600;">${escapeHtml(g.key)} <span style="font-weight:400; color:var(--text3);">· ${g.members.length}</span></summary>
+            <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
+              ${g.members.slice().sort((a, b) => positionRankIndex(a.position) - positionRankIndex(b.position) || a.name.localeCompare(b.name)).map(e => rosterRow(e, true)).join("")}
+            </div>
+          </details>`).join("")}
+      </div>
+    `;
+    return;
+  }
+
   if (hrView.mode === "formerEmployees") {
     const former = employees.filter(e => e.status === "Resigned")
       .sort((a, b) => (b.separationDate || "").localeCompare(a.separationDate || ""));
@@ -13117,9 +13149,17 @@ function switchSection(key) {
   }
 }
 // "My Team" opens the team roster / org-chart popup for the signed-in employee's own team.
+function isHeadOfOps(e) { return !!e && /^head\s*of\s*operations?\b/i.test(e.position || ""); }
 function openMyTeam() {
   if (!employeesListId) return;
   const me = myEmployeeRecord();
+  if (isHeadOfOps(me)) { // Head of Operations oversees every team: "My Team" lists all of them
+    hrView = { mode: "allTeams" };
+    hrShowFormer = false;
+    document.getElementById("hrModal").classList.add("open");
+    renderHRModal();
+    return;
+  }
   if (!me || !me.team) { toast("No team is linked to your account yet.", "error"); return; }
   openTeamRoster(me.team, me.cluster || "");
 }
