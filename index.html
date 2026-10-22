@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-09-18";
+const BUILD_ID = "2026-10-22-19";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -562,6 +562,9 @@ const CONFIG = {
     "Senior Game Master",
     "Game Master"
   ],
+  // Selectable in the Position dropdown but deliberately NOT ranked: these are Admin-side titles,
+  // so adding them here changes no permission, seniority order or org-chart grouping.
+  extraPositions: ["Head of Operations", "HR/Admin Manager", "HR Associate", "IT Lead", "IT Associate", "CXQA Manager", "Nurse"],
   // Annual leave/sick credit policy. All of this is computed live from hire date + today's
   // date + logged usage — nothing is stored as a running balance, so there is no year-end
   // job to run: the moment the calendar (or an anniversary) turns over, every number here
@@ -2188,10 +2191,11 @@ function selectedTeamValue(selectId, newInputId) {
 // CONFIG.positionRank first (in rank order), then any custom titles already in use that
 // aren't in that list yet (kept selectable, grouped alphabetically at the end).
 function knownPositions() {
+  const listed = [...CONFIG.positionRank, ...CONFIG.extraPositions.filter(p => !CONFIG.positionRank.includes(p))];
   const extra = [...new Set(employees.map(e => e.position).filter(Boolean))]
-    .filter(p => !CONFIG.positionRank.includes(p))
+    .filter(p => !listed.includes(p))
     .sort((a, b) => a.localeCompare(b));
-  return [...CONFIG.positionRank, ...extra];
+  return [...listed, ...extra];
 }
 
 // Populates a Position <select> the same way updateClusterTeamOptions does for Team —
@@ -9514,7 +9518,7 @@ function mpsIsCeo(e) { return /\bceo\b|chief executive/i.test(e.position || "") 
 function mpsAutoAdminGroup(e) {
   const pos = mpsNorm(e.position), team = mpsNorm(e.team);
   if (pos.includes("managingdirector") || mpsIsOrgPerson(e, "md")) return "Managing Director";
-  if (/^headof(business)?operations/.test(pos)) return "Head of Operations";
+  if (/^headof(business)?operations?/.test(pos)) return "Head of Operations";
   if (pos.includes("businessoperationsmanager")) return "Business Operations Manager";
   if (pos.includes("nurse")) return "Company Nurse";
   if (["it", "itteam", "itdepartment", "informationtechnology"].includes(team)) return "IT";
