@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-22-19";
+const BUILD_ID = "2026-10-22-20";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1757,8 +1757,29 @@ function myEmployeeRecord() {
   return employees.find(e => e.email && e.email.toLowerCase() === myEmail) || null;
 }
 function positionRankIndex(position) {
+  if (/^head\s*of\s*operations?\b/i.test(position || "")) return 0; // Head of Operations (and Strategy) ranks as Cluster Lead
   const idx = CONFIG.positionRank.indexOf(position);
   return idx === -1 ? CONFIG.positionRank.length : idx;
+}
+// Cluster Lead recognition. Besides the plain "Cluster Lead" title, the Head of Operations (any title that
+// starts "Head of Operations…", e.g. "Head of Operations and Strategy") and anyone listed as a cluster lead
+// in ORG_CHART.gameServiceOps.leads (matched by name) count as Cluster Lead / HOC. They keep their own title
+// and need no Cluster value on their record — their cluster comes from ORG_CHART.
+function leadClusterFromOrgChart(e) {
+  try {
+    const n = String(e && e.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const l = (ORG_CHART.gameServiceOps.leads || []).find(x => String(x.name).toLowerCase().replace(/[^a-z0-9]/g, "") === n);
+    return l ? l.team : "";
+  } catch (err) { return ""; }
+}
+function myLeadCluster(e) {
+  if (!e) return "";
+  if (e.position === CONFIG.positionRank[0] && e.cluster) return e.cluster;
+  return leadClusterFromOrgChart(e);
+}
+function isClusterLeadRec(e) {
+  if (!e) return false;
+  return e.position === CONFIG.positionRank[0] || !!leadClusterFromOrgChart(e) || /^head\s*of\s*operations?\b/i.test(e.position || "");
 }
 function canDraftNte() {
   const me = myEmployeeRecord();
@@ -6753,8 +6774,8 @@ async function loadQuarterlyFeedback() {
     const selfData = await graphFetch(selfUrl, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
     pushUnique(selfData.value || []);
     if (canWriteQuarterlyFeedback()) {
-      const scopeUrl = (me.position === "Cluster Lead" && me.cluster)
-        ? `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/Cluster eq '${esc(me.cluster)}'&$top=1000`
+      const scopeUrl = myLeadCluster(me)
+        ? `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/Cluster eq '${esc(myLeadCluster(me))}'&$top=1000`
         : `/sites/${siteId}/lists/${quarterlyFeedbackListId}/items?$expand=fields&$filter=fields/Team eq '${esc(me.team)}' and fields/Cluster eq '${esc(me.cluster || "")}'&$top=1000`;
       const scopeData = await graphFetch(scopeUrl, { headers: { "Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly" } });
       pushUnique(scopeData.value || []);
@@ -6804,8 +6825,8 @@ function qfEligibleTargets() {
   const myRank = positionRankIndex(me.position);
   // Never includes the facilitator themselves — nobody writes their own quarterly session (this also keeps
   // the "x/y done" progress and the Home alert from being stuck on an entry that can never be completed).
-  if (me.position === "Cluster Lead" && me.cluster) {
-    return employees.filter(e => String(e.id) !== String(me.id) && e.status !== "Resigned" && e.cluster === me.cluster && positionRankIndex(e.position) >= positionRankIndex("Senior Product Manager"));
+  if (myLeadCluster(me)) {
+    return employees.filter(e => String(e.id) !== String(me.id) && e.status !== "Resigned" && e.cluster === myLeadCluster(me) && positionRankIndex(e.position) >= positionRankIndex("Senior Product Manager"));
   }
   return employees.filter(e => String(e.id) !== String(me.id) && e.status !== "Resigned" && e.team === me.team && (e.cluster || "") === (me.cluster || "") && positionRankIndex(e.position) >= myRank);
 }
@@ -9272,7 +9293,7 @@ function qfSortEmployees(list) {
 // Who gets a quarterly session company-wide: active staff below Cluster Lead (no HOC / MD / CEO).
 function qfIsEvaluatee(e) {
   if (!e || e.status === "Resigned") return false;
-  if (e.position === CONFIG.positionRank[0] || /managing director|\bceo\b|chief/i.test(e.position || "")) return false;
+  if (isClusterLeadRec(e) || /managing director|\bceo\b|chief/i.test(e.position || "")) return false;
   const n = String(e.name || "").trim().toLowerCase();
   return ![ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === n);
 }
@@ -9281,7 +9302,7 @@ function qfBoardTargets() {
   return qfSortEmployees(qfEligibleTargets().filter(e => e.status !== "Resigned" && (!me || String(e.id) !== String(me.id))));
 }
 function qfBoardBadge() { try { const p = qfMyProgress(); return p ? p.remaining.length : 0; } catch (e) { return 0; } }
-function qfIsClusterLead() { const me = myEmployeeRecord(); return !!me && me.position === CONFIG.positionRank[0]; }
+function qfIsClusterLead() { const me = myEmployeeRecord(); return !!me && isClusterLeadRec(me); }
 function qfCanOverview() { return !!quarterlyFeedbackListId && (canViewAllQuarterlyFeedback() || qfIsClusterLead()); }
 function qfOverviewEmployees() {
   const me = myEmployeeRecord();
@@ -9911,7 +9932,7 @@ let qrReviewState = { year: null, quarter: null };
 function qrIsHR(me) { return !!(canAccessHR || isPermissionAdmin || (me && mpsAutoAdminGroup(me) === "HR/Admin")); }
 function qrIsHOC(me) {
   if (!me) return false;
-  if (me.position === CONFIG.positionRank[0]) return true; // HOC = Cluster Lead (and Head of Operations)
+  if (isClusterLeadRec(me)) return true; // HOC = Cluster Lead (and Head of Operations)
   if (mpsAutoAdminGroup(me) === "Head of Operations") return true;
   try { const l = ORG_CHART.businessOps && ORG_CHART.businessOps.lead; return !!(l && l.name) && mpsNorm(l.name) === mpsNorm(me.name); } catch (e) { return false; }
 }
@@ -9978,8 +9999,8 @@ async function loadQuarterlyRecommendations() {
     } else {
       if (stages.length) addRecs(await qrFetchAll(qrRecsListId, "fields/RecordType eq 'Rec' and fields/Recommendation ne 'No Recommendation'"));
       if (me && canWriteQuarterlyFeedback()) {
-        const scope = (me.position === "Cluster Lead" && me.cluster)
-          ? `fields/RecordType eq 'Rec' and fields/Cluster eq '${esc(me.cluster)}'`
+        const scope = myLeadCluster(me)
+          ? `fields/RecordType eq 'Rec' and fields/Cluster eq '${esc(myLeadCluster(me))}'`
           : `fields/RecordType eq 'Rec' and fields/Team eq '${esc(me.team)}' and fields/Cluster eq '${esc(me.cluster || "")}'`;
         addRecs(await qrFetchAll(qrRecsListId, scope));
       }
@@ -11171,7 +11192,7 @@ async function loadHubState() {
 
 // ── people / owners ──────────────────────────────────────────────────────────
 function hubActive() { return employees.filter(e => e.status !== "Resigned" && e.email); }
-function hubIsHoc(e) { return e.position === CONFIG.positionRank[0] || mpsAutoAdminGroup(e) === "Head of Operations"; }
+function hubIsHoc(e) { return isClusterLeadRec(e) || mpsAutoAdminGroup(e) === "Head of Operations"; }
 function hubIsHr(e) { return mpsAutoAdminGroup(e) === "HR/Admin"; }
 function hubIsMd(e) { return mpsAutoAdminGroup(e) === "Managing Director"; }
 function hubRoleEmails(role) {
@@ -14123,7 +14144,7 @@ function scheduleStatusLabel(status) {
 function isHomeLeadership() {
   const me = myEmployeeRecord();
   if (!me) return false;
-  if (me.position === CONFIG.positionRank[0] || /managing director|\bceo\b/i.test(me.position || "")) return true;
+  if (isClusterLeadRec(me) || /managing director|\bceo\b/i.test(me.position || "")) return true;
   const name = String(me.name || "").trim().toLowerCase();
   return [ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === name);
 }
