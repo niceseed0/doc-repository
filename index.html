@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-23";
+const BUILD_ID = "2026-10-23-24";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1814,8 +1814,24 @@ function canSeeNteTab() {
   return canDraftNte() || canApproveNte() || myPendingNteCases().length > 0;
 }
 
+// Management (CEO → Managing Director → Head of Operations) is shown as its own group, apart from HR & Admin.
+// Derived from the position, so nobody's stored Team needs to change.
+function mgmtRank(e) {
+  const p = (e && e.position) || "";
+  if (/\bceo\b|chief executive/i.test(p)) return 0;
+  if (/managing director/i.test(p)) return 1;
+  if (/^head\s*of\s*operations?\b/i.test(p)) return 2;
+  return -1;
+}
+function isMgmtRec(e) { return mgmtRank(e) >= 0; }
 function employeesForTeam(team, includeFormer, cluster) {
-  return employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
+  let list = employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
+  if (team === "HR & Admin" && !cluster) list = list.filter(e => !isMgmtRec(e));
+  if (team === "Management" && !cluster) {
+    list = employees.filter(e => isMgmtRec(e) && (includeFormer || e.status !== "Resigned"))
+      .sort((a, b) => mgmtRank(a) - mgmtRank(b) || a.name.localeCompare(b.name));
+  }
+  return list;
 }
 
 // SharePoint Date/DateTime columns often come back as full ISO timestamps
@@ -12217,11 +12233,12 @@ function renderHRModal() {
     box.style.width = "min(760px, 95vw)";
     const groups = new Map();
     employees.filter(e => e.status !== "Resigned").forEach(e => {
-      const key = e.cluster ? `${e.cluster} / ${e.team || "—"}` : (e.team || "—");
-      if (!groups.has(key)) groups.set(key, { key, team: e.team || "", cluster: e.cluster || "", members: [] });
+      const mg = isMgmtRec(e);
+      const key = mg ? "Management" : (e.cluster ? `${e.cluster} / ${e.team || "—"}` : (e.team || "—"));
+      if (!groups.has(key)) groups.set(key, { key, team: mg ? "Management" : (e.team || ""), cluster: mg ? "" : (e.cluster || ""), members: [] });
       groups.get(key).members.push(e);
     });
-    const order = g => { const i = CONFIG.teamOrder.indexOf(g.cluster || g.team); return i === -1 ? CONFIG.teamOrder.length : i; };
+    const order = g => g.key === "Management" ? -1 : (() => { const i = CONFIG.teamOrder.indexOf(g.cluster || g.team); return i === -1 ? CONFIG.teamOrder.length : i; })();
     const list = [...groups.values()].sort((a, b) => order(a) - order(b) || a.key.localeCompare(b.key));
     const total = list.reduce((n, g) => n + g.members.length, 0);
     box.innerHTML = `
@@ -12237,7 +12254,7 @@ function renderHRModal() {
           <details open style="border:1px solid var(--border); border-radius:10px; padding:8px 10px;">
             <summary style="cursor:pointer; font-size:13px; font-weight:600;">${escapeHtml(g.key)} <span style="font-weight:400; color:var(--text3);">· ${g.members.length}</span></summary>
             <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
-              ${g.members.slice().sort((a, b) => positionRankIndex(a.position) - positionRankIndex(b.position) || a.name.localeCompare(b.name)).map(e => rosterRow(e, true)).join("")}
+              ${g.members.slice().sort((a, b) => g.key === "Management" ? (mgmtRank(a) - mgmtRank(b) || a.name.localeCompare(b.name)) : (positionRankIndex(a.position) - positionRankIndex(b.position) || a.name.localeCompare(b.name))).map(e => rosterRow(e, true)).join("")}
             </div>
           </details>`).join("")}
       </div>
