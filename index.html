@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-30";
+const BUILD_ID = "2026-10-23-32";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1829,6 +1829,9 @@ function mgmtRank(e) {
   return -1;
 }
 function isMgmtRec(e) { return mgmtRank(e) >= 0; }
+// Team label to SHOW for a person: Management for CEO / MD / Head of Operations, otherwise their stored team.
+function displayTeam(e) { return isMgmtRec(e) ? "Management" : ((e && e.team) || ""); }
+function displayCluster(e) { return isMgmtRec(e) ? "" : ((e && e.cluster) || ""); }
 function employeesForTeam(team, includeFormer, cluster) {
   let list = employees.filter(e => e.team === team && (!cluster || e.cluster === cluster) && (includeFormer || e.status !== "Resigned"));
   if (team === "HR & Admin" && !cluster) list = list.filter(e => !isMgmtRec(e));
@@ -12977,7 +12980,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
       ${selfView
         ? `<div style="font-size:12px; color:var(--accent);">My Profile</div>`
-        : `<div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(emp.team)}', '${escapeAttr(emp.cluster || "")}')">&larr; ${escapeHtml(emp.team)}</div>`}
+        : `<div style="font-size:12px; color:var(--text2); cursor:pointer;" onclick="openTeamRoster('${escapeAttr(displayTeam(emp))}', '${escapeAttr(displayCluster(emp))}')">&larr; ${escapeHtml(displayTeam(emp))}</div>`}
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
 
@@ -12988,7 +12991,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
         ${avatarHtml(emp, 96, 26)}
         <div style="flex:1; min-width:0;">
           <div style="font-size:16px; font-weight:600;">${escapeHtml(emp.name)}</div>
-          <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(emp.team)}${emp.cluster ? ` <span style="color:var(--text3);">· ${escapeHtml(emp.cluster)}</span>` : ""}</div>
+          <div style="font-size:13px; color:var(--text2); margin-top:2px;">${escapeHtml(displayTeam(emp))}${displayCluster(emp) ? ` <span style="color:var(--text3);">· ${escapeHtml(displayCluster(emp))}</span>` : ""}</div>
           <div style="font-size:13px; color:var(--text2); margin-top:1px;">${escapeHtml(emp.position || "—")}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:8px; flex-shrink:0;">
@@ -14695,7 +14698,7 @@ function filterPeopleDirectory() {
   if (!q) { box.style.display = "none"; return; }
   const matches = employees.filter(e => e.status !== "Resigned" && e.name.toLowerCase().includes(q)).slice(0, 8);
   if (!matches.length) { box.style.display = "none"; return; }
-  box.innerHTML = matches.map(e => `<div onclick="selectPeopleDirectoryPerson('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(e.team || e.position || "")}</span></div>`).join("");
+  box.innerHTML = matches.map(e => `<div onclick="selectPeopleDirectoryPerson('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11px;">— ${escapeHtml(displayTeam(e) || e.position || "")}</span></div>`).join("");
   box.style.display = "";
 }
 function selectPeopleDirectoryPerson(id) {
@@ -14710,7 +14713,7 @@ function renderPeopleDirectoryResult() {
   const sup = directSupervisorFor(e);
   return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; margin-top:10px; font-size:13px; line-height:1.7;">
     <div style="font-weight:700; margin-bottom:4px;">${escapeHtml(e.name)}</div>
-    <div><span style="color:var(--text3);">Department / Team:</span> ${escapeHtml(e.team || "—")}${e.cluster ? ` <span style="color:var(--text3);">(${escapeHtml(e.cluster)})</span>` : ""}</div>
+    <div><span style="color:var(--text3);">Department / Team:</span> ${escapeHtml(displayTeam(e) || "—")}${displayCluster(e) ? ` <span style="color:var(--text3);">(${escapeHtml(displayCluster(e))})</span>` : ""}</div>
     <div><span style="color:var(--text3);">Position:</span> ${escapeHtml(e.position || "—")}</div>
     <div><span style="color:var(--text3);">Direct Supervisor:</span> ${sup ? `${escapeHtml(sup.name)} <span style="color:var(--text3);">(${escapeHtml(sup.position)})</span>` : "—"}</div>
   </div>`;
@@ -14736,18 +14739,41 @@ async function loadEmergencyContacts() {
 // The list's real column names (SharePoint "internal names"), so a save never fails just because one
 // optional column is missing or was created under another name — we send what exists and say what is missing.
 const EC_COLUMNS = ["Role", "Phone", "Email", "SortOrder"];
+function ecColType(c) {
+  for (const t of ["text", "number", "choice", "personOrGroup", "lookup", "dateTime", "boolean", "currency", "hyperlinkOrPicture", "calculated"]) if (c[t]) return t;
+  return "other";
+}
 async function emergencyColumnInfo() {
   try {
     const data = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/columns?$top=200`);
-    const have = new Set((data.value || []).map(c => c.name));
-    return { have, missing: EC_COLUMNS.filter(c => !have.has(c)), known: [...have].filter(n => !/^(Edit|LinkTitle|Attachments|ContentType|ComplianceAsset|AppAuthor|AppEditor|Author|Editor|Created|Modified|_|ID$|DocIcon|ItemChildCount|FolderChildCount)/.test(n)) };
-  } catch (e) { return { have: null, missing: [], known: [] }; } // can't read the schema → just try everything
+    const cols = data.value || [];
+    const have = new Set(cols.map(c => c.name));
+    const types = {};
+    cols.forEach(c => { types[c.name] = ecColType(c); });
+    return { have, types, missing: EC_COLUMNS.filter(c => !have.has(c)), known: cols.filter(c => !c.readOnly && !c.hidden).map(c => c.name) };
+  } catch (e) { return { have: null, types: {}, missing: [], known: [] }; } // can't read the schema → just try everything
 }
-function ecFilterFields(fields, info) {
-  if (!info.have) return fields;
-  const out = {};
-  Object.keys(fields).forEach(k => { if (k === "Title" || info.have.has(k)) out[k] = fields[k]; });
-  return out;
+// Writes one field at a time (Title first) so a single badly-typed column can't sink the whole save — and so
+// we can say exactly which column is the problem. Values are shaped to the column's real type.
+async function ecWriteFields(itemId, fields, info) {
+  const failed = [];
+  const shape = (k, v) => {
+    const t = info.types[k];
+    if (!t || t === "text") return String(v);
+    if (t === "number" || t === "currency") return v === "" || v == null || isNaN(Number(v)) ? undefined : Number(v);
+    return undefined; // choice / person / lookup / date / etc. can't hold free text here
+  };
+  for (const k of Object.keys(fields)) {
+    if (k === "Title") continue;
+    if (info.have && !info.have.has(k)) continue; // reported as missing elsewhere
+    const v = fields[k];
+    if (v === "" || v == null) { if (!itemId) continue; }
+    const sv = shape(k, v);
+    if (sv === undefined) { if (v !== "" && v != null) failed.push(`${k} (column type is "${info.types[k]}", needs ${k === "SortOrder" ? "Number" : "Single line of text"})`); continue; }
+    try { await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify({ [k]: sv }) }); }
+    catch (e) { failed.push(`${k} (${info.types[k] || "unknown type"})`); }
+  }
+  return failed;
 }
 function ecMissingNote(info) {
   return info.missing.length ? ` Missing column(s) in the "${CONFIG.emergencyContactsListDisplayName}" list: ${info.missing.join(", ")} — add them (exact names, see SETUP_EMERGENCY_CONTACTS.md).${info.known.length ? " Columns found: " + info.known.join(", ") + "." : ""}` : "";
@@ -14817,17 +14843,21 @@ async function submitEmergencyContact() {
   try {
     const info = await emergencyColumnInfo();
     if (info.missing.includes("Phone") && phone) { setSyncing(false, false); toast("The list has no “Phone” column, so the number can't be saved." + ecMissingNote(info), "error"); return; }
+    let failed;
     if (existing) {
-      await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify(ecFilterFields({ Title: name, Role: role, Phone: phone, Email: email }, info)) });
+      await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ Title: name }) });
+      failed = await ecWriteFields(existing.itemId, { Role: role, Phone: phone, Email: email }, info);
       Object.assign(existing, { name, role, phone, email });
     } else {
       const sort = emergencyContacts.reduce((m, c) => Math.max(m, c.sort), 0) + 1;
-      const created = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items`, { method: "POST", body: JSON.stringify({ fields: ecFilterFields({ Title: name, Role: role, Phone: phone, Email: email, SortOrder: sort }, info) }) });
+      const created = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: name } }) });
+      failed = await ecWriteFields(created.id, { Role: role, Phone: phone, Email: email, SortOrder: sort }, info);
       emergencyContacts.push({ itemId: created.id, name, role, phone, email, sort });
     }
     emergencyContacts.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
     setSyncing(false, true);
-    toast(info.missing.length ? "Saved, but some details weren't stored." + ecMissingNote(info) : "Saved ✓", info.missing.length ? "error" : "success");
+    const problems = (failed.length ? ` Could not store: ${failed.join("; ")}.` : "") + ecMissingNote(info);
+    toast(problems ? "Saved with problems." + problems : "Saved ✓", problems ? "error" : "success");
     closeHRModal();
     renderContent();
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
@@ -14858,7 +14888,7 @@ async function moveEmergencyContact(itemId, dir) {
     if (info.missing.includes("SortOrder")) { setSyncing(false, false); toast("Reordering needs a “SortOrder” (Number) column." + ecMissingNote(info), "error"); return; }
     for (let k = 0; k < order.length; k++) {
       if (order[k].sort !== k + 1) {
-        await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${order[k].itemId}/fields`, { method: "PATCH", body: JSON.stringify({ SortOrder: k + 1 }) });
+        await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${order[k].itemId}/fields`, { method: "PATCH", body: JSON.stringify({ SortOrder: info.types.SortOrder === "text" ? String(k + 1) : k + 1 }) });
         order[k].sort = k + 1;
       }
     }
