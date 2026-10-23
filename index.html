@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-36";
+const BUILD_ID = "2026-10-23-37";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -15004,10 +15004,10 @@ function renderEliteNews() {
   return `<div class="welcome-card">
     <div class="welcome-card-header"><h2>Elite News</h2></div>
     <div style="margin-top:14px;">
-      ${renderEliteNewsBirthdays()}
       ${renderAnnouncementBoard()}
       ${renderEliteNewsEvents()}
       ${renderEliteNewsHolidays()}
+      ${renderEliteNewsBirthdays()}
     </div>
   </div>`;
 }
