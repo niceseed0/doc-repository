@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-24";
+const BUILD_ID = "2026-10-23-25";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -549,7 +549,7 @@ const CONFIG = {
   groupFieldCandidates: ["Team"],
   teamOrder: ["HR & Admin", "Finance", "IT", "QA", "General", "John's Cluster", "Gary's Cluster", "Archives"],
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
-  // clicking their 👥 icon opens a sub-team list first instead of a member roster.
+  // clicking their box opens a sub-team list first instead of a member roster.
   clusterTeams: ["John's Cluster", "Gary's Cluster"],
   // Seniority order (most senior first) for the team org-chart view, shown only for teams
   // inside clusterTeams above. Positions not in this list are grouped at the bottom
@@ -14620,11 +14620,14 @@ function renderWelcome() {
 
 
 function orgLeafBox(label, team, col) {
-  const rosterIcon = employeesListId
-    ? `<span class="org-roster-icon" onclick="event.stopPropagation(); openTeamRoster('${jsAttrEscape(team)}')" title="View team members">👥</span>`
+  // Clicking the box opens the team's member org chart; the small 📄 icon opens the team's documents.
+  // (Without the HR employees list there is no roster, so the box falls back to documents.)
+  const docIcon = employeesListId
+    ? `<span class="org-roster-icon" onclick="event.stopPropagation(); switchTab('${jsAttrEscape(team)}')" title="View documents">📄</span>`
     : "";
-  return `<div class="org-node-box org-cell-box org-leaf-box" style="grid-column:${col}; grid-row:11; position:relative;" onclick="switchTab('${jsAttrEscape(team)}')">
-    ${rosterIcon}
+  const boxClick = employeesListId ? `openTeamRoster('${jsAttrEscape(team)}')` : `switchTab('${jsAttrEscape(team)}')`;
+  return `<div class="org-node-box org-cell-box org-leaf-box" style="grid-column:${col}; grid-row:11; position:relative;" onclick="${boxClick}">
+    ${docIcon}
     <div class="org-name">${escapeHtml(label)}</div>
   </div>`;
 }
