@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-29";
+const BUILD_ID = "2026-10-23-30";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14733,6 +14733,25 @@ async function loadEmergencyContacts() {
     emergencyContacts.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
   } catch (e) { console.warn("Could not load emergency contacts (list may not exist yet):", e); emergencyContacts = []; }
 }
+// The list's real column names (SharePoint "internal names"), so a save never fails just because one
+// optional column is missing or was created under another name — we send what exists and say what is missing.
+const EC_COLUMNS = ["Role", "Phone", "Email", "SortOrder"];
+async function emergencyColumnInfo() {
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/columns?$top=200`);
+    const have = new Set((data.value || []).map(c => c.name));
+    return { have, missing: EC_COLUMNS.filter(c => !have.has(c)), known: [...have].filter(n => !/^(Edit|LinkTitle|Attachments|ContentType|ComplianceAsset|AppAuthor|AppEditor|Author|Editor|Created|Modified|_|ID$|DocIcon|ItemChildCount|FolderChildCount)/.test(n)) };
+  } catch (e) { return { have: null, missing: [], known: [] }; } // can't read the schema → just try everything
+}
+function ecFilterFields(fields, info) {
+  if (!info.have) return fields;
+  const out = {};
+  Object.keys(fields).forEach(k => { if (k === "Title" || info.have.has(k)) out[k] = fields[k]; });
+  return out;
+}
+function ecMissingNote(info) {
+  return info.missing.length ? ` Missing column(s) in the "${CONFIG.emergencyContactsListDisplayName}" list: ${info.missing.join(", ")} — add them (exact names, see SETUP_EMERGENCY_CONTACTS.md).${info.known.length ? " Columns found: " + info.known.join(", ") + "." : ""}` : "";
+}
 function canEditEmergencyContacts() { return !!(emergencyListId && (isPermissionAdmin || canAccessHR || isHeadOfOps(myEmployeeRecord()))); }
 function renderEmergencyContactsPlaceholder() { return renderEmergencyContacts(); } // kept for the old name
 function renderEmergencyContacts() {
@@ -14796,17 +14815,19 @@ async function submitEmergencyContact() {
   const existing = hrView.itemId ? emergencyContacts.find(x => x.itemId === hrView.itemId) : null;
   setSyncing(true);
   try {
+    const info = await emergencyColumnInfo();
+    if (info.missing.includes("Phone") && phone) { setSyncing(false, false); toast("The list has no “Phone” column, so the number can't be saved." + ecMissingNote(info), "error"); return; }
     if (existing) {
-      await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ Title: name, Role: role, Phone: phone, Email: email }) });
+      await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify(ecFilterFields({ Title: name, Role: role, Phone: phone, Email: email }, info)) });
       Object.assign(existing, { name, role, phone, email });
     } else {
       const sort = emergencyContacts.reduce((m, c) => Math.max(m, c.sort), 0) + 1;
-      const created = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: name, Role: role, Phone: phone, Email: email, SortOrder: sort } }) });
+      const created = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items`, { method: "POST", body: JSON.stringify({ fields: ecFilterFields({ Title: name, Role: role, Phone: phone, Email: email, SortOrder: sort }, info) }) });
       emergencyContacts.push({ itemId: created.id, name, role, phone, email, sort });
     }
     emergencyContacts.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
     setSyncing(false, true);
-    toast("Saved ✓", "success");
+    toast(info.missing.length ? "Saved, but some details weren't stored." + ecMissingNote(info) : "Saved ✓", info.missing.length ? "error" : "success");
     closeHRModal();
     renderContent();
   } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
@@ -14833,6 +14854,8 @@ async function moveEmergencyContact(itemId, dir) {
   [order[i], order[j]] = [order[j], order[i]];
   setSyncing(true);
   try {
+    const info = await emergencyColumnInfo();
+    if (info.missing.includes("SortOrder")) { setSyncing(false, false); toast("Reordering needs a “SortOrder” (Number) column." + ecMissingNote(info), "error"); return; }
     for (let k = 0; k < order.length; k++) {
       if (order[k].sort !== k + 1) {
         await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${order[k].itemId}/fields`, { method: "PATCH", body: JSON.stringify({ SortOrder: k + 1 }) });
