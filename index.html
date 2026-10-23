@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-34";
+const BUILD_ID = "2026-10-23-35";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -542,6 +542,7 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  companyEventImagesLibraryName: "Company Event Images", // document library for event header images (optional)
   companyEventsListDisplayName: "HR Company Events", // Elite Company Events (Home → Elite News + calendar), see SETUP_COMPANY_EVENTS.md
   emergencyContactsListDisplayName: "HR Emergency Contacts", // editable emergency contact list on the Organization page, see SETUP_EMERGENCY_CONTACTS.md
   hubIgnoredListDisplayName: "HR Hub Ignored", // per-person "ignore this stuck item", see SETUP_WORK_HUB.md
@@ -1037,6 +1038,8 @@ let peListId = null;
 let hubIgnoreListId = null;
 let emergencyListId = null;
 let companyEventsListId = null;
+let companyEventImagesListId = null;
+const ceImgCache = {}; // path -> blob URL
 let companyEvents = []; // [{ itemId, title, date, endDate, time, location, notice }]
 let emergencyContacts = []; // [{ itemId, name, role, phone, email, sort }]
 let hubReminderListId = null;
@@ -1163,6 +1166,8 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const ceiMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventImagesLibraryName);
+  companyEventImagesListId = ceiMatch ? ceiMatch.id : null;
   const ceMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventsListDisplayName);
   companyEventsListId = ceMatch ? ceMatch.id : null; // optional — Elite Company Events stays "coming soon" if missing
   const ecMatch = (lists.value || []).find(l => l.displayName === CONFIG.emergencyContactsListDisplayName);
@@ -14656,7 +14661,7 @@ function renderEliteNewsAnnouncements() {
 // ── Elite Company Events ───────────────────────────────────────────────────────────────────────
 // Stored in the "HR Company Events" list (Title, EventDate, EndDate, EventTime, Location, Notice).
 // Everyone sees them (Home → Elite News, calendar, greeting); HR / HOC / permission admins add and edit.
-const CE_FIELDS = ["EventDate", "EndDate", "EventTime", "Location", "Notice"];
+const CE_FIELDS = ["EventDate", "EndDate", "EventTime", "Location", "Notice", "ImagePath"];
 async function loadCompanyEvents() {
   companyEvents = [];
   if (!companyEventsListId) return;
@@ -14668,7 +14673,7 @@ async function loadCompanyEvents() {
         const f = it.fields || {};
         if (!f["Title"] || !f["EventDate"]) return;
         companyEvents.push({ itemId: it.id, title: String(f["Title"]).trim(), date: String(f["EventDate"]).slice(0, 10), endDate: f["EndDate"] ? String(f["EndDate"]).slice(0, 10) : "",
-          time: f["EventTime"] || "", location: f["Location"] || "", notice: f["Notice"] || "" });
+          time: f["EventTime"] || "", location: f["Location"] || "", notice: f["Notice"] || "", image: f["ImagePath"] || "" });
       });
       url = data["@odata.nextLink"] || null;
     }
@@ -14679,6 +14684,72 @@ function canEditCompanyEvents() {
   if (!companyEventsListId) return false;
   const me = myEmployeeRecord();
   return !!(isPermissionAdmin || canAccessHR || isHeadOfOps(me) || (me && mpsAutoAdminGroup(me) === "HR/Admin"));
+}
+function ceImgPath(name) { return `/sites/${siteId}/lists/${companyEventImagesListId}/drive/root:/${encodeURIComponent(name)}:/content`; }
+async function ceLoadImage(name) {
+  if (ceImgCache[name]) return ceImgCache[name];
+  const blob = await graphFetchBlob(ceImgPath(name));
+  return (ceImgCache[name] = URL.createObjectURL(blob));
+}
+// Placeholder <div data-ceimg=...>; ceHydrateImages() fills it with the authenticated image after render.
+function ceImgBox(name, style) {
+  if (!name || !companyEventImagesListId) return "";
+  return `<div data-ceimg="${escapeAttr(name)}" style="background:var(--surface2) center/cover no-repeat; ${style}"></div>`;
+}
+function ceHydrateImages() {
+  setTimeout(() => {
+    document.querySelectorAll("[data-ceimg]").forEach(el => {
+      const n = el.getAttribute("data-ceimg");
+      if (el.dataset.ceDone === n) return;
+      el.dataset.ceDone = n;
+      ceLoadImage(n).then(u => { el.style.backgroundImage = `url("${u}")`; }).catch(() => { el.style.display = "none"; });
+    });
+  }, 0);
+}
+// Shrink to max 1600px JPEG before upload (keeps files small and under Graph's simple-upload limit).
+function ceResizeImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const max = 1600, r = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * r); c.height = Math.round(img.height * r);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? resolve(b) : reject(new Error("Could not process image")), "image/jpeg", 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Not a valid image file")); };
+    img.src = url;
+  });
+}
+async function ceUploadImage(file) {
+  const blob = await ceResizeImage(file);
+  const name = `ev-${Date.now()}.jpg`;
+  const token = await getToken();
+  const res = await fetch(GRAPH_ROOT + ceImgPath(name), { method: "PUT", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "image/jpeg" }, body: blob });
+  if (!res.ok) throw new Error(res.status === 403 ? "No edit permission on the “Company Event Images” library." : `Image upload failed (${res.status})`);
+  return name;
+}
+async function ceDeleteImage(name) {
+  if (!name || !companyEventImagesListId) return;
+  try {
+    const token = await getToken();
+    await fetch(GRAPH_ROOT + `/sites/${siteId}/lists/${companyEventImagesListId}/drive/root:/${encodeURIComponent(name)}`, { method: "DELETE", headers: { "Authorization": `Bearer ${token}` } });
+    delete ceImgCache[name];
+  } catch (e) { /* orphaned file is harmless */ }
+}
+let ceFormFile = null, ceFormRemoveImg = false;
+function ceOnPickImage(input) {
+  ceFormFile = input.files && input.files[0] || null;
+  ceFormRemoveImg = false;
+  const prev = document.getElementById("cePreview");
+  if (ceFormFile && prev) { prev.style.display = "block"; prev.style.backgroundImage = `url("${URL.createObjectURL(ceFormFile)}")`; }
+}
+function ceRemoveImage() {
+  ceFormFile = null; ceFormRemoveImg = true;
+  const prev = document.getElementById("cePreview"); if (prev) prev.style.display = "none";
+  const inp = document.getElementById("ceImage"); if (inp) inp.value = "";
 }
 function ceDays(e) { return daysUntil(e.date); }
 function ceOngoing(e) { return !!e.endDate && e.date <= toLocalYMD(new Date()) && toLocalYMD(new Date()) <= e.endDate; }
@@ -14711,9 +14782,13 @@ function renderEliteNewsEvents() {
   const card = (e, i) => {
     const chip = ceDayChip(e);
     const hero = i === 0;
+    const banner = hero ? ceImgBox(e.image, "height:130px; border-radius:8px; margin-bottom:10px;") : "";
+    const thumb = !hero ? ceImgBox(e.image, "flex:none; width:44px; height:44px; border-radius:6px;") : "";
     return `<div style="background:${hero ? "linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, #a855f7 22%, transparent))" : "var(--surface2)"}; border:1px solid ${hero ? "var(--accent)" : "var(--border)"}; border-radius:10px; padding:${hero ? "12px 14px" : "9px 12px"};">
+      ${banner}
       <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-        <div style="min-width:0; cursor:pointer;" onclick="openCompanyEventDetail('${e.itemId}')">
+        ${thumb}
+        <div style="min-width:0; flex:1; cursor:pointer;" onclick="openCompanyEventDetail('${e.itemId}')">
           <div style="font-size:${hero ? "14" : "13"}px; font-weight:700;">${escapeHtml(e.title)}</div>
           <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(ceDateLabel(e))}${e.time ? ` · ${escapeHtml(e.time)}` : ""}${e.location ? ` · &#128205; ${escapeHtml(e.location)}` : ""}</div>
           ${e.notice ? `<div style="font-size:11px; color:var(--text3); margin-top:3px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(e.notice.replace(/\s+/g, " "))}</div>` : ""}
@@ -14722,6 +14797,7 @@ function renderEliteNewsEvents() {
       </div>
     </div>`;
   };
+  ceHydrateImages();
   return `<div style="margin-bottom:20px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
       <div style="font-size:13px; font-weight:700;">&#127881; Elite Company Events</div>
@@ -14742,7 +14818,9 @@ function renderCompanyEventDetail(box) {
   if (!e) { box.innerHTML = `<div style="font-size:13px;">Event not found.</div>`; return; }
   const chip = ceIsPast(e) ? { text: "Ended", strong: false } : ceDayChip(e);
   const edit = canEditCompanyEvents();
+  ceHydrateImages();
   box.innerHTML = `
+    ${ceImgBox(e.image, "height:200px; border-radius:10px; margin-bottom:12px;")}
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
       <h3 style="margin:0;">&#127881; ${escapeHtml(e.title)}</h3>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
@@ -14766,6 +14844,8 @@ function openCompanyEventForm(itemId) {
 }
 function renderCompanyEventForm(box) {
   const e = hrView.itemId ? companyEvents.find(x => x.itemId === hrView.itemId) : null;
+  ceFormFile = null; ceFormRemoveImg = false;
+  ceHydrateImages();
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
       <h3 style="margin-bottom:2px;">${e ? "Edit" : "Add"} company event</h3>
@@ -14780,6 +14860,11 @@ function renderCompanyEventForm(box) {
       <div class="form-group"><label>Time (optional)</label><input id="ceTime" type="text" value="${escapeAttr(e ? e.time : "")}" placeholder="e.g. 3:00 PM" /></div>
       <div class="form-group"><label>Location (optional)</label><input id="ceLocation" type="text" value="${escapeAttr(e ? e.location : "")}" placeholder="e.g. Function room" /></div>
     </div>
+    ${companyEventImagesListId ? `<div class="form-group"><label>Header image (optional)</label>
+      <div id="cePreview" ${e && e.image ? `data-ceimg="${escapeAttr(e.image)}"` : ""} style="${e && e.image ? "" : "display:none;"} height:120px; border-radius:8px; margin-bottom:6px; background:var(--surface2) center/cover no-repeat;"></div>
+      <div style="display:flex; gap:8px; align-items:center;"><input id="ceImage" type="file" accept="image/*" onchange="ceOnPickImage(this)" />
+      ${e && e.image ? `<button class="btn btn-secondary btn-sm" type="button" onclick="ceRemoveImage()">Remove</button>` : ""}</div></div>`
+      : `<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Image upload is available once the “Company Event Images” library exists (see SETUP_COMPANY_EVENTS.md).</div>`}
     <div class="form-group"><label>Notice / details (optional)</label><textarea id="ceNotice" style="min-height:110px;" placeholder="Announcement shown to everyone when they open the event…">${escapeHtml(e ? e.notice : "")}</textarea></div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
@@ -14796,6 +14881,12 @@ async function submitCompanyEvent() {
   setSyncing(true);
   try {
     const info = await spColumnInfo(companyEventsListId);
+    let image = existing ? existing.image : "";
+    if (ceFormFile || ceFormRemoveImg) {
+      const old = image;
+      image = ceFormFile ? await ceUploadImage(ceFormFile) : "";
+      if (old) await ceDeleteImage(old);
+    }
     let id;
     if (existing) {
       id = existing.itemId;
@@ -14805,8 +14896,8 @@ async function submitCompanyEvent() {
       id = created.id;
     }
     // One field at a time so a single odd column can't sink the save, and we can name the culprit.
-    const failed = await spWriteFields(companyEventsListId, id, { EventDate: date, EndDate: endDate || null, EventTime: time, Location: location, Notice: notice }, info, ["EventDate", "EndDate"]);
-    const rec = { itemId: id, title, date, endDate, time, location, notice };
+    const failed = await spWriteFields(companyEventsListId, id, { EventDate: date, EndDate: endDate || null, EventTime: time, Location: location, Notice: notice, ImagePath: image }, info, ["EventDate", "EndDate"]);
+    const rec = { itemId: id, title, date, endDate, time, location, notice, image };
     if (existing) Object.assign(existing, rec); else companyEvents.push(rec);
     companyEvents.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
     const missing = CE_FIELDS.filter(f => info.have && !info.have.has(f));
@@ -14824,6 +14915,7 @@ async function deleteCompanyEvent(itemId) {
   setSyncing(true);
   try {
     await graphFetch(`/sites/${siteId}/lists/${companyEventsListId}/items/${itemId}`, { method: "DELETE" });
+    await ceDeleteImage(e.image);
     companyEvents = companyEvents.filter(x => x.itemId !== itemId);
     setSyncing(false, true);
     toast("Event deleted ✓", "success");
