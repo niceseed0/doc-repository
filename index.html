@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-37";
+const BUILD_ID = "2026-10-23-38";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14990,7 +14990,7 @@ async function spWriteFields(listId, itemId, fields, info, dateFields) {
 function existsOnItemHint() { return true; }
 function renderEliteNewsHolidays() {
   const holidays = upcomingHolidaysWithin(30);
-  return `<div>
+  return `<div style="margin-bottom:20px;">
     <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127465; Holidays (next 30 days)</div>
     ${holidays.length ? `<div style="display:flex; flex-direction:column; gap:6px;">
       ${holidays.map(h => `<div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
