@@ -143,6 +143,7 @@
   .cal-ev-holiday { background: color-mix(in srgb, var(--red, #ef4444) 30%, transparent); font-weight: 700; }
   .cal-cell.cal-holiday { background: color-mix(in srgb, var(--red, #ef4444) 8%, transparent); }
   .cal-ev-personal { background: color-mix(in srgb, var(--yellow) 28%, transparent); }
+  .cal-ev-event { background: color-mix(in srgb, #a855f7 30%, transparent); font-weight: 600; }
   .cal-ev-meeting { background: color-mix(in srgb, var(--green) 26%, transparent); }
   .cal-add { font-size: 14px; line-height: 20px; color: var(--text3); cursor: pointer; opacity: .25; padding: 0 4px; }
   .cal-cell:hover .cal-add { opacity: 1; }
@@ -504,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-33";
+const BUILD_ID = "2026-10-23-34";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -541,6 +542,7 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  companyEventsListDisplayName: "HR Company Events", // Elite Company Events (Home → Elite News + calendar), see SETUP_COMPANY_EVENTS.md
   emergencyContactsListDisplayName: "HR Emergency Contacts", // editable emergency contact list on the Organization page, see SETUP_EMERGENCY_CONTACTS.md
   hubIgnoredListDisplayName: "HR Hub Ignored", // per-person "ignore this stuck item", see SETUP_WORK_HUB.md
   hubRemindersListDisplayName: "HR Reminders", // "Remind owner" nudges shown as to-dos, see SETUP_WORK_HUB.md
@@ -1034,6 +1036,8 @@ let manpowerPlanListId = null;
 let peListId = null;
 let hubIgnoreListId = null;
 let emergencyListId = null;
+let companyEventsListId = null;
+let companyEvents = []; // [{ itemId, title, date, endDate, time, location, notice }]
 let emergencyContacts = []; // [{ itemId, name, role, phone, email, sort }]
 let hubReminderListId = null;
 let mrListId = null;
@@ -1074,7 +1078,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1159,6 +1163,8 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const ceMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventsListDisplayName);
+  companyEventsListId = ceMatch ? ceMatch.id : null; // optional — Elite Company Events stays "coming soon" if missing
   const ecMatch = (lists.value || []).find(l => l.displayName === CONFIG.emergencyContactsListDisplayName);
   emergencyListId = ecMatch ? ecMatch.id : null; // optional — the emergency contact editor is off if missing
   const hiMatch = (lists.value || []).find(l => l.displayName === CONFIG.hubIgnoredListDisplayName);
@@ -6647,7 +6653,7 @@ function calendarEventsFor(ymd) {
   const fromGeneral = myGeneralTaskAssignments()
     .filter(({ t }) => toLocalYMD(new Date(t.dueDateTime)) === ymd)
     .map(({ t, a }) => ({ title: `${t.content.slice(0, 30)}${t.content.length > 30 ? "…" : ""}`, type: (a.status === "Submitted" || a.status === "Declined") ? "task" : "deadline", onclick: `openGeneralTaskDetail('${t.itemId}')` }));
-  return [...fromHolidays, ...fromRecurring, ...fromGeneral, ...peCalendarEvents(ymd), ...mrMyCalendarEvents(ymd)];
+  return [...fromHolidays, ...ceCalendarEvents(ymd), ...fromRecurring, ...fromGeneral, ...peCalendarEvents(ymd), ...mrMyCalendarEvents(ymd)];
 }
 
 // ── rendering ────────────────────────────────────────────────────────────────
@@ -12417,6 +12423,8 @@ function renderHRModal() {
   }
 
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
+  if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
+  if (hrView.mode === "ceForm") { renderCompanyEventForm(box); return; }
 
   if (hrView.mode === "formerEmployees") {
     const former = employees.filter(e => e.status === "Resigned")
@@ -13239,7 +13247,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -14414,7 +14422,8 @@ function todaysMeetingCount() {
 }
 // Company events starting within `days` days: [{ date: "YYYY-MM-DD", title }] sorted by date.
 function upcomingCompanyEvents(days) {
-  return []; // TODO: wire to the Elite Company Events list once it exists
+  const today = toLocalYMD(new Date());
+  return companyEvents.filter(e => ceDays(e) >= 0 && ceDays(e) <= days || ceOngoing(e)).map(e => ({ date: e.date < today ? today : e.date, title: e.title }));
 }
 
 function scheduleStatusLabel(status) {
@@ -14644,12 +14653,211 @@ function renderEliteNewsAnnouncements() {
     ${announcementInner}
   </div>`;
 }
+// ── Elite Company Events ───────────────────────────────────────────────────────────────────────
+// Stored in the "HR Company Events" list (Title, EventDate, EndDate, EventTime, Location, Notice).
+// Everyone sees them (Home → Elite News, calendar, greeting); HR / HOC / permission admins add and edit.
+const CE_FIELDS = ["EventDate", "EndDate", "EventTime", "Location", "Notice"];
+async function loadCompanyEvents() {
+  companyEvents = [];
+  if (!companyEventsListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${companyEventsListId}/items?$expand=fields&$top=500`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields || {};
+        if (!f["Title"] || !f["EventDate"]) return;
+        companyEvents.push({ itemId: it.id, title: String(f["Title"]).trim(), date: String(f["EventDate"]).slice(0, 10), endDate: f["EndDate"] ? String(f["EndDate"]).slice(0, 10) : "",
+          time: f["EventTime"] || "", location: f["Location"] || "", notice: f["Notice"] || "" });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+    companyEvents.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+  } catch (e) { console.warn("Could not load company events (list may not exist yet):", e); companyEvents = []; }
+}
+function canEditCompanyEvents() {
+  if (!companyEventsListId) return false;
+  const me = myEmployeeRecord();
+  return !!(isPermissionAdmin || canAccessHR || isHeadOfOps(me) || (me && mpsAutoAdminGroup(me) === "HR/Admin"));
+}
+function ceDays(e) { return daysUntil(e.date); }
+function ceOngoing(e) { return !!e.endDate && e.date <= toLocalYMD(new Date()) && toLocalYMD(new Date()) <= e.endDate; }
+function ceIsPast(e) { return (e.endDate || e.date) < toLocalYMD(new Date()); }
+function ceDayChip(e) {
+  const d = ceDays(e);
+  if (ceOngoing(e)) return { text: "Ongoing", strong: true };
+  if (d === 0) return { text: "Today!", strong: true };
+  if (d === 1) return { text: "Tomorrow · D-1", strong: true };
+  return { text: `D-${d}`, strong: d <= 7 };
+}
+function ceDateLabel(e) {
+  const f = ymd => new Date(ymd + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", weekday: "short" });
+  return e.endDate && e.endDate !== e.date ? `${f(e.date)} – ${f(e.endDate)}` : f(e.date);
+}
+function ceCalendarEvents(ymd) {
+  return companyEvents.filter(e => e.date <= ymd && ymd <= (e.endDate || e.date))
+    .map(e => ({ title: `🎉 ${e.title}`, type: "event", onclick: `openCompanyEventDetail('${e.itemId}')` }));
+}
 function renderEliteNewsEvents() {
+  if (!companyEventsListId) {
+    return `<div style="margin-bottom:20px;">
+      <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127881; Elite Company Events</div>
+      ${scheduleComingSoonBox("&#127881;", "Upcoming Events", "Company events will be listed here once the “HR Company Events” list is set up (see SETUP_COMPANY_EVENTS.md).")}
+    </div>`;
+  }
+  const edit = canEditCompanyEvents();
+  const upcoming = companyEvents.filter(e => !ceIsPast(e) && (ceOngoing(e) || ceDays(e) <= 90))
+    .sort((a, b) => (ceOngoing(b) - ceOngoing(a)) || a.date.localeCompare(b.date));
+  const card = (e, i) => {
+    const chip = ceDayChip(e);
+    const hero = i === 0;
+    return `<div style="background:${hero ? "linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), color-mix(in srgb, #a855f7 22%, transparent))" : "var(--surface2)"}; border:1px solid ${hero ? "var(--accent)" : "var(--border)"}; border-radius:10px; padding:${hero ? "12px 14px" : "9px 12px"};">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <div style="min-width:0; cursor:pointer;" onclick="openCompanyEventDetail('${e.itemId}')">
+          <div style="font-size:${hero ? "14" : "13"}px; font-weight:700;">${escapeHtml(e.title)}</div>
+          <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(ceDateLabel(e))}${e.time ? ` · ${escapeHtml(e.time)}` : ""}${e.location ? ` · &#128205; ${escapeHtml(e.location)}` : ""}</div>
+          ${e.notice ? `<div style="font-size:11px; color:var(--text3); margin-top:3px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(e.notice.replace(/\s+/g, " "))}</div>` : ""}
+        </div>
+        <span style="flex:none; font-size:${hero ? "15" : "12"}px; font-weight:800; padding:4px 10px; border-radius:999px; ${chip.strong ? "background:var(--accent); color:#fff;" : "background:var(--surface); border:1px solid var(--border); color:var(--text2);"}">${escapeHtml(chip.text)}</span>
+      </div>
+    </div>`;
+  };
   return `<div style="margin-bottom:20px;">
-    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127881; Elite Company Events</div>
-    ${scheduleComingSoonBox("&#127881;", "Upcoming Events (next 30 days)", "Company events will be listed here once event scheduling is added.")}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:13px; font-weight:700;">&#127881; Elite Company Events</div>
+      ${edit ? `<button class="btn btn-secondary btn-sm" onclick="openCompanyEventForm(null)">&#65291; Add event</button>` : ""}
+    </div>
+    ${upcoming.length ? `<div style="display:flex; flex-direction:column; gap:6px;">${upcoming.slice(0, 6).map(card).join("")}</div>
+      ${upcoming.length > 6 ? `<div style="font-size:11px; color:var(--text3); margin-top:6px;">+ ${upcoming.length - 6} more — see the calendar.</div>` : ""}`
+      : `<div style="font-size:12px; color:var(--text3);">No upcoming company events.${edit ? " Click “+ Add event”." : ""}</div>`}
   </div>`;
 }
+function openCompanyEventDetail(itemId) {
+  hrView = { mode: "ceDetail", itemId };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderCompanyEventDetail(box) {
+  const e = companyEvents.find(x => x.itemId === hrView.itemId);
+  if (!e) { box.innerHTML = `<div style="font-size:13px;">Event not found.</div>`; return; }
+  const chip = ceIsPast(e) ? { text: "Ended", strong: false } : ceDayChip(e);
+  const edit = canEditCompanyEvents();
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
+      <h3 style="margin:0;">&#127881; ${escapeHtml(e.title)}</h3>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+      <span style="font-size:14px; font-weight:800; padding:4px 12px; border-radius:999px; ${chip.strong ? "background:var(--accent); color:#fff;" : "background:var(--surface2); border:1px solid var(--border); color:var(--text2);"}">${escapeHtml(chip.text)}</span>
+      <span style="font-size:13px;">${escapeHtml(ceDateLabel(e))}${e.time ? ` · ${escapeHtml(e.time)}` : ""}</span>
+      ${e.location ? `<span style="font-size:13px; color:var(--text2);">&#128205; ${escapeHtml(e.location)}</span>` : ""}
+    </div>
+    ${e.notice ? `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:13px; line-height:1.6; white-space:pre-wrap;">${escapeHtml(e.notice)}</div>` : `<div style="font-size:12px; color:var(--text3);">No notice added.</div>`}
+    ${edit ? `<div class="modal-actions" style="margin-top:14px;">
+      <button class="btn btn-danger" onclick="deleteCompanyEvent('${e.itemId}')">Delete</button>
+      <button class="btn btn-primary" onclick="openCompanyEventForm('${e.itemId}')">Edit</button>
+    </div>` : ""}`;
+}
+function openCompanyEventForm(itemId) {
+  if (!canEditCompanyEvents()) return;
+  hrView = { mode: "ceForm", itemId: itemId || null };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderCompanyEventForm(box) {
+  const e = hrView.itemId ? companyEvents.find(x => x.itemId === hrView.itemId) : null;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+      <h3 style="margin-bottom:2px;">${e ? "Edit" : "Add"} company event</h3>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group"><label>Event name</label><input id="ceTitle" type="text" value="${escapeAttr(e ? e.title : "")}" /></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      <div class="form-group"><label>Date</label><input id="ceDate" type="date" value="${escapeAttr(e ? e.date : "")}" /></div>
+      <div class="form-group"><label>End date (optional, multi-day)</label><input id="ceEndDate" type="date" value="${escapeAttr(e ? e.endDate : "")}" /></div>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      <div class="form-group"><label>Time (optional)</label><input id="ceTime" type="text" value="${escapeAttr(e ? e.time : "")}" placeholder="e.g. 3:00 PM" /></div>
+      <div class="form-group"><label>Location (optional)</label><input id="ceLocation" type="text" value="${escapeAttr(e ? e.location : "")}" placeholder="e.g. Function room" /></div>
+    </div>
+    <div class="form-group"><label>Notice / details (optional)</label><textarea id="ceNotice" style="min-height:110px;" placeholder="Announcement shown to everyone when they open the event…">${escapeHtml(e ? e.notice : "")}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCompanyEvent()">Save</button>
+    </div>`;
+}
+async function submitCompanyEvent() {
+  if (!canEditCompanyEvents()) return;
+  const v = id => document.getElementById(id).value.trim();
+  const title = v("ceTitle"), date = v("ceDate"), endDate = v("ceEndDate"), time = v("ceTime"), location = v("ceLocation"), notice = v("ceNotice");
+  if (!title || !date) { toast("Enter an event name and date.", "error"); return; }
+  if (endDate && endDate < date) { toast("End date can't be before the start date.", "error"); return; }
+  const existing = hrView.itemId ? companyEvents.find(x => x.itemId === hrView.itemId) : null;
+  setSyncing(true);
+  try {
+    const info = await spColumnInfo(companyEventsListId);
+    let id;
+    if (existing) {
+      id = existing.itemId;
+      await graphFetch(`/sites/${siteId}/lists/${companyEventsListId}/items/${id}/fields`, { method: "PATCH", body: JSON.stringify({ Title: title }) });
+    } else {
+      const created = await graphFetch(`/sites/${siteId}/lists/${companyEventsListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: title } }) });
+      id = created.id;
+    }
+    // One field at a time so a single odd column can't sink the save, and we can name the culprit.
+    const failed = await spWriteFields(companyEventsListId, id, { EventDate: date, EndDate: endDate || null, EventTime: time, Location: location, Notice: notice }, info, ["EventDate", "EndDate"]);
+    const rec = { itemId: id, title, date, endDate, time, location, notice };
+    if (existing) Object.assign(existing, rec); else companyEvents.push(rec);
+    companyEvents.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
+    const missing = CE_FIELDS.filter(f => info.have && !info.have.has(f));
+    setSyncing(false, true);
+    const problems = (failed.length ? ` Could not store: ${failed.join("; ")}.` : "") + (missing.length ? ` Missing column(s): ${missing.join(", ")} (see SETUP_COMPANY_EVENTS.md).` : "");
+    toast(problems ? "Saved with problems." + problems : "Event saved ✓", problems ? "error" : "success");
+    closeHRModal();
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function deleteCompanyEvent(itemId) {
+  if (!canEditCompanyEvents()) return;
+  const e = companyEvents.find(x => x.itemId === itemId);
+  if (!e || !confirm(`Delete “${e.title}”?`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${companyEventsListId}/items/${itemId}`, { method: "DELETE" });
+    companyEvents = companyEvents.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Event deleted ✓", "success");
+    closeHRModal();
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not delete: " + err.message, "error"); }
+}
+// Generic helpers (same idea as the emergency-contact ones): read a list's real columns, then write field by
+// field, shaped to each column's type.
+async function spColumnInfo(listId) {
+  try {
+    const data = await graphFetch(`/sites/${siteId}/lists/${listId}/columns?$top=200`);
+    const cols = data.value || [];
+    const types = {};
+    cols.forEach(c => { types[c.name] = ecColType(c); });
+    return { have: new Set(cols.map(c => c.name)), types };
+  } catch (e) { return { have: null, types: {} }; }
+}
+async function spWriteFields(listId, itemId, fields, info, dateFields) {
+  const failed = [];
+  for (const k of Object.keys(fields)) {
+    if (info.have && !info.have.has(k)) continue;
+    let v = fields[k];
+    const t = info.types[k];
+    const isDate = (dateFields || []).includes(k);
+    if (isDate) { if (t && t !== "dateTime") { failed.push(`${k} (column type is "${t}", needs Date)`); continue; } }
+    else if (t && t !== "text") { if (v !== "" && v != null) failed.push(`${k} (column type is "${t}", needs text)`); continue; }
+    if (v === "" && !existsOnItemHint(k)) { /* clearing is allowed on edit; harmless on create */ }
+    try { await graphFetch(`/sites/${siteId}/lists/${listId}/items/${itemId}/fields`, { method: "PATCH", body: JSON.stringify({ [k]: v === "" && isDate ? null : v }) }); }
+    catch (e) { failed.push(`${k} (${t || "unknown type"})`); }
+  }
+  return failed;
+}
+function existsOnItemHint() { return true; }
 function renderEliteNewsHolidays() {
   const holidays = upcomingHolidaysWithin(30);
   return `<div>
