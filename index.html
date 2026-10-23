@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-38";
+const BUILD_ID = "2026-10-23-39";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12345,6 +12345,7 @@ function renderHRModal() {
   const box = document.getElementById("hrModalInner");
   if (!hrView) { box.innerHTML = ""; return; }
   box.style.width = "min(560px, 92vw)"; // default; the cluster team org-chart view below widens this
+  if (hrView.mode === "ceDetail" || hrView.mode === "ceForm") box.style.width = "min(860px, 94vw)"; // wide enough for event banners
 
   if (hrView.mode === "clusterTeams") {
     const cluster = hrView.cluster;
@@ -14702,7 +14703,7 @@ function ceHydrateImages() {
       const n = el.getAttribute("data-ceimg");
       if (el.dataset.ceDone === n) return;
       el.dataset.ceDone = n;
-      ceLoadImage(n).then(u => { el.style.backgroundImage = `url("${u}")`; }).catch(() => { el.style.display = "none"; });
+      ceLoadImage(n).then(u => { if (el.hasAttribute("data-cefull")) el.innerHTML = `<img src="${u}" alt="" style="width:100%; height:auto; display:block; margin:0; border-radius:10px;">`; else el.style.backgroundImage = `url("${u}")`; }).catch(() => { el.style.display = "none"; });
     });
   }, 0);
 }
@@ -14852,7 +14853,7 @@ function renderCompanyEventDetail(box) {
   const edit = canEditCompanyEvents();
   ceHydrateImages();
   box.innerHTML = `
-    ${ceImgBox(e.image, "height:200px; border-radius:10px; margin-bottom:12px;")}
+    ${ceImgBox(e.image, "border-radius:10px; margin-bottom:12px;").replace("<div ", "<div data-cefull ")}
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px;">
       <h3 style="margin:0;">&#127881; ${escapeHtml(e.title)}</h3>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
