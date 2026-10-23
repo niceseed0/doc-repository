@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-22-22";
+const BUILD_ID = "2026-10-23-23";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -564,7 +564,11 @@ const CONFIG = {
   ],
   // Selectable in the Position dropdown but deliberately NOT ranked: these are Admin-side titles,
   // so adding them here changes no permission, seniority order or org-chart grouping.
-  extraPositions: ["Head of Operations", "HR/Admin Manager", "HR Associate", "IT Lead", "IT Associate", "CXQA Manager", "Nurse"],
+  // Flows in which the CEO is the FINAL approver. Only those flows put items on the CEO's own to-do list / badge;
+  // for every other flow the CEO can still open and follow every case, but nothing is assigned to him.
+  // Allowed names: "NTE", "PIP", "Recognition", "Service", "Manpower", "Recommendation". Empty = none yet.
+  ceoFinalApprovalFlows: [],
+  extraPositions: ["CEO", "Head of Operations", "HR/Admin Manager", "HR Associate", "IT Lead", "IT Associate", "CXQA Manager", "Nurse"],
   // Annual leave/sick credit policy. All of this is computed live from hire date + today's
   // date + logged usage — nothing is stored as a running balance, so there is no year-end
   // job to run: the moment the calendar (or an anniversary) turns over, every number here
@@ -1496,6 +1500,7 @@ async function loadEmployees() {
           hireDate: it.fields["HireDate"] || null,
           resumeUrl: it.fields["ResumeUrl"] || "",
           email: it.fields["Email"] || "",
+          altEmail: it.fields["TeamsEmail"] || "", // optional 2nd address (e.g. the CEO signs in with a Teams account that differs from the company email)
           birthday: it.fields["Birthday"] || null,
           separationDate: it.fields["SeparationDate"] || null,
           separationReason: it.fields["SeparationReason"] || "",
@@ -1754,8 +1759,18 @@ function canConfirmReports() {
 function myEmployeeRecord() {
   const myEmail = currentAccount && currentAccount.username ? currentAccount.username.toLowerCase() : "";
   if (!myEmail) return null;
-  return employees.find(e => e.email && e.email.toLowerCase() === myEmail) || null;
+  return employees.find(e => empHasEmail(e, myEmail)) || null;
 }
+// An employee may have two addresses: Email (company) and TeamsEmail (sign-in account, only when different).
+function empHasEmail(e, lowerEmail) {
+  return !!e && !!lowerEmail && ((e.email && e.email.toLowerCase() === lowerEmail) || (e.altEmail && e.altEmail.toLowerCase() === lowerEmail));
+}
+function empEmails(e) { return [e && e.email, e && e.altEmail].filter(Boolean).map(x => String(x).toLowerCase()); }
+// CEO: not part of any headcount, sees every case/status, but only gets to-dos in flows he finally approves.
+function isCeoRec(e) { return !!e && mpsIsCeo(e); }
+function isCeoUser() { return isCeoRec(myEmployeeRecord()); }
+function ceoShowsTodo(flow) { return !isCeoUser() || CONFIG.ceoFinalApprovalFlows.includes(flow); }
+function activeHeadcount() { return employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)).length; }
 function positionRankIndex(position) {
   if (/^head\s*of\s*operations?\b/i.test(position || "")) return 0; // Head of Operations (and Strategy) ranks as Cluster Lead
   const idx = CONFIG.positionRank.indexOf(position);
@@ -2423,6 +2438,7 @@ async function submitAddEmployee() {
   const status = document.getElementById("hrAddStatus").value;
   const hireDate = document.getElementById("hrAddHireDate").value;
   const email = document.getElementById("hrAddEmail").value.trim();
+  const altEmail = document.getElementById("hrAddTeamsEmail").value.trim();
   const birthday = document.getElementById("hrAddBirthday").value;
   const resumeUrl = document.getElementById("hrAddResumeUrl").value.trim();
   const photoUrl = document.getElementById("hrAddPhotoUrl").value.trim();
@@ -2438,13 +2454,14 @@ async function submitAddEmployee() {
       SeparationDate: status === "Resigned" ? (separationDate || null) : null,
       SeparationReason: status === "Resigned" ? separationReason : ""
     };
+    if (altEmail) fields.TeamsEmail = altEmail; // needs the "TeamsEmail" column in HR Employees (see note in SETUP_CEO.md)
     const created = await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items`, {
       method: "POST",
       body: JSON.stringify({ fields })
     });
     const emp = {
       id: created.id, name, photo: photoUrl, team, cluster, position, status,
-      hireDate: hireDate || null, email, birthday: birthday || null, resumeUrl,
+      hireDate: hireDate || null, email, altEmail, birthday: birthday || null, resumeUrl,
       separationDate: fields.SeparationDate, separationReason: fields.SeparationReason
     };
     employees.push(emp);
@@ -2610,7 +2627,7 @@ function renderLeaveUsageSection(start, end) {
   if (!rows.length) {
     return reportSectionPlaceholder("&#128197;", "Team leave & sick usage", "No leave/sick usage logged in this period.");
   }
-  const activeCount = employees.filter(e => e.status !== "Resigned").length || 1;
+  const activeCount = activeHeadcount() || 1;
   const empById = new Map(employees.map(e => [e.id, e]));
   const distinctEmployees = new Set(
     leaveUsage.filter(u => inPeriod(u.date, start, end) && empById.has(u.employeeId)).map(u => u.employeeId)
@@ -2922,7 +2939,7 @@ function kpiCard(label, value, delta, opts) {
 function computeExecutiveSummary(r) {
   const start = dateOnly(r.periodStart), end = dateOnly(r.periodEnd);
   const prev = previousPeriod(start, end);
-  const activeNow = employees.filter(e => e.status !== "Resigned").length;
+  const activeNow = activeHeadcount();
   const leaveTotals = computeLeaveUsageSummary(start, end).totals;
   const prevLeaveTotals = computeLeaveUsageSummary(prev.start, prev.end).totals;
   const curInc = computeIncidentSummary(start, end);
@@ -3249,7 +3266,7 @@ function nteStatusLabel(status) {
 
 // Case lists (NTE / Coaching) are for HR/Admin only; managers reach cases via the create
 // forms and the "Needs your action" queue on the Requests page.
-function canViewCaseLists() { return !!(canAccessHR || isPermissionAdmin); }
+function canViewCaseLists() { return !!(canAccessHR || isPermissionAdmin || isCeoUser()); }
 function caseBackLabel(name) { return canViewCaseLists() ? "&larr; " + name : "&larr; Back to Requests"; }
 function nteListOrClose() { if (canViewCaseLists()) openNteCases(); else closeHRModal(); }
 function coachingListOrClose() { if (canViewCaseLists()) openCoachingCases(); else closeHRModal(); }
@@ -8521,7 +8538,7 @@ function wsShowMore() { wsLimit += WS_PAGE_SIZE; renderContent(); }
 function wsEmpById(id) { return employees.find(e => String(e.id) === String(id)) || null; }
 function wsEmpByEmail(email) {
   const m = String(email || "").toLowerCase();
-  return m ? (employees.find(e => e.email && e.email.toLowerCase() === m) || null) : null;
+  return m ? (employees.find(e => empHasEmail(e, m)) || null) : null;
 }
 function wsNameByEmail(email) {
   if (!email) return "—";
@@ -8583,7 +8600,7 @@ function wsMyCaseGroups() {
 
 // ── Team / Elite table rows ──────────────────────────────────────────────────
 function wsScopeMode() {
-  if (canApproveNte() || isPermissionAdmin) return "elite";
+  if (canApproveNte() || isPermissionAdmin || isCeoUser()) return "elite";
   if (canDraftNte()) return "team";
   return null;
 }
@@ -11202,8 +11219,8 @@ function hubRoleEmails(role) {
   else if (role === "MD") pick = hubIsMd;
   else if (role === "APPROVER") pick = e => hubIsHoc(e) || hubIsHr(e);
   else pick = hubIsHr; // HR
-  let r = list.filter(pick).map(e => e.email.toLowerCase());
-  if (!r.length && role === "HR") r = list.filter(hubIsHoc).map(e => e.email.toLowerCase());
+  let r = list.filter(pick).flatMap(empEmails);
+  if (!r.length && role === "HR") r = list.filter(hubIsHoc).flatMap(empEmails);
   return r;
 }
 const HUB_ROLE_LABEL = { HOC: "HOC (Cluster Lead)", MD: "MD", APPROVER: "HOC / HR", HR: "HR / Admin" };
@@ -11211,7 +11228,8 @@ function hubOwner(spec) {
   if (spec.role) return { label: HUB_ROLE_LABEL[spec.role] || spec.role, emails: hubRoleEmails(spec.role) };
   const e = spec.email ? wsEmpByEmail(spec.email) : (spec.empId ? wsEmpById(spec.empId) : null);
   const email = String((e && e.email) || spec.email || "").toLowerCase();
-  return { label: e ? e.name : (email ? emailPrefix(email) : "—"), emails: email ? [email] : [] };
+  const emails = e ? empEmails(e) : (email ? [email] : []);
+  return { label: e ? e.name : (email ? emailPrefix(email) : "—"), emails };
 }
 function hubDays(iso) {
   if (!iso) return null;
@@ -11236,7 +11254,7 @@ function hubOpenCall(type, id, extra) {
 }
 
 // ── the stuck list ───────────────────────────────────────────────────────────
-function hubIsElite() { return !!(canApproveNte() || isPermissionAdmin || qrMyStages().length); }
+function hubIsElite() { return !!(canApproveNte() || isPermissionAdmin || isCeoUser() || qrMyStages().length); }
 function hubCanSeeStuck() { return hubIsElite() || canDraftNte(); }
 function hubScopeOk(empId) {
   const mode = wsScopeMode();
@@ -11781,7 +11799,7 @@ async function openEmployeeDetail(employeeId) {
 async function openMyProfile() {
   if (!employeesListId) return;
   const myEmail = currentAccount && currentAccount.username ? currentAccount.username.toLowerCase() : "";
-  const emp = employees.find(e => e.email && e.email.toLowerCase() === myEmail);
+  const emp = employees.find(e => empHasEmail(e, myEmail));
   if (!emp) { toast("No HR profile is linked to your account email yet.", "error"); return; }
   hrView = { mode: "detail", employeeId: emp.id, selfView: true };
   hrDetail = null;
@@ -12580,6 +12598,7 @@ function renderHRModal() {
       </div>
       <div class="form-group"><label>Hire date</label><input id="hrAddHireDate" type="date" /></div>
       <div class="form-group"><label>Email</label><input id="hrAddEmail" type="email" /></div>
+      <div class="form-group"><label>Teams / sign-in email <span style="color:var(--text3);">(only if different from Email — e.g. CEO)</span></label><input id="hrAddTeamsEmail" type="email" /></div>
       <div class="form-group"><label>Birthday (optional)</label><input id="hrAddBirthday" type="date" /></div>
       <div class="form-group"><label>Resume URL (optional — auto-detected from email if left blank)</label><input id="hrAddResumeUrl" type="text" /></div>
       <div class="form-group"><label>Photo URL (optional — auto-detected from email if left blank)</label><input id="hrAddPhotoUrl" type="text" /></div>
@@ -12813,6 +12832,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
       ${(emp.email || emp.birthday) ? `
         <div style="display:flex; gap:20px; margin-top:12px;">
           ${emp.email ? `<div><div style="font-size:11px; color:var(--text2);">Email</div><a href="mailto:${escapeAttr(emp.email)}" style="font-size:13px; color:var(--accent);">${escapeHtml(emp.email)}</a></div>` : ""}
+          ${emp.altEmail ? `<div><div style="font-size:11px; color:var(--text2);">Teams / sign-in email</div><a href="mailto:${escapeAttr(emp.altEmail)}" style="font-size:13px; color:var(--accent);">${escapeHtml(emp.altEmail)}</a></div>` : ""}
           ${emp.birthday ? `<div><div style="font-size:11px; color:var(--text2);">Birthday</div><div style="font-size:13px;">${escapeHtml(monthDayLabel(emp.birthday))}</div></div>` : ""}
         </div>
       ` : ""}
@@ -13348,7 +13368,7 @@ function nteApprovalQueue() {
 }
 function requestsBadgeCount() {
   try {
-    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + nteApprovalQueue().length + myDraftNteCases().length + recognitionReviewQueue().length + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + myPipTodo().length + srTodoItems().length + mpTodoItems().length + qrTodoItems().length + peTodoItems().length + hubMyReminders().length;
+    return myPendingNteCases().length + myPendingCoachingCases().length + myCoachingTodo().length + (ceoShowsTodo("NTE") ? nteApprovalQueue().length : 0) + myDraftNteCases().length + (ceoShowsTodo("Recognition") ? recognitionReviewQueue().length : 0) + myReturnedRecognition().length + myPendingGeneralTasks().length + genTasksNeedingMyApproval().length + (qfAlert() ? 1 : 0) + myPendingPipCases().length + (ceoShowsTodo("PIP") ? myPipTodo().length : 0) + (ceoShowsTodo("Service") ? srTodoItems().length : 0) + (ceoShowsTodo("Manpower") ? mpTodoItems().length : 0) + (ceoShowsTodo("Recommendation") ? qrTodoItems().length : 0) + peTodoItems().length + hubMyReminders().length;
   } catch (e) { return 0; }
 }
 function openNteNewFromRequests() {
@@ -13398,16 +13418,16 @@ function requestsTodoRows() {
   myDraftNteCases().forEach(c => rows.push({ label: `NTE draft — ${c.title}${c.rejectionReason ? " (changes requested)" : ""}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   { const qa = qfAlert(); if (qa) rows.push({ label: qa.title, sub: qa.sub, click: qa.onclick }); }
   myPendingPipCases().forEach(c => rows.push({ label: "Performance Improvement Plan — please review and sign", sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
-  myPipTodo().forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
-  srTodoItems().forEach(r => rows.push(r));
-  mpTodoItems().forEach(r => rows.push(r));
-  qrTodoItems().forEach(r => rows.push(r));
+  (ceoShowsTodo("PIP") ? myPipTodo() : []).forEach(c => rows.push({ label: c.status === "EmployeeSigned" ? `PIP — manager review needed for ${c.title}` : `PIP — final review needed for ${c.title}`, sub: c.refNo, click: `openPipCaseFromRequests('${c.itemId}')` }));
+  if (ceoShowsTodo("Service")) srTodoItems().forEach(r => rows.push(r));
+  if (ceoShowsTodo("Manpower")) mpTodoItems().forEach(r => rows.push(r));
+  if (ceoShowsTodo("Recommendation")) qrTodoItems().forEach(r => rows.push(r));
   peTodoItems().forEach(r => rows.push(r));
   myPendingGeneralTasks().forEach(({ t }) => rows.push({ label: `Task request — please respond: ${t.content.slice(0, 40)}${t.content.length > 40 ? "…" : ""}`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
   genTasksNeedingMyApproval().forEach(t => rows.push({ label: `Task request — assignee response needs your approval`, sub: t.refNo, click: `openGeneralTaskDetail('${t.itemId}')` }));
-  recognitionReviewQueue().forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
+  (ceoShowsTodo("Recognition") ? recognitionReviewQueue() : []).forEach(c => rows.push({ label: `Recognition request awaiting review — ${recRecipientNames(c)} (by ${c.requesterName || c.requestedBy})`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
   myReturnedRecognition().forEach(c => rows.push({ label: `Recognition request returned — ${recRecipientNames(c)}`, sub: c.refNo, click: `openRecognitionFromRequests('${c.itemId}')` }));
-  nteApprovalQueue().forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
+  (ceoShowsTodo("NTE") ? nteApprovalQueue() : []).forEach(c => rows.push({ label: c.status === "Pending Approval" ? `NTE awaiting your approval — ${c.title}` : `NTE response to review — ${c.title}`, sub: c.refNo, click: `openNteCaseFromRequests('${c.itemId}')` }));
   hubTodoItems().forEach(r => rows.push(r));
   return rows;
 }
