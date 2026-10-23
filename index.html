@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-28";
+const BUILD_ID = "2026-10-23-29";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -541,6 +541,7 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  emergencyContactsListDisplayName: "HR Emergency Contacts", // editable emergency contact list on the Organization page, see SETUP_EMERGENCY_CONTACTS.md
   hubIgnoredListDisplayName: "HR Hub Ignored", // per-person "ignore this stuck item", see SETUP_WORK_HUB.md
   hubRemindersListDisplayName: "HR Reminders", // "Remind owner" nudges shown as to-dos, see SETUP_WORK_HUB.md
   itInventoryListDisplayName: "IT Inventory", // workstations + storage list
@@ -1032,6 +1033,8 @@ let manpowerRequestsListId = null;
 let manpowerPlanListId = null;
 let peListId = null;
 let hubIgnoreListId = null;
+let emergencyListId = null;
+let emergencyContacts = []; // [{ itemId, name, role, phone, email, sort }]
 let hubReminderListId = null;
 let mrListId = null;
 let itListId = null;
@@ -1071,7 +1074,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), checkEditPermission()]);
     refreshAccessFlags();
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1156,6 +1159,8 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const ecMatch = (lists.value || []).find(l => l.displayName === CONFIG.emergencyContactsListDisplayName);
+  emergencyListId = ecMatch ? ecMatch.id : null; // optional — the emergency contact editor is off if missing
   const hiMatch = (lists.value || []).find(l => l.displayName === CONFIG.hubIgnoredListDisplayName);
   hubIgnoreListId = hiMatch ? hiMatch.id : null; // optional — Ignore is off if missing
   const hrMatch = (lists.value || []).find(l => l.displayName === CONFIG.hubRemindersListDisplayName);
@@ -12408,6 +12413,8 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
+
   if (hrView.mode === "formerEmployees") {
     const former = employees.filter(e => e.status === "Resigned")
       .sort((a, b) => (b.separationDate || "").localeCompare(a.separationDate || ""));
@@ -13229,7 +13236,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     renderTabs();
@@ -14708,16 +14715,134 @@ function renderPeopleDirectoryResult() {
     <div><span style="color:var(--text3);">Direct Supervisor:</span> ${sup ? `${escapeHtml(sup.name)} <span style="color:var(--text3);">(${escapeHtml(sup.position)})</span>` : "—"}</div>
   </div>`;
 }
-// Space reserved for manually-curated emergency contacts (5–7 people), filled in separately later.
-function renderEmergencyContactsPlaceholder() {
-  const rows = Array.from({ length: 6 });
+// ── Emergency contacts (edited right on the Organization page) ─────────────────────────────────
+async function loadEmergencyContacts() {
+  emergencyContacts = [];
+  if (!emergencyListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${emergencyListId}/items?$expand=fields&$top=200`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields || {};
+        if (!f["Title"]) return;
+        emergencyContacts.push({ itemId: it.id, name: String(f["Title"]).trim(), role: f["Role"] || "", phone: f["Phone"] || "", email: f["Email"] || "", sort: Number(f["SortOrder"]) || 0 });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+    emergencyContacts.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+  } catch (e) { console.warn("Could not load emergency contacts (list may not exist yet):", e); emergencyContacts = []; }
+}
+function canEditEmergencyContacts() { return !!(emergencyListId && (isPermissionAdmin || canAccessHR || isHeadOfOps(myEmployeeRecord()))); }
+function renderEmergencyContactsPlaceholder() { return renderEmergencyContacts(); } // kept for the old name
+function renderEmergencyContacts() {
+  const edit = canEditEmergencyContacts();
+  const rows = emergencyContacts.map((c, i) => `
+    <div style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:9px 12px;">
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:13px; font-weight:600;">${escapeHtml(c.name)}${c.role ? ` <span style="font-weight:400; color:var(--text3);">· ${escapeHtml(c.role)}</span>` : ""}</div>
+        <div style="font-size:12px; color:var(--text2); margin-top:2px; display:flex; flex-wrap:wrap; gap:4px 14px;">
+          ${c.phone ? `<a href="tel:${escapeAttr(String(c.phone).replace(/[^+\d]/g, ""))}" style="color:var(--accent);">&#128222; ${escapeHtml(c.phone)}</a>` : ""}
+          ${c.email ? `<a href="mailto:${escapeAttr(c.email)}" style="color:var(--accent);">&#9993; ${escapeHtml(c.email)}</a>` : ""}
+        </div>
+      </div>
+      ${edit ? `<div style="display:flex; gap:4px;">
+        <button class="btn btn-secondary btn-sm" ${i === 0 ? "disabled" : ""} onclick="moveEmergencyContact('${c.itemId}', -1)" title="Move up">&#9650;</button>
+        <button class="btn btn-secondary btn-sm" ${i === emergencyContacts.length - 1 ? "disabled" : ""} onclick="moveEmergencyContact('${c.itemId}', 1)" title="Move down">&#9660;</button>
+        <button class="btn btn-secondary btn-sm" onclick="openEmergencyContactForm('${c.itemId}')" title="Edit">&#9998;</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteEmergencyContact('${c.itemId}')" title="Delete">&#10005;</button>
+      </div>` : ""}
+    </div>`).join("");
+  const empty = !emergencyContacts.length
+    ? `<div style="border:1px dashed var(--border); border-radius:8px; padding:9px 12px; color:var(--text3); font-size:12px;">${emergencyListId ? (edit ? "No contacts yet — click “+ Add contact”." : "No contacts added yet.") : "Emergency contacts aren't set up yet (see SETUP_EMERGENCY_CONTACTS.md)."}</div>` : "";
   return `<div style="margin-top:22px;">
-    <div style="font-weight:700; font-size:13px; margin-bottom:4px;">Emergency Contacts</div>
-    <div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Key people to reach in an emergency — added separately.</div>
-    <div style="display:flex; flex-direction:column; gap:6px;">
-      ${rows.map(() => `<div style="border:1px dashed var(--border); border-radius:8px; padding:9px 12px; color:var(--text3); font-size:12px;">— To be added —</div>`).join("")}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="font-weight:700; font-size:13px;">Emergency Contacts</div>
+      ${edit ? `<button class="btn btn-primary btn-sm" onclick="openEmergencyContactForm(null)">&#65291; Add contact</button>` : ""}
     </div>
+    <div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Key people to reach in an emergency.</div>
+    <div style="display:flex; flex-direction:column; gap:6px;">${rows}${empty}</div>
   </div>`;
+}
+function openEmergencyContactForm(itemId) {
+  if (!canEditEmergencyContacts()) return;
+  hrView = { mode: "ecForm", itemId: itemId || null };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderEmergencyContactForm(box) {
+  const c = hrView.itemId ? emergencyContacts.find(x => x.itemId === hrView.itemId) : null;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+      <h3 style="margin-bottom:2px;">${c ? "Edit" : "Add"} emergency contact</h3>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="form-group"><label>Name</label><input id="ecName" type="text" value="${escapeAttr(c ? c.name : "")}" /></div>
+    <div class="form-group"><label>Role / relation (optional)</label><input id="ecRole" type="text" value="${escapeAttr(c ? c.role : "")}" placeholder="e.g. Company Nurse, Building Admin" /></div>
+    <div class="form-group"><label>Phone</label><input id="ecPhone" type="text" value="${escapeAttr(c ? c.phone : "")}" placeholder="e.g. 0917-000-0000" /></div>
+    <div class="form-group"><label>Email (optional)</label><input id="ecEmail" type="email" value="${escapeAttr(c ? c.email : "")}" /></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEmergencyContact()">Save</button>
+    </div>`;
+}
+async function submitEmergencyContact() {
+  if (!canEditEmergencyContacts()) return;
+  const name = document.getElementById("ecName").value.trim();
+  const role = document.getElementById("ecRole").value.trim();
+  const phone = document.getElementById("ecPhone").value.trim();
+  const email = document.getElementById("ecEmail").value.trim();
+  if (!name || (!phone && !email)) { toast("Enter a name and at least a phone number or email.", "error"); return; }
+  const existing = hrView.itemId ? emergencyContacts.find(x => x.itemId === hrView.itemId) : null;
+  setSyncing(true);
+  try {
+    if (existing) {
+      await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${existing.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ Title: name, Role: role, Phone: phone, Email: email }) });
+      Object.assign(existing, { name, role, phone, email });
+    } else {
+      const sort = emergencyContacts.reduce((m, c) => Math.max(m, c.sort), 0) + 1;
+      const created = await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: name, Role: role, Phone: phone, Email: email, SortOrder: sort } }) });
+      emergencyContacts.push({ itemId: created.id, name, role, phone, email, sort });
+    }
+    emergencyContacts.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+    setSyncing(false, true);
+    toast("Saved ✓", "success");
+    closeHRModal();
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+}
+async function deleteEmergencyContact(itemId) {
+  if (!canEditEmergencyContacts()) return;
+  const c = emergencyContacts.find(x => x.itemId === itemId);
+  if (!c || !confirm(`Remove ${c.name} from the emergency contacts?`)) return;
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${itemId}`, { method: "DELETE" });
+    emergencyContacts = emergencyContacts.filter(x => x.itemId !== itemId);
+    setSyncing(false, true);
+    toast("Removed ✓", "success");
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not remove: " + err.message, "error"); }
+}
+async function moveEmergencyContact(itemId, dir) {
+  if (!canEditEmergencyContacts()) return;
+  const i = emergencyContacts.findIndex(x => x.itemId === itemId), j = i + dir;
+  if (i < 0 || j < 0 || j >= emergencyContacts.length) return;
+  // Re-number the whole list 1..n in the new order so ties/gaps can never make a move do nothing.
+  const order = emergencyContacts.slice();
+  [order[i], order[j]] = [order[j], order[i]];
+  setSyncing(true);
+  try {
+    for (let k = 0; k < order.length; k++) {
+      if (order[k].sort !== k + 1) {
+        await graphFetch(`/sites/${siteId}/lists/${emergencyListId}/items/${order[k].itemId}/fields`, { method: "PATCH", body: JSON.stringify({ SortOrder: k + 1 }) });
+        order[k].sort = k + 1;
+      }
+    }
+    emergencyContacts = order;
+    setSyncing(false, true);
+    renderContent();
+  } catch (err) { setSyncing(false, false); toast("Could not reorder: " + err.message, "error"); }
 }
 function renderPeopleDirectory() {
   if (!employeesListId) return `<div class="welcome-card"><div class="welcome-card-header"><h2>People Directory</h2></div></div>`;
