@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-32";
+const BUILD_ID = "2026-10-23-33";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14678,17 +14678,57 @@ function renderEliteNews() {
 // There's no explicit manager field in the data, so the supervisor is inferred: the closest
 // more-senior teammate by position rank, falling back to the Cluster Lead of their cluster.
 let peopleDirSelectedId = null;
+// ── Direct supervisor (People Directory) ─────────────────────────────────────────────────────────
+// Reporting lines, resolved live from the employee list so a profile created later is picked up automatically:
+//   CEO → nobody · Managing Director → CEO · Head of Operations (Jungho / Gary) → Managing Director
+//   IT → Managing Director · CXQA Manager → Managing Director · HR/Admin manager → Head of Business Operations
+//   HR & Admin staff (incl. Nurse) → the HR/Admin manager
+//   Cluster teams: SPM / PM / APM (when the team has no PM) → their cluster's Head of Operations;
+//   everyone else → their team's PM (or APM when there is no PM, or the most senior member)
+function orgEmployeeByName(name) {
+  const n = mpsNorm(name);
+  return n ? (employees.find(e => e.status !== "Resigned" && mpsNorm(e.name) === n) || null) : null;
+}
+function orgCeo() { return employees.find(e => e.status !== "Resigned" && isCeoRec(e)) || orgEmployeeByName(ORG_CHART.ceo && ORG_CHART.ceo.name); }
+function orgMd() { return employees.find(e => e.status !== "Resigned" && /managing director/i.test(e.position || "")) || orgEmployeeByName(ORG_CHART.md && ORG_CHART.md.name); }
+function orgHrManager() {
+  return employees.find(e => e.status !== "Resigned" && /business operations manager|hr\s*[\/&]\s*admin manager/i.test(e.position || ""))
+    || employees.find(e => e.status !== "Resigned" && /insigne/i.test(e.name || "")) || null;
+}
+function orgClusterHead(cluster) {
+  const lead = ((ORG_CHART.gameServiceOps || {}).leads || []).find(l => l.team === cluster);
+  return (lead && orgEmployeeByName(lead.name))
+    || employees.find(e => e.status !== "Resigned" && e.cluster === cluster && e.position === "Cluster Lead") || null;
+}
 function directSupervisorFor(emp) {
   if (!emp) return null;
+  const pos = emp.position || "";
+  const not = e => (e && String(e.id) !== String(emp.id)) ? e : null;
+  if (isCeoRec(emp)) return null;
+  if (/managing director/i.test(pos)) return not(orgCeo());
+  if (isHeadOfOps(emp)) return not(orgMd());
+  const team = mpsNorm(emp.team);
+  if (mpsAutoAdminGroup(emp) === "IT" || /^it\b/i.test(pos) || team === "it" || team === "itteam") return not(orgMd());
+  if (/cxqa/i.test(pos) && /manager/i.test(pos)) return not(orgMd());
+  const hrMgr = orgHrManager();
+  if (hrMgr && String(hrMgr.id) === String(emp.id)) return not(orgEmployeeByName(((ORG_CHART.businessOps || {}).lead || {}).name)) || null;
+  if (["hradmin", "hradminteam", "hrandadmin"].includes(team) || /nurse|^hr\b/i.test(pos)) { const m = not(hrMgr); if (m) return m; }
+  if (emp.cluster) {
+    const head = not(orgClusterHead(emp.cluster));
+    const isTeamTop = pos === "Senior Product Manager" || pos === "Product Manager" ||
+      (pos === "Assistant Product Manager" && !employees.some(e => e.status !== "Resigned" && e.team === emp.team && (e.cluster || "") === emp.cluster && e.position === "Product Manager"));
+    if (isTeamTop) return head;
+    const owner = teamReportOwners(emp.team, emp.cluster).find(o => String(o.id) !== String(emp.id));
+    return owner || head;
+  }
+  return legacySupervisorFor(emp);
+}
+function legacySupervisorFor(emp) {
   const myRank = positionRankIndex(emp.position);
-  const seniorTeammates = employees.filter(e => e.status !== "Resigned" && e.id !== emp.id && e.team === emp.team && (e.cluster || "") === (emp.cluster || "") && positionRankIndex(e.position) < myRank);
+  const seniorTeammates = employees.filter(e => e.status !== "Resigned" && e.id !== emp.id && e.team === emp.team && (e.cluster || "") === (emp.cluster || "") && !isMgmtRec(e) && positionRankIndex(e.position) < myRank);
   if (seniorTeammates.length) {
     seniorTeammates.sort((a, b) => positionRankIndex(b.position) - positionRankIndex(a.position)); // closest-senior first
     return seniorTeammates[0];
-  }
-  if (emp.cluster) {
-    const lead = employees.find(e => e.status !== "Resigned" && e.id !== emp.id && e.cluster === emp.cluster && e.position === "Cluster Lead");
-    if (lead) return lead;
   }
   return null;
 }
