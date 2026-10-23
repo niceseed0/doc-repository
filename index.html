@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-26";
+const BUILD_ID = "2026-10-23-27";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -5645,7 +5645,34 @@ async function updateRecurringTaskDueDate(itemId, newDate) {
 // submitted reports via the overview widget, and HR/Admin can act on any team's behalf below).
 function isTeamManager(team, cluster) {
   const me = myEmployeeRecord();
-  return !!(me && me.team === team && (me.cluster || "") === (cluster || "") && (me.position === "Product Manager" || me.position === "Assistant Product Manager"));
+  if (!me) return false;
+  if (me.team === team && (me.cluster || "") === (cluster || "") && (me.position === "Product Manager" || me.position === "Assistant Product Manager")) return true;
+  return teamReportOwners(team, cluster).some(o => String(o.id) === String(me.id));
+}
+// Who owns a team's recurring reports (Weekly PM Report / Attendance Dashboard): the team's Product
+// Manager(s); if the team has none, its Assistant Product Manager(s); if neither, its most senior member(s).
+// Reviewers above the team (Cluster Lead / Head of Operations / HR) are NOT owners — they follow progress
+// in the overview widget but nothing lands on their own to-do list.
+function teamReportOwners(team, cluster) {
+  const members = employees.filter(e => e.status !== "Resigned" && e.team === team && (e.cluster || "") === (cluster || "") && !isMgmtRec(e) && !isClusterLeadRec(e));
+  if (!members.length) return [];
+  const pms = members.filter(e => e.position === "Product Manager");
+  if (pms.length) return pms;
+  const apms = members.filter(e => e.position === "Assistant Product Manager");
+  if (apms.length) return apms;
+  const best = Math.min(...members.map(e => positionRankIndex(e.position)));
+  return members.filter(e => positionRankIndex(e.position) === best);
+}
+// Open/closed recurring-task instances this signed-in person is responsible for.
+function ownedRecurringTasks() {
+  const me = myEmployeeRecord();
+  if (!me) return [];
+  const cache = new Map();
+  return recurringTasks.filter(t => {
+    const k = subteamKey(t.team, t.cluster);
+    if (!cache.has(k)) cache.set(k, teamReportOwners(t.team, t.cluster).some(o => String(o.id) === String(me.id)));
+    return cache.get(k);
+  });
 }
 function canManageRecurringTask(t) { return isTeamManager(t.team, t.cluster) || canAccessHR || isPermissionAdmin; }
 // Cluster subteams the signed-in user should see recurring tasks for: their own subteam (if a
@@ -5721,14 +5748,7 @@ function recurringTaskAlertLevel(t) {
   return "soon"; // D-3 / D-2
 }
 function recurringTaskAlerts() {
-  if (recurringTasksCollapsedView()) {
-    return collapsedRecurringTaskGroups()
-      .filter(g => g.done < g.total)
-      .map(g => ({ level: alertLevelForDueMs(new Date(g.dueDate + "T23:59:59").getTime()), dueDate: g.dueDate, title: g.title, sub: `${g.done}/${g.total} teams submitted`, onclick: "scrollToReportsOverview()" }))
-      .filter(x => x.level)
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-  }
-  return visibleRecurringTasks()
+  return ownedRecurringTasks()
     .map(t => ({ t, level: recurringTaskAlertLevel(t) }))
     .filter(x => x.level)
     .map(({ t, level }) => ({ level, dueDate: t.dueDate, title: `${t.title} — ${t.team}`, sub: t.cluster, onclick: `openRecurringTask('${t.itemId}')` }))
@@ -14400,15 +14420,11 @@ function myReviewQueueItems() {
 function toggleMyWeekSection(key) { myWeekExpanded[key] = !myWeekExpanded[key]; renderContent(); }
 function myWeekTaskItems() {
   const items = [];
-  if (recurringTasksCollapsedView()) {
-    collapsedRecurringTaskGroups().filter(g => g.done < g.total).forEach(g => {
-      items.push({ title: `${g.title} — ${g.done}/${g.total} teams submitted`, sub: "", dueMs: new Date(g.dueDate + "T23:59:59").getTime(), onclick: "scrollToReportsOverview()" });
-    });
-  } else {
-    visibleRecurringTasks().filter(t => t.status === "Open").forEach(t => {
-      items.push({ title: `${t.title} — ${t.team}`, sub: t.cluster, dueMs: new Date(t.dueDate + "T23:59:59").getTime(), onclick: `openRecurringTask('${t.itemId}')` });
-    });
-  }
+  // Only the report owners of each team (PM → APM → most senior) get these as their own work; reviewers above
+  // them (Cluster Lead / HOC / HR) track progress in the overview widget instead.
+  ownedRecurringTasks().filter(t => t.status === "Open").forEach(t => {
+    items.push({ title: `${t.title} — ${t.team}`, sub: t.cluster, dueMs: new Date(t.dueDate + "T23:59:59").getTime(), onclick: `openRecurringTask('${t.itemId}')` });
+  });
   myGeneralTaskAssignments().filter(({ a }) => a.status === "Pending" || a.status === "Acknowledged").forEach(({ t }) => {
     items.push({ title: t.content.slice(0, 50) + (t.content.length > 50 ? "…" : ""), sub: t.refNo, dueMs: genTaskDueMs(t), onclick: `openGeneralTaskDetail('${t.itemId}')` });
   });
