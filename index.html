@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-35";
+const BUILD_ID = "2026-10-23-36";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14751,6 +14751,38 @@ function ceRemoveImage() {
   const prev = document.getElementById("cePreview"); if (prev) prev.style.display = "none";
   const inp = document.getElementById("ceImage"); if (inp) inp.value = "";
 }
+// Notice is stored as sanitized HTML (rich text). Older plain-text notices still render fine.
+function ceNoticeHtml(n) {
+  if (!n) return "";
+  return /<[a-z][\s\S]*>/i.test(n) ? sanitizeGuideHtml(n) : escapeHtml(n).replace(/\n/g, "<br>");
+}
+function ceNoticePlain(n) {
+  const d = document.createElement("div");
+  d.innerHTML = ceNoticeHtml(n).replace(/<(br|\/p|\/div|\/li)\s*\/?>/gi, " ");
+  return (d.textContent || "").replace(/\s+/g, " ").trim();
+}
+function ceToolbarHtml(id) {
+  const b = (cmd, label, title) => `<button type="button" class="rte-btn" onclick="rteExec('${cmd}', null, '${id}')" title="${title}">${label}</button>`;
+  return `<div class="rte-toolbar">
+    ${b("bold", "<b>B</b>", "Bold")}${b("italic", "<i>I</i>", "Italic")}${b("underline", "<u>U</u>", "Underline")}${b("strikeThrough", "<s>S</s>", "Strikethrough")}
+    <span class="rte-sep"></span>
+    <select class="rte-select" onchange="rteExec('fontSize', this.value, '${id}'); this.selectedIndex=0;">
+      <option value="">Size</option><option value="2">Small</option><option value="3">Normal</option><option value="5">Large</option><option value="7">Huge</option>
+    </select>
+    <span class="rte-sep"></span>
+    <select class="rte-select" onchange="rteExec('foreColor', this.value, '${id}'); this.selectedIndex=0;">
+      <option value="">Color</option><option value="#e2e8f0">Default</option><option value="#4f7cff">Blue</option><option value="#22c55e">Green</option><option value="#f59e0b">Yellow</option><option value="#ef4444">Red</option><option value="#b197fc">Purple</option>
+    </select>
+    <span class="rte-sep"></span>
+    ${b("insertUnorderedList", "&#8226; List", "Bullet list")}
+    <span class="rte-sep"></span>
+    <button type="button" class="rte-btn" onclick="rteInsertLink('${id}')" title="Insert link">&#128279; Link</button>
+    <span class="rte-sep"></span>
+    ${b("justifyLeft", "&#8676;", "Align left")}${b("justifyCenter", "&#8596;", "Align center")}${b("justifyRight", "&#8677;", "Align right")}
+    <span class="rte-sep"></span>
+    <button type="button" class="rte-btn" onclick="rteInsertSectionBox('${id}')" title="Wrap the selected text in a bordered section box">&#128230; Box</button>
+  </div>`;
+}
 function ceDays(e) { return daysUntil(e.date); }
 function ceOngoing(e) { return !!e.endDate && e.date <= toLocalYMD(new Date()) && toLocalYMD(new Date()) <= e.endDate; }
 function ceIsPast(e) { return (e.endDate || e.date) < toLocalYMD(new Date()); }
@@ -14791,7 +14823,7 @@ function renderEliteNewsEvents() {
         <div style="min-width:0; flex:1; cursor:pointer;" onclick="openCompanyEventDetail('${e.itemId}')">
           <div style="font-size:${hero ? "14" : "13"}px; font-weight:700;">${escapeHtml(e.title)}</div>
           <div style="font-size:11px; color:var(--text2); margin-top:2px;">${escapeHtml(ceDateLabel(e))}${e.time ? ` · ${escapeHtml(e.time)}` : ""}${e.location ? ` · &#128205; ${escapeHtml(e.location)}` : ""}</div>
-          ${e.notice ? `<div style="font-size:11px; color:var(--text3); margin-top:3px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(e.notice.replace(/\s+/g, " "))}</div>` : ""}
+          ${e.notice ? `<div style="font-size:11px; color:var(--text3); margin-top:3px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(ceNoticePlain(e.notice))}</div>` : ""}
         </div>
         <span style="flex:none; font-size:${hero ? "15" : "12"}px; font-weight:800; padding:4px 10px; border-radius:999px; ${chip.strong ? "background:var(--accent); color:#fff;" : "background:var(--surface); border:1px solid var(--border); color:var(--text2);"}">${escapeHtml(chip.text)}</span>
       </div>
@@ -14830,7 +14862,7 @@ function renderCompanyEventDetail(box) {
       <span style="font-size:13px;">${escapeHtml(ceDateLabel(e))}${e.time ? ` · ${escapeHtml(e.time)}` : ""}</span>
       ${e.location ? `<span style="font-size:13px; color:var(--text2);">&#128205; ${escapeHtml(e.location)}</span>` : ""}
     </div>
-    ${e.notice ? `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:13px; line-height:1.6; white-space:pre-wrap;">${escapeHtml(e.notice)}</div>` : `<div style="font-size:12px; color:var(--text3);">No notice added.</div>`}
+    ${e.notice ? `<div class="welcome-body" style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;">${ceNoticeHtml(e.notice)}</div>` : `<div style="font-size:12px; color:var(--text3);">No notice added.</div>`}
     ${edit ? `<div class="modal-actions" style="margin-top:14px;">
       <button class="btn btn-danger" onclick="deleteCompanyEvent('${e.itemId}')">Delete</button>
       <button class="btn btn-primary" onclick="openCompanyEventForm('${e.itemId}')">Edit</button>
@@ -14865,7 +14897,10 @@ function renderCompanyEventForm(box) {
       <div style="display:flex; gap:8px; align-items:center;"><input id="ceImage" type="file" accept="image/*" onchange="ceOnPickImage(this)" />
       ${e && e.image ? `<button class="btn btn-secondary btn-sm" type="button" onclick="ceRemoveImage()">Remove</button>` : ""}</div></div>`
       : `<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Image upload is available once the “Company Event Images” library exists (see SETUP_COMPANY_EVENTS.md).</div>`}
-    <div class="form-group"><label>Notice / details (optional)</label><textarea id="ceNotice" style="min-height:110px;" placeholder="Announcement shown to everyone when they open the event…">${escapeHtml(e ? e.notice : "")}</textarea></div>
+    <div class="form-group"><label>Notice / details (optional)</label>
+      ${ceToolbarHtml("ceNoticeEdit")}
+      <div class="welcome-edit-area" id="ceNoticeEdit" contenteditable="true" style="min-height:150px;">${e ? ceNoticeHtml(e.notice) : ""}</div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitCompanyEvent()">Save</button>
@@ -14874,7 +14909,10 @@ function renderCompanyEventForm(box) {
 async function submitCompanyEvent() {
   if (!canEditCompanyEvents()) return;
   const v = id => document.getElementById(id).value.trim();
-  const title = v("ceTitle"), date = v("ceDate"), endDate = v("ceEndDate"), time = v("ceTime"), location = v("ceLocation"), notice = v("ceNotice");
+  const title = v("ceTitle"), date = v("ceDate"), endDate = v("ceEndDate"), time = v("ceTime"), location = v("ceLocation");
+  const noticeEl = document.getElementById("ceNoticeEdit");
+  const noticeText = (noticeEl.textContent || "").trim();
+  const notice = noticeText || noticeEl.querySelector("img") ? sanitizeGuideHtml(noticeEl.innerHTML).trim() : "";
   if (!title || !date) { toast("Enter an event name and date.", "error"); return; }
   if (endDate && endDate < date) { toast("End date can't be before the start date.", "error"); return; }
   const existing = hrView.itemId ? companyEvents.find(x => x.itemId === hrView.itemId) : null;
