@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-25";
+const BUILD_ID = "2026-10-23-26";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2128,36 +2128,67 @@ function renderPastYearsUsage(emp) {
   `;
 }
 
+// This month's AND next month's birthdays (someone born on the 1st would otherwise only be noticed on the day).
 function thisMonthBirthdays() {
-  const month = new Date().getMonth() + 1;
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const next = month === 12 ? 1 : month + 1;
   return employees
     .filter(e => e.status !== "Resigned" && e.birthday)
     .map(e => {
       const s = dateOnly(e.birthday);
       const m = s ? Number(s.slice(5, 7)) : null;
       const d = s ? Number(s.slice(8, 10)) : null;
-      return { name: e.name, team: e.team, day: d, month: m };
+      return { name: e.name, team: e.team, day: d, month: m, nextMonth: m === next && m !== month };
     })
-    .filter(e => e.month === month)
-    .sort((a, b) => a.day - b.day);
+    .filter(e => e.month === month || e.nextMonth)
+    .sort((a, b) => (a.nextMonth - b.nextMonth) || a.day - b.day);
+}
+
+// Rows for the birthday list: today = strong highlight, earlier this month dimmed, next month under its own divider.
+function birthdayRowsHtml(list) {
+  const today = new Date();
+  const tm = today.getMonth() + 1, td = today.getDate();
+  const monthLong = m => new Date(2000, m - 1, 1).toLocaleString("en-US", { month: "long" });
+  let html = "", dividerShown = false;
+  list.forEach(b => {
+    if (b.nextMonth && !dividerShown) {
+      dividerShown = true;
+      html += `<div style="font-size:11px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.06em; margin:8px 2px 0;">Next month &middot; ${escapeHtml(monthLong(b.month))}</div>`;
+    }
+    const isToday = !b.nextMonth && b.month === tm && b.day === td;
+    const past = !b.nextMonth && !isToday && b.day < td;
+    const label = monthDayLabel(`2000-${String(b.month).padStart(2, "0")}-${String(b.day).padStart(2, "0")}`);
+    if (isToday) {
+      html += `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:linear-gradient(135deg, var(--accent), #a855f7); color:#fff; border-radius:10px; padding:12px 14px; box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent), 0 6px 20px color-mix(in srgb, var(--accent) 40%, transparent);">
+        <span style="font-size:14px; font-weight:800;">&#127881; ${escapeHtml(b.name)}${b.team ? ` <span style="font-weight:500; opacity:.85;">&middot; ${escapeHtml(b.team)}</span>` : ""}</span>
+        <span style="font-size:12px; font-weight:800; background:rgba(255,255,255,.25); border-radius:999px; padding:3px 10px; white-space:nowrap;">&#127874; Today!</span>
+      </div>`;
+    } else {
+      html += `<div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;${past ? " opacity:.55;" : ""}">
+        <span style="font-size:13px;">${escapeHtml(b.name)}${b.team ? ` <span style="color:var(--text3);">&middot; ${escapeHtml(b.team)}</span>` : ""}</span>
+        <span style="font-size:12px; color:var(--text2);">${label}</span>
+      </div>`;
+    }
+  });
+  return html;
+}
+function birthdayTitle(list) {
+  const now = new Date();
+  const cur = now.toLocaleString("en-US", { month: "long" });
+  if (!list.some(b => b.nextMonth)) return `${cur} Birthdays`;
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1).toLocaleString("en-US", { month: "long" });
+  return `${cur} & ${next} Birthdays`;
 }
 
 function renderBirthdayBoard() {
   if (!employeesListId) return ""; // HR module not set up — nothing to show
   const list = thisMonthBirthdays();
   if (!list.length) return "";
-  const monthName = new Date().toLocaleString("en-US", { month: "long" });
   return `
   <div class="welcome-card">
-    <div class="welcome-card-header"><h2>&#127874; ${escapeHtml(monthName)} Birthdays</h2></div>
-    <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">
-      ${list.map(b => `
-        <div style="display:flex; justify-content:space-between; align-items:center; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
-          <span style="font-size:13px;">${escapeHtml(b.name)}${b.team ? ` <span style="color:var(--text3);">· ${escapeHtml(b.team)}</span>` : ""}</span>
-          <span style="font-size:12px; color:var(--text2);">${monthDayLabel(`2000-${String(b.month).padStart(2,"0")}-${String(b.day).padStart(2,"0")}`)}</span>
-        </div>
-      `).join("")}
-    </div>
+    <div class="welcome-card-header"><h2>&#127874; ${escapeHtml(birthdayTitle(list))}</h2></div>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-top:14px;">${birthdayRowsHtml(list)}</div>
   </div>`;
 }
 
@@ -14433,19 +14464,9 @@ function renderEliteNewsBirthdays() {
   if (!employeesListId) return "";
   const list = thisMonthBirthdays();
   if (!list.length) return "";
-  const monthName = new Date().toLocaleString("en-US", { month: "long" });
-  const today = new Date();
   return `<div style="margin-bottom:20px;">
-    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127874; ${escapeHtml(monthName)} Birthdays</div>
-    <div style="display:flex; flex-direction:column; gap:6px;">
-      ${list.map(b => {
-        const isToday = b.month === today.getMonth() + 1 && b.day === today.getDate();
-        return `<div style="display:flex; justify-content:space-between; align-items:center; background:${isToday ? "color-mix(in srgb, var(--accent) 18%, transparent)" : "var(--surface2)"}; border:1px solid ${isToday ? "var(--accent)" : "var(--border)"}; border-radius:8px; padding:8px 12px;">
-          <span style="font-size:13px; font-weight:${isToday ? "700" : "400"};">${isToday ? "&#127881; " : ""}${escapeHtml(b.name)}${b.team ? ` <span style="color:var(--text3); font-weight:400;">· ${escapeHtml(b.team)}</span>` : ""}</span>
-          <span style="font-size:12px; color:${isToday ? "var(--accent)" : "var(--text2)"}; font-weight:${isToday ? "700" : "400"};">${isToday ? "Today!" : monthDayLabel(`2000-${String(b.month).padStart(2, "0")}-${String(b.day).padStart(2, "0")}`)}</span>
-        </div>`;
-      }).join("")}
-    </div>
+    <div style="font-size:13px; font-weight:700; margin-bottom:8px;">&#127874; ${escapeHtml(birthdayTitle(list))}</div>
+    <div style="display:flex; flex-direction:column; gap:6px;">${birthdayRowsHtml(list)}</div>
   </div>`;
 }
 function renderEliteNewsAnnouncements() {
