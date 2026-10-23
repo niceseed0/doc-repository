@@ -504,7 +504,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-27";
+const BUILD_ID = "2026-10-23-28";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2345,9 +2345,10 @@ async function deleteTester(id) {
   if (!realIsPermissionAdmin) return;
   const t = employees.find(e => e.id === id && e.team === TEST_TEAM);
   if (!t) return;
-  if (!confirm(`Delete ${t.name}?`)) return;
+  if (!confirm(`Delete ${t.name} and everything linked to them?`)) return;
   setSyncing(true);
   try {
+    await purgeEmployeeData((await collectEmployeeData(t)).hits);
     await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${id}`, { method: "DELETE" });
     employees = employees.filter(e => e.id !== id);
     if (testModeActive && testModePersona && testModePersona.id === id) await exitTestMode();
@@ -2364,6 +2365,7 @@ async function deleteTestTeam() {
   setSyncing(true);
   try {
     for (const t of testers) {
+      await purgeEmployeeData((await collectEmployeeData(t)).hits);
       await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${t.id}`, { method: "DELETE" });
     }
     const ids = new Set(testers.map(t => t.id));
@@ -12209,16 +12211,109 @@ async function deleteHRSubRecord(kind, itemId) {
   }
 }
 
+// ── Deleting an employee also deletes everything that points at them ─────────────────────────────
+// Scans every list that carries an EmployeeId (plus recognition recipients and requester emails) so that
+// no orphaned cases / requests / history stay behind in Work Status, Work Hub or the reports.
+// Two phases: collect (dry run, so the confirm box can show counts) then run.
+// emp = null → "orphan" mode: finds records whose employee no longer exists (cleanup of deletions made before this existed).
+async function collectEmployeeData(emp) {
+  const orphan = !emp;
+  const id = orphan ? "" : String(emp.id);
+  const emails = new Set(orphan ? [] : empEmails(emp));
+  const liveIds = new Set(employees.map(e => String(e.id)));
+  const hits = [];
+  const failed = [];
+  const scan = async (label, listId, test) => {
+    if (!listId) return;
+    try {
+      let url = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=500`;
+      while (url) {
+        const data = await graphFetch(url);
+        (data.value || []).forEach(it => {
+          const r = test(it.fields || {});
+          if (r) hits.push({ label, listId, itemId: it.id, patch: r === true ? null : r });
+        });
+        url = data["@odata.nextLink"] || null;
+      }
+    } catch (e) { console.warn("Could not scan " + label, e); failed.push(label); }
+  };
+  const byId = f => orphan ? (!!f["EmployeeId"] && !liveIds.has(String(f["EmployeeId"]))) : String(f["EmployeeId"] || "") === id;
+  const byEmail = (f, col) => emails.has(String(f[col] || "").toLowerCase());
+  await Promise.all([
+    scan("Position history", positionHistoryListId, byId),
+    scan("Salary history", salaryHistoryListId, byId),
+    scan("Evaluations", evaluationScoresListId, byId),
+    scan("HR records", incidentsListId, byId),
+    scan("Leave usage", leaveUsageListId, byId),
+    scan("NTE cases", nteCasesListId, byId),
+    scan("Coaching forms", coachingCasesListId, byId),
+    scan("PIP cases", pipCasesListId, byId),
+    scan("Quarterly feedback", quarterlyFeedbackListId, byId),
+    scan("Quarterly recommendations", qrRecsListId, byId),
+    scan("Recommendation reviews", qrReviewsListId, byId),
+    scan("Manpower requests", manpowerRequestsListId, f => byId(f) || byEmail(f, "RequesterEmail")),
+    scan("Manpower plan entries", manpowerPlanListId, byId),
+    scan("Service requests", serviceRequestsListId, f => byEmail(f, "RequesterEmail")),
+    scan("Recognition requests", recognitionCasesListId, f => {
+      if (byEmail(f, "RequestedBy")) return true;
+      const rec = coaParseJson(f["Recipients"], []);
+      const gone = r => orphan ? !liveIds.has(String(r.id)) : String(r.id) === id;
+      if (!rec.some(gone)) return false;
+      const rest = rec.filter(r => !gone(r));
+      return rest.length ? { Recipients: JSON.stringify(rest) } : true; // other recipients remain → just drop this person
+    })
+  ]);
+  return { hits, failed };
+}
+function summarizeEmployeeData(hits) {
+  const by = {};
+  hits.forEach(h => { const k = h.label + (h.patch ? " (recipient removed)" : ""); by[k] = (by[k] || 0) + 1; });
+  return Object.entries(by).map(([k, n]) => `• ${k}: ${n}`).join("\n");
+}
+async function cleanupOrphanedRecords() {
+  if (!canAccessHR) return;
+  setSyncing(true);
+  let plan;
+  try { plan = await collectEmployeeData(null); } catch (e) { setSyncing(false, false); toast("Could not scan: " + e.message, "error"); return; }
+  setSyncing(false, true);
+  if (!plan.hits.length) { toast("No orphaned records found ✓", "success"); return; }
+  if (!confirm(`Remove records that belong to employees who no longer exist?\n\n${summarizeEmployeeData(plan.hits)}\n\nThis can't be undone.`)) return;
+  setSyncing(true);
+  const r = await purgeEmployeeData(plan.hits);
+  setSyncing(false, !r.bad);
+  toast(r.bad ? `Removed ${r.ok}; ${r.bad} could not be removed` : `Removed ${r.ok} orphaned record(s) ✓`, r.bad ? "error" : "success");
+  renderHRModal(); renderTabs(); renderContent();
+}
+async function purgeEmployeeData(hits) {
+  let ok = 0, bad = 0;
+  for (const h of hits) {
+    try {
+      if (h.patch) await graphFetch(`/sites/${siteId}/lists/${h.listId}/items/${h.itemId}/fields`, { method: "PATCH", body: JSON.stringify(h.patch) });
+      else await graphFetch(`/sites/${siteId}/lists/${h.listId}/items/${h.itemId}`, { method: "DELETE" });
+      ok++;
+    } catch (e) { bad++; console.warn("Could not purge " + h.label, e); }
+  }
+  // Refresh everything that was cached from those lists.
+  await Promise.all([loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadNteCases(), loadCoachingCases(), loadPipCases(), loadRecognitionCases(), loadQuarterlyFeedback(), loadQuarterlyRecommendations(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan()].map(p => Promise.resolve(p).catch(() => {})));
+  return { ok, bad };
+}
 async function deleteEmployeeRecord(employeeId) {
   const emp = employees.find(e => e.id === employeeId);
   if (!emp || !canAccessHR) return;
-  if (!confirm(`Delete ${emp.name}'s HR record? This removes their profile (not their salary/evaluation/incident history, which stays on file). This can't be undone.`)) return;
+  setSyncing(true);
+  let plan;
+  try { plan = await collectEmployeeData(emp); } catch (e) { plan = { hits: [], failed: ["all lists"] }; }
+  setSyncing(false, true);
+  const list = plan.hits.length ? summarizeEmployeeData(plan.hits) : "• (no linked records found)";
+  const warn = plan.failed.length ? `\n\nCould not check: ${plan.failed.join(", ")} (no access or list missing) — those records, if any, will stay.` : "";
+  if (!confirm(`Delete ${emp.name} AND everything linked to them?\n\n${list}${warn}\n\nThis can't be undone. (For someone who left the company, use status "Resigned" instead to keep their history.)`)) return;
   setSyncing(true);
   try {
+    const purged = await purgeEmployeeData(plan.hits);
     await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${employeeId}`, { method: "DELETE" });
     employees = employees.filter(e => e.id !== employeeId);
     setSyncing(false, true);
-    toast("Employee record deleted ✓", "success");
+    toast(purged.bad ? `Employee deleted — ${purged.bad} linked record(s) could not be removed` : "Employee and linked records deleted ✓", purged.bad ? "error" : "success");
     openTeamRoster(emp.team, emp.cluster);
     renderContent();
   } catch (err) {
@@ -12321,6 +12416,7 @@ function renderHRModal() {
         <div>
           <h3 style="margin-bottom:2px;">Former Employees</h3>
           <div style="font-size:12px; color:var(--text2);">${former.length} on file</div>
+          ${canAccessHR ? `<button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="cleanupOrphanedRecords()" title="Removes cases/requests/history left behind by employees who were deleted earlier">&#129529; Clean up orphaned records</button>` : ""}
         </div>
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
