@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-23-39";
+const BUILD_ID = "2026-10-26-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12397,32 +12397,49 @@ function renderHRModal() {
 
   if (hrView.mode === "allTeams") {
     box.style.width = "min(760px, 95vw)";
+    // Four collapsed top-level groups: Management · HR & Admin (incl. IT, CXQA, Nurse…) · John's Cluster · Gary's Cluster.
+    // Inside a group each team is its own collapsed section; open a team to see its members.
+    const ADMIN = "HR & Admin";
     const groups = new Map();
     employees.filter(e => e.status !== "Resigned").forEach(e => {
       const mg = isMgmtRec(e);
-      const key = mg ? "Management" : (e.cluster ? `${e.cluster} / ${e.team || "—"}` : (e.team || "—"));
-      if (!groups.has(key)) groups.set(key, { key, team: mg ? "Management" : (e.team || ""), cluster: mg ? "" : (e.cluster || ""), members: [] });
-      groups.get(key).members.push(e);
+      const top = mg ? "Management" : (e.cluster || ADMIN);
+      if (!groups.has(top)) groups.set(top, { name: top, teams: new Map(), count: 0 });
+      const g = groups.get(top);
+      const tn = mg ? "" : (e.team || "—");
+      if (!g.teams.has(tn)) g.teams.set(tn, []);
+      g.teams.get(tn).push(e);
+      g.count++;
     });
-    const order = g => g.key === "Management" ? -1 : (() => { const i = CONFIG.teamOrder.indexOf(g.cluster || g.team); return i === -1 ? CONFIG.teamOrder.length : i; })();
-    const list = [...groups.values()].sort((a, b) => order(a) - order(b) || a.key.localeCompare(b.key));
-    const total = list.reduce((n, g) => n + g.members.length, 0);
+    const topOrder = n => n === "Management" ? -2 : n === ADMIN ? -1 : (() => { const i = CONFIG.teamOrder.indexOf(n); return i === -1 ? 99 : i; })();
+    const list = [...groups.values()].sort((a, b) => topOrder(a.name) - topOrder(b.name) || a.name.localeCompare(b.name));
+    const total = list.reduce((n, g) => n + g.count, 0);
+    const sortMembers = (arr, mg) => arr.slice().sort((a, b) => mg ? (mgmtRank(a) - mgmtRank(b) || a.name.localeCompare(b.name)) : (positionRankIndex(a.position) - positionRankIndex(b.position) || a.name.localeCompare(b.name)));
+    const teamOrderIn = n => { const i = CONFIG.teamOrder.indexOf(n); return i === -1 ? 99 : i; };
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
         <div>
           <h3 style="margin-bottom:2px;">My Team — all teams</h3>
-          <div style="font-size:12px; color:var(--text2);">${list.length} teams · ${total} active member${total === 1 ? "" : "s"}</div>
+          <div style="font-size:12px; color:var(--text2);">${list.length} groups · ${total} active member${total === 1 ? "" : "s"}</div>
         </div>
         <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
       </div>
       <div style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
-        ${list.map(g => `
-          <details open style="border:1px solid var(--border); border-radius:10px; padding:8px 10px;">
-            <summary style="cursor:pointer; font-size:13px; font-weight:600;">${escapeHtml(g.key)} <span style="font-weight:400; color:var(--text3);">· ${g.members.length}</span></summary>
-            <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">
-              ${g.members.slice().sort((a, b) => g.key === "Management" ? (mgmtRank(a) - mgmtRank(b) || a.name.localeCompare(b.name)) : (positionRankIndex(a.position) - positionRankIndex(b.position) || a.name.localeCompare(b.name))).map(e => rosterRow(e, true)).join("")}
-            </div>
-          </details>`).join("")}
+        ${list.map(g => {
+          const mg = g.name === "Management";
+          const teams = [...g.teams.entries()].sort((a, b) => teamOrderIn(a[0]) - teamOrderIn(b[0]) || a[0].localeCompare(b[0]));
+          const inner = mg
+            ? `<div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">${sortMembers(teams[0][1], true).map(e => rosterRow(e, true)).join("")}</div>`
+            : `<div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">${teams.map(([tn, mem]) => `
+                <details style="border:1px solid var(--border); border-radius:8px; padding:6px 10px; background:var(--surface2);">
+                  <summary style="cursor:pointer; font-size:12px; font-weight:600;">${escapeHtml(tn)} <span style="font-weight:400; color:var(--text3);">· ${mem.length}</span></summary>
+                  <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px;">${sortMembers(mem, false).map(e => rosterRow(e, true)).join("")}</div>
+                </details>`).join("")}</div>`;
+          return `<details style="border:1px solid var(--border); border-radius:10px; padding:8px 10px;">
+            <summary style="cursor:pointer; font-size:13px; font-weight:700;">${escapeHtml(g.name)} <span style="font-weight:400; color:var(--text3);">· ${g.count}${mg ? "" : ` · ${teams.length} team${teams.length === 1 ? "" : "s"}`}</span></summary>
+            ${inner}
+          </details>`;
+        }).join("")}
       </div>
     `;
     return;
