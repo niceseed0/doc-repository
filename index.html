@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-26-02";
+const BUILD_ID = "2026-10-26-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14336,6 +14336,7 @@ function sanitizeGuideHtml(html) {
     });
     // Our toolbar never sets a background color — strip any that snuck in (e.g. from pasted
     // content) so text never ends up sitting on a hardcoded dark box in light mode.
+    if (el.tagName === "IMG" && el.hasAttribute("data-spimg")) el.removeAttribute("src"); // re-fetched with the viewer's sign-in
     if (el.style) {
       el.style.removeProperty("background");
       el.style.removeProperty("background-color");
@@ -14868,6 +14869,8 @@ function ceToolbarHtml(id) {
     </select>
     <span class="rte-sep"></span>
     ${b("insertUnorderedList", "&#8226; List", "Bullet list")}
+    <span class="rte-sep"></span>
+    <button type="button" class="rte-btn" onclick="rteInsertImage('${id}')" title="Insert image">&#128247; Image</button>
     <span class="rte-sep"></span>
     <button type="button" class="rte-btn" onclick="rteInsertLink('${id}')" title="Insert link">&#128279; Link</button>
     <span class="rte-sep"></span>
@@ -15618,13 +15621,48 @@ function rteExec(command, value, targetId) {
   document.execCommand(command, false, value || null);
 }
 
+// Inline images in the rich-text editors (announcements, guides, event notices): the picture is uploaded to the
+// "Company Event Images" library and the text keeps only <img data-spimg="file">. The image is fetched with the
+// viewer's own sign-in whenever it is shown (see hydrateSpImgs), so nothing is public and nothing breaks later.
+let rteSavedRange = null;
 function rteInsertImage(targetId) {
-  const url = prompt("Paste an image URL (e.g. https://example.com/image.png):");
-  if (!url) return;
   const area = document.getElementById(targetId || "guideEditArea");
-  if (area) area.focus();
-  document.execCommand("insertImage", false, url);
+  if (!area) return;
+  if (!companyEventImagesListId) { // no image library set up → old behavior: paste a URL
+    const url = prompt("Paste an image URL (e.g. https://example.com/image.png):");
+    if (!url) return;
+    area.focus();
+    document.execCommand("insertImage", false, url);
+    return;
+  }
+  const sel = window.getSelection();
+  rteSavedRange = sel && sel.rangeCount && area.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = async () => {
+    const file = inp.files && inp.files[0];
+    if (!file) return;
+    setSyncing(true);
+    try {
+      const name = await ceUploadImage(file);
+      const url = await ceLoadImage(name);
+      area.focus();
+      if (rteSavedRange) { const s2 = window.getSelection(); s2.removeAllRanges(); s2.addRange(rteSavedRange); }
+      document.execCommand("insertHTML", false, `<img data-spimg="${escapeAttr(name)}" src="${url}" alt="" style="max-width:100%; height:auto;"><div><br></div>`);
+      setSyncing(false, true);
+    } catch (err) { setSyncing(false, false); toast("Could not add image: " + err.message, "error"); }
+  };
+  inp.click();
 }
+const spImgDone = new WeakSet();
+function hydrateSpImgs(root) {
+  (root || document).querySelectorAll("img[data-spimg]").forEach(img => {
+    if (spImgDone.has(img) || !companyEventImagesListId) return;
+    spImgDone.add(img);
+    ceLoadImage(img.getAttribute("data-spimg")).then(u => { img.src = u; }).catch(() => { img.alt = "(image unavailable)"; });
+  });
+}
+new MutationObserver(() => hydrateSpImgs(document.body)).observe(document.documentElement, { childList: true, subtree: true });
 
 function rteInsertLink(targetId) {
   const area = document.getElementById(targetId || "guideEditArea");
