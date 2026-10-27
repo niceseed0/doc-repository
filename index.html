@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-26-03";
+const BUILD_ID = "2026-10-27-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12451,7 +12451,7 @@ function renderHRModal() {
     const cluster = hrView.cluster || "";
     const active = employeesForTeam(team, false, cluster);
     const useChart = !!cluster; // org-chart layout only for teams inside a cluster
-    if (useChart) box.style.width = "min(960px, 95vw)";
+    if (useChart) box.style.width = "min(1280px, 96vw)";
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
         <div>
@@ -12964,40 +12964,41 @@ function renderTeamOrgChart(members) {
   const positions = [...ranked, ...unranked];
   const levels = positions.map(p => groups[p].slice().sort((a, b) => (a.hireDate || "9999-99-99").localeCompare(b.hireDate || "9999-99-99")));
 
-  const colW = 210, boxH = 76, rowGap = 56, topPad = 10;
-  const maxWidth = Math.max(...levels.map(l => l.length), 1);
-  const totalW = maxWidth * colW;
-  const totalH = topPad + levels.length * boxH + (levels.length - 1) * rowGap + topPad;
-
+  // Wide modal; a position with more people than fit on one line wraps onto 2-3 lines INSIDE a labelled band,
+  // so it is still obvious they share the same position.
+  const colW = 230, boxH = 76, rowGap = 10, levelGap = 44, topPad = 10, bandPad = 10, labelH = 22;
+  const availW = Math.min(1280, window.innerWidth * 0.96) - 70;
+  const perRow = Math.max(1, Math.floor(availW / colW));
+  const maxWidth = Math.max(...levels.map(l => Math.min(l.length, perRow)), 1);
+  const totalW = maxWidth * colW + 12; // +12 = room for the band outline
+  let y = topPad;
   const layout = levels.map((level, i) => {
-    const levelW = level.length * colW;
-    const startX = (totalW - levelW) / 2;
-    const y = topPad + i * (boxH + rowGap);
-    const boxes = level.map((m, j) => ({ emp: m, x: startX + j * colW, y, cx: startX + j * colW + colW / 2, cy: y + boxH / 2 }));
-    return { position: positions[i], boxes, groupCx: startX + levelW / 2 };
+    const rows = Math.ceil(level.length / perRow);
+    const inBand = level.length > 1;
+    const innerTop = y + (inBand ? labelH + bandPad : 0);
+    const bandH = inBand ? labelH + bandPad * 2 + rows * boxH + (rows - 1) * rowGap : boxH;
+    const boxes = level.map((m, j) => {
+      const r = Math.floor(j / perRow), c = j % perRow;
+      const inRow = Math.min(perRow, level.length - r * perRow);
+      const startX = (totalW - inRow * colW) / 2;
+      return { emp: m, x: startX + c * colW, y: innerTop + r * (boxH + rowGap) };
+    });
+    const bandW = Math.min(level.length, perRow) * colW + 4;
+    const out = { position: positions[i], boxes, inBand, top: y, bandH, bandW, bandX: (totalW - bandW) / 2, count: level.length };
+    y += bandH + levelGap;
+    return out;
   });
+  const totalH = y - levelGap + topPad;
 
-  // Connector lines between each adjacent pair of levels (SVG, in the same px coordinate space as the boxes)
+  // One trunk line (centre) from each position band down to the next.
   let svgPaths = "";
   for (let i = 0; i < layout.length - 1; i++) {
-    const parent = layout[i], child = layout[i + 1];
-    const parentBottomY = parent.boxes[0].y + boxH;
-    const childTopY = child.boxes[0].y;
-    const midY = (parentBottomY + childTopY) / 2;
-    const trunkX = parent.groupCx;
-    svgPaths += `<path d="M ${trunkX} ${parentBottomY} L ${trunkX} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
-    if (child.boxes.length > 1) {
-      const firstCx = child.boxes[0].cx, lastCx = child.boxes[child.boxes.length - 1].cx;
-      svgPaths += `<path d="M ${firstCx} ${midY} L ${lastCx} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
-      if (trunkX < firstCx || trunkX > lastCx) {
-        // keep the trunk visually connecting into the spread line even if the parent's center falls outside it
-        svgPaths += `<path d="M ${trunkX} ${midY} L ${Math.max(firstCx, Math.min(trunkX, lastCx))} ${midY}" stroke="var(--border)" stroke-width="2" fill="none" />`;
-      }
-    }
-    child.boxes.forEach(b => {
-      svgPaths += `<path d="M ${b.cx} ${midY} L ${b.cx} ${b.y}" stroke="var(--border)" stroke-width="2" fill="none" />`;
-    });
+    svgPaths += `<path d="M ${totalW / 2} ${layout[i].top + layout[i].bandH} L ${totalW / 2} ${layout[i + 1].top}" stroke="var(--border)" stroke-width="2" fill="none" />`;
   }
+  const bandsHtml = layout.filter(l => l.inBand).map(l => `
+    <div style="position:absolute; left:${l.bandX}px; top:${l.top}px; width:${l.bandW}px; height:${l.bandH}px; border:1px dashed var(--accent); border-radius:14px; background:color-mix(in srgb, var(--accent) 6%, transparent);">
+      <div style="position:absolute; left:14px; top:4px; font-size:11px; font-weight:700; color:var(--accent); letter-spacing:.2px;">${escapeHtml(l.position)} <span style="font-weight:500; color:var(--text3);">· ${l.count}</span></div>
+    </div>`).join("");
 
   const boxesHtml = layout.flatMap(lvl => lvl.boxes.map(b => {
     const e = b.emp;
@@ -13005,7 +13006,7 @@ function renderTeamOrgChart(members) {
     const canOpen = canOpenEmployee(e);
     return `
       <div ${canOpen ? `onclick="openEmployeeDetail('${e.id}')"` : ""}
-           style="position:absolute; left:${b.x}px; top:${b.y}px; width:${colW - 20}px; height:${boxH}px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; display:flex; align-items:center; gap:10px; ${canOpen ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
+           style="position:absolute; left:${b.x + 8}px; top:${b.y}px; width:${colW - 16}px; height:${boxH}px; box-sizing:border-box; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; display:flex; align-items:center; gap:10px; ${canOpen ? "cursor:pointer;" : ""} ${onLeave ? "opacity:.6;" : ""}">
         ${avatarHtml(e, 44, 14)}
         <div style="min-width:0; flex:1;">
           <div style="font-size:14px; font-weight:600; color:${canOpen ? "var(--accent)" : "var(--text)"}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(e.name)}</div>
@@ -13019,6 +13020,7 @@ function renderTeamOrgChart(members) {
     <div style="overflow-x:auto; padding:8px 0 4px;">
       <div style="position:relative; width:${totalW}px; height:${totalH}px; margin:0 auto;">
         <svg width="${totalW}" height="${totalH}" style="position:absolute; left:0; top:0; z-index:0;">${svgPaths}</svg>
+        ${bandsHtml}
         <div style="position:relative; z-index:1;">${boxesHtml.join("")}</div>
       </div>
     </div>
