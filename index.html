@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-27-02";
+const BUILD_ID = "2026-10-28-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1083,6 +1083,7 @@ async function startApp() {
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
     refreshAccessFlags();
+    autoEmploymentStatus().then(n => { if (n) { toast(`${n} employee status${n === 1 ? "" : "es"} updated automatically (probation rule)`, "success"); renderContent(); } }).catch(() => {});
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
     document.getElementById("app").style.display = "block";
@@ -1495,6 +1496,32 @@ async function loadDeletionLog() {
 // The whole module simply stays invisible if "HR Employees" hasn't been
 // created yet in SharePoint — see SETUP_HR.md.
 // ═══════════════════════════════════════════════════════════════════════════
+// Probation rule: under CONFIG.probationMonths since the hire date = Probationary, from that day on = Regular.
+// Only Probationary/Regular are auto-managed — Contractual, Leave of Absence and Resigned are never touched.
+function regularizationYMD(hireDate) { return hireDate ? toLocalYMD(addMonths(String(hireDate).slice(0, 10), CONFIG.probationMonths)) : ""; }
+function effectiveEmpStatus(raw, hireDate) {
+  if ((raw !== "Probationary" && raw !== "Regular") || !hireDate) return raw;
+  return toLocalYMD(new Date()) >= regularizationYMD(hireDate) ? "Regular" : "Probationary";
+}
+// Writes the automatic status to SharePoint (runs for HR users only — others can't edit the list) and, when someone
+// finishes probation, leaves a dated line in their Employee History. Safe to run repeatedly.
+async function autoEmploymentStatus() {
+  if (!canAccessHR || !employeesListId) return 0;
+  let changed = 0;
+  for (const e of employees) {
+    if (!e.rawStatus || e.rawStatus === e.status) continue;
+    try {
+      const regularized = e.rawStatus === "Probationary" && e.status === "Regular";
+      if (regularized && positionHistoryListId && !allPositionHistory.some(h => h.employeeId === String(e.id) && /Probationary\s*→\s*Regular/.test(h.description))) {
+        await mpLogHistory(e, regularizationYMD(e.hireDate), `Status: Probationary → Regular (Auto: completed ${CONFIG.probationMonths}-month probation)`);
+      }
+      await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${e.id}/fields`, { method: "PATCH", body: JSON.stringify({ Status: e.status }) });
+      e.rawStatus = e.status;
+      changed++;
+    } catch (err) { console.warn("Auto status update failed for", e.name, err); }
+  }
+  return changed;
+}
 async function loadEmployees() {
   employees = [];
   if (!employeesListId) return;
@@ -1512,7 +1539,8 @@ async function loadEmployees() {
           team: it.fields["Team"] || "",
           cluster: it.fields["Cluster"] || "", // "John's Cluster" / "Gary's Cluster" / "" for non-cluster teams
           position: it.fields["Position"] || "",
-          status: it.fields["Status"] || "Regular", // Probationary | Regular | Contractual | Leave of Absence | Resigned
+          status: effectiveEmpStatus(it.fields["Status"] || "Regular", it.fields["HireDate"]), // Probationary | Regular | Contractual | Leave of Absence | Resigned
+          rawStatus: it.fields["Status"] || "Regular", // what SharePoint actually holds (auto-corrected by autoEmploymentStatus)
           hireDate: it.fields["HireDate"] || null,
           resumeUrl: it.fields["ResumeUrl"] || "",
           email: it.fields["Email"] || "",
@@ -2498,13 +2526,19 @@ function openAddEmployeeForm() {
   renderHRModal();
 }
 
+function onHRAddHireDateChange() {
+  const sel = document.getElementById("hrAddStatus"), hd = document.getElementById("hrAddHireDate");
+  if (!sel || !hd || !hd.value || !["Probationary", "Regular"].includes(sel.value)) return;
+  sel.value = effectiveEmpStatus("Regular", hd.value);
+  renderHRAddSeparationFields();
+}
 async function submitAddEmployee() {
   const name = document.getElementById("hrAddName").value.trim();
   const cluster = document.getElementById("hrAddCluster").value;
   const team = selectedTeamValue("hrAddTeam", "hrAddTeamNew");
   const position = selectedTeamValue("hrAddPosition", "hrAddPositionNew");
-  const status = document.getElementById("hrAddStatus").value;
   const hireDate = document.getElementById("hrAddHireDate").value;
+  const status = effectiveEmpStatus(document.getElementById("hrAddStatus").value, hireDate);
   const email = document.getElementById("hrAddEmail").value.trim();
   const altEmail = document.getElementById("hrAddTeamsEmail").value.trim();
   const birthday = document.getElementById("hrAddBirthday").value;
@@ -2528,7 +2562,7 @@ async function submitAddEmployee() {
       body: JSON.stringify({ fields })
     });
     const emp = {
-      id: created.id, name, photo: photoUrl, team, cluster, position, status,
+      id: created.id, name, photo: photoUrl, team, cluster, position, status, rawStatus: status,
       hireDate: hireDate || null, email, altEmail, birthday: birthday || null, resumeUrl,
       separationDate: fields.SeparationDate, separationReason: fields.SeparationReason
     };
@@ -12869,7 +12903,7 @@ function renderHRModal() {
       </div>
       <div class="form-group">
         <label>Employment Status</label>
-        <select id="hrAddStatus" onchange="renderHRAddSeparationFields()">
+        <select id="hrAddStatus" onchange="renderHRAddSeparationFields()" title="Probationary / Regular follow the hire date automatically (6 months)">
           <option value="Probationary">Probationary</option>
           <option value="Regular" selected>Regular</option>
           <option value="Contractual">Contractual</option>
@@ -12877,7 +12911,7 @@ function renderHRModal() {
           <option value="Resigned">Resigned</option>
         </select>
       </div>
-      <div class="form-group"><label>Hire date</label><input id="hrAddHireDate" type="date" /></div>
+      <div class="form-group"><label>Hire date <span style="font-weight:400; color:var(--text3);">(status switches Probationary → Regular automatically after 6 months)</span></label><input id="hrAddHireDate" type="date" onchange="onHRAddHireDateChange()" /></div>
       <div class="form-group"><label>Email</label><input id="hrAddEmail" type="email" /></div>
       <div class="form-group"><label>Teams / sign-in email <span style="color:var(--text3);">(only if different from Email — e.g. CEO)</span></label><input id="hrAddTeamsEmail" type="email" /></div>
       <div class="form-group"><label>Birthday (optional)</label><input id="hrAddBirthday" type="date" /></div>
@@ -13351,6 +13385,7 @@ async function reloadData() {
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
+    autoEmploymentStatus().catch(() => {});
     renderTabs();
     renderContent();
     toast("Refreshed with latest data ✓", "success");
