@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-29-04";
+const BUILD_ID = "2026-10-29-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -542,6 +542,7 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  attendanceLogListDisplayName: "HR Attendance Log", // monthly late/absent/leave/sick per employee, see SETUP_TEAMS_SYNC.md
   teamsSyncListDisplayName: "HR Teams Sync", // Teams Shifts → attendance status (optional), see SETUP_TEAMS_SYNC.md
   companyEventImagesLibraryName: "Company Event Images", // document library for event header images (optional)
   companyEventsListDisplayName: "HR Company Events", // Elite Company Events (Home → Elite News + calendar), see SETUP_COMPANY_EVENTS.md
@@ -1082,7 +1083,7 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), loadAttendanceLog(), checkEditPermission()]);
     refreshAccessFlags();
     tsStartAuto();
     autoEmploymentStatus().then(n => { if (n) { toast(`${n} employee status${n === 1 ? "" : "es"} updated automatically (probation rule)`, "success"); renderContent(); } }).catch(() => {});
@@ -1171,6 +1172,8 @@ async function resolveSiteAndLists() {
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
   const tsMatch = (lists.value || []).find(l => l.displayName === CONFIG.teamsSyncListDisplayName);
   tsListId = tsMatch ? tsMatch.id : null;
+  const attMatch = (lists.value || []).find(l => l.displayName === CONFIG.attendanceLogListDisplayName);
+  attListId = attMatch ? attMatch.id : null;
   const ceiMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventImagesLibraryName);
   companyEventImagesListId = ceiMatch ? ceiMatch.id : null;
   const ceMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventsListDisplayName);
@@ -12561,6 +12564,7 @@ function renderHRModal() {
 
   if (hrView.mode === "tsSettings") { renderTsSettings(box); return; }
   if (hrView.mode === "tsList") { renderTsStatusList(box); return; }
+  if (hrView.mode === "attendance") { renderAttendance(box); return; }
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
   if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
   if (hrView.mode === "ceForm") { renderCompanyEventForm(box); return; }
@@ -13388,7 +13392,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), loadAttendanceLog(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     autoEmploymentStatus().catch(() => {});
@@ -14619,7 +14623,7 @@ function tsFresh() { return !!tsMeta.syncedAt && (Date.now() - new Date(tsMeta.s
 // Pure: one person's status from their (already merged) Shifts data. Times are ms since epoch.
 function tsComputeStatus(now, shifts, timesOff, cards, scheduledCountsAsWorking) {
   const off = (timesOff || []).find(t => t.s <= now && now < t.e);
-  if (off) return { status: /sick|medical|illness|\bsl\b/i.test(off.reason || "") ? "sick" : "leave", detail: off.reason || "Time off" };
+  if (off) { const k = tsReasonKind(off.reason); return k === "rest" || k === "holiday" ? { status: "off", detail: off.reason || "Rest Day" } : { status: k === "sick" ? "sick" : "leave", detail: off.reason || "Time off" }; }
   const card = (cards || []).find(c => c.state === "clockedIn" || c.state === "onBreak");
   if (card) return { status: "working", detail: card.state === "onBreak" ? "On break" : "Clocked in" };
   const sh = (shifts || []).find(x => x.s <= now && now < x.e);
@@ -14658,9 +14662,9 @@ async function tsList(token, path, beta, maxPages) {
   }
   return out;
 }
-async function tsListFiltered(token, base, filter, beta) {
-  try { return await tsList(token, `${base}?$filter=${encodeURIComponent(filter)}`, beta); }
-  catch (e) { return await tsList(token, base, beta); } // some endpoints reject $filter → read all, filter locally
+async function tsListFiltered(token, base, filter, beta, maxPages) {
+  try { return await tsList(token, `${base}?$filter=${encodeURIComponent(filter)}`, beta, maxPages); }
+  catch (e) { return await tsList(token, base, beta, maxPages); } // some endpoints reject $filter → read all, filter locally
 }
 async function tsRecord(fields, existingId) {
   const base = `/sites/${siteId}/lists/${tsListId}/items`;
@@ -14771,7 +14775,8 @@ function tsStartAuto() {
   if (!tsCanSync() || tsTimer) return;
   if (!tsTeams.some(t => t.enabled)) return;
   runTeamsSync(false);
-  tsTimer = setInterval(() => runTeamsSync(false), TS_AUTO_SYNC_MIN * 60000);
+  if (attListId) setTimeout(() => runAttendanceHistory(false), 20000);
+  tsTimer = setInterval(() => { runTeamsSync(false); if (attListId && Date.now() - attLast > 60 * 60000) runAttendanceHistory(false); }, TS_AUTO_SYNC_MIN * 60000);
 }
 
 // Who is in each status (opened from the Home counters): name, team, and the reason / detail.
@@ -14843,6 +14848,223 @@ function renderTsSettings(box) {
     </div>`}`;
 }
 
+// ── Attendance history (late minutes, absences, leave, sick) — see SETUP_TEAMS_SYNC.md part 2 ─────────────────────
+// Re-reads the last TS_HISTORY_DAYS days of Teams Shifts (schedules, time off, time cards) and rebuilds one row per
+// employee per month in "HR Attendance Log". Because whole days are recalculated every time, leave / sick entries that are
+// filed AFTER the fact (the usual case) automatically turn an earlier "Absent" into Sick / Leave.
+// Day rules (times are the viewer's local zone — the Philippines team is all UTC+8):
+//   time off covering the shift → Sick / Leave / Holiday / Rest (by the reason's name); no shift that day → ignored
+//   clock-in found for the shift → Present, or Late by (clock-in − shift start − grace) minutes
+//   no clock-in and the shift is over → Absent;  shift not over yet → Pending (not counted)
+const TS_HISTORY_DAYS = 45;
+const TS_GRACE_MIN = 0;           // minutes after shift start that still count as on time
+const TS_REST_RE = /rest\s*day|day\s*off|\brd\b/i;
+const TS_HOLIDAY_RE = /holiday/i;
+const TS_SICK_RE = /sick|medical|illness|\bsl\b/i;
+let attListId = null;
+let tsAtt = new Map();            // `${empId}|${YYYY-MM}` -> { itemId, month, empId, days: {dd: rec}, upd }
+let attState = { month: "", empId: null, busy: false, msg: "" };
+function tsReasonKind(reason) {
+  if (TS_REST_RE.test(reason || "")) return "rest";
+  if (TS_HOLIDAY_RE.test(reason || "")) return "holiday";
+  if (TS_SICK_RE.test(reason || "")) return "sick";
+  return "leave";
+}
+function tsHM(ms) { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+// Pure: one employee's record for one day (null = nothing scheduled). Inputs are ms timestamps.
+function tsDayRecord(dayStart, dayEnd, now, shifts, timesOff, cards, graceMin) {
+  const sh = (shifts || []).filter(x => x.s >= dayStart && x.s < dayEnd).sort((a, b) => a.s - b.s);
+  if (!sh.length) return null; // no shift → nothing to judge (rest days etc. are not counted)
+  const s = sh[0].s, e = Math.max(...sh.map(x => x.e));
+  const base = { ss: tsHM(s), se: tsHM(e) };
+  const off = (timesOff || []).find(t => t.s <= s + 3600000 && t.e > s);
+  if (off) { const k = tsReasonKind(off.reason); return { ...base, k, r: off.reason || "" }; }
+  const card = (cards || []).filter(c => c.inMs >= s - 4 * 3600000 && c.inMs < e).sort((a, b) => a.inMs - b.inMs)[0];
+  if (card) {
+    const late = Math.round((card.inMs - s) / 60000) - (graceMin || 0);
+    return { ...base, k: late > 0 ? "late" : "present", m: late > 0 ? late : 0, in: tsHM(card.inMs), out: card.outMs ? tsHM(card.outMs) : "" };
+  }
+  if (e <= now) return { ...base, k: "absent" };
+  if (s > now) return null;
+  return { ...base, k: "pending" };
+}
+function attTotals(days) {
+  const t = { worked: 0, late: 0, lateMin: 0, absent: 0, leave: 0, sick: 0, holiday: 0 };
+  Object.values(days || {}).forEach(d => {
+    if (d.k === "present") t.worked++;
+    else if (d.k === "late") { t.worked++; t.late++; t.lateMin += d.m || 0; }
+    else if (d.k === "absent") t.absent++;
+    else if (d.k === "leave") t.leave++;
+    else if (d.k === "sick") t.sick++;
+    else if (d.k === "holiday") t.holiday++;
+  });
+  return t;
+}
+// For the evaluation form later: totals for one employee over a date range (YYYY-MM-DD inclusive).
+function attendanceSummary(empId, fromYMD, toYMD) {
+  const tot = { worked: 0, late: 0, lateMin: 0, absent: 0, leave: 0, sick: 0, holiday: 0 };
+  tsAtt.forEach(r => {
+    if (String(r.empId) !== String(empId)) return;
+    const part = {};
+    Object.entries(r.days).forEach(([dd, rec]) => { const ymd = `${r.month}-${dd}`; if (ymd >= fromYMD && ymd <= toYMD) part[dd] = rec; });
+    const t = attTotals(part); Object.keys(tot).forEach(k => { tot[k] += t[k]; });
+  });
+  return tot;
+}
+async function loadAttendanceLog() {
+  tsAtt = new Map();
+  if (!attListId || !(canAccessHR || isPermissionAdmin)) return;
+  try {
+    let url = `/sites/${siteId}/lists/${attListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields || {};
+        if (!f["EmployeeId"] || !f["Month"]) return;
+        let days = {}; try { days = JSON.parse(f["Days"] || "{}"); } catch (e) {}
+        tsAtt.set(`${f["EmployeeId"]}|${f["Month"]}`, { itemId: it.id, month: f["Month"], empId: String(f["EmployeeId"]), days, upd: f["UpdatedAt"] || "" });
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) { console.warn("Could not load HR Attendance Log (list may not exist yet):", e); tsAtt = new Map(); }
+}
+let attRunning = false, attLast = 0;
+async function runAttendanceHistory(interactive) {
+  if (!tsCanSync() || !attListId || attRunning) return;
+  const enabled = tsTeams.filter(t => t.enabled && t.teamId);
+  if (!enabled.length) return;
+  attRunning = true; attState.busy = true; attState.msg = "Reading Teams Shifts history…";
+  if (hrView && hrView.mode === "attendance") renderHRModal();
+  try {
+    const token = await tsToken(interactive);
+    const now = Date.now();
+    const today0 = new Date(); today0.setHours(0, 0, 0, 0);
+    const startMs = today0.getTime() - TS_HISTORY_DAYS * 86400000, endMs = today0.getTime() + 86400000;
+    const winFrom = new Date(startMs - 86400000).toISOString(), winTo = new Date(endMs + 86400000).toISOString();
+    const per = new Map();
+    const slot = id => { if (!per.has(id)) per.set(id, { shifts: [], timesOff: [], cards: [] }); return per.get(id); };
+    let next = 0, warn = [];
+    const readTeam = async t => {
+      const reasons = {};
+      try { (await tsList(token, `/teams/${t.teamId}/schedule/timeOffReasons`)).forEach(r => { reasons[r.id] = r.displayName || ""; }); } catch (e) { return; } // no schedule in this team
+      await Promise.all([
+        (async () => { try {
+          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`, false, 40)).forEach(x => { const sh = x.sharedShift; if (sh && x.userId) slot(x.userId).shifts.push({ s: Date.parse(sh.startDateTime), e: Date.parse(sh.endDateTime) }); });
+        } catch (e) { warn.push(`${t.name} shifts: ${e.message}`); } })(),
+        (async () => { try {
+          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`, false, 40)).forEach(x => { const sh = x.sharedTimeOff; if (sh && x.userId) slot(x.userId).timesOff.push({ s: Date.parse(sh.startDateTime), e: Date.parse(sh.endDateTime), reason: reasons[sh.timeOffReasonId] || "" }); });
+        } catch (e) { warn.push(`${t.name} time off: ${e.message}`); } })(),
+        (async () => { try {
+          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, `clockInEvent/dateTime ge ${winFrom}`, true, 60)).forEach(c => { const a = c.clockInEvent && Date.parse(c.clockInEvent.dateTime); if (c.userId && a && a >= startMs - 86400000) slot(c.userId).cards.push({ inMs: a, outMs: c.clockOutEvent ? Date.parse(c.clockOutEvent.dateTime) : 0 }); });
+        } catch (e) { warn.push(`${t.name} clock in/out: ${e.message}`); } })()
+      ]);
+    };
+    await Promise.all(Array.from({ length: Math.min(4, enabled.length) }, async () => { while (next < enabled.length) { await readTeam(enabled[next++]); } }));
+    // userId -> employee
+    const ids = [...per.keys()], empOf = new Map();
+    for (let i = 0; i < ids.length; i += 100) {
+      const r = await tsFetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
+      if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
+      ((await r.json()).value || []).forEach(u => { const mails = [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase()); empOf.set(u.id, employees.find(e => e.status !== "Resigned" && empEmails(e).some(m => mails.includes(m))) || null); });
+    }
+    const byEmp = new Map();
+    per.forEach((v, uid) => { const emp = empOf.get(uid); if (!emp) return; const a = byEmp.get(String(emp.id)) || { shifts: [], timesOff: [], cards: [] }; a.shifts.push(...v.shifts); a.timesOff.push(...v.timesOff); a.cards.push(...v.cards); byEmp.set(String(emp.id), a); });
+    // rebuild days
+    const fresh = new Map(); // `${emp}|${month}` -> days
+    for (const [empId, d] of byEmp) {
+      for (let ms = startMs; ms < endMs; ms += 86400000) {
+        const day = new Date(ms); day.setHours(0, 0, 0, 0);
+        const ds = day.getTime(), de = ds + 86400000;
+        const rec = tsDayRecord(ds, de, now, d.shifts, d.timesOff, d.cards, TS_GRACE_MIN);
+        if (!rec) continue;
+        const ymd = toLocalYMD(day), key = `${empId}|${ymd.slice(0, 7)}`;
+        if (!fresh.has(key)) fresh.set(key, {});
+        fresh.get(key)[ymd.slice(8)] = rec;
+      }
+    }
+    // merge into stored months: replace only the days inside the window, keep older days
+    const winFromYMD = toLocalYMD(new Date(startMs));
+    let wrote = 0;
+    const keys = new Set([...fresh.keys()]);
+    tsAtt.forEach((r, k) => { if (r.month >= winFromYMD.slice(0, 7)) keys.add(k); });
+    for (const key of keys) {
+      const [empId, month] = key.split("|");
+      if (!byEmp.has(empId) && !tsAtt.has(key)) continue;
+      const old = tsAtt.get(key);
+      const days = {};
+      if (old) Object.entries(old.days).forEach(([dd, rec]) => { if (`${month}-${dd}` < winFromYMD) days[dd] = rec; });
+      Object.entries(fresh.get(key) || {}).forEach(([dd, rec]) => { days[dd] = rec; });
+      const json = JSON.stringify(days);
+      if (old && JSON.stringify(old.days) === json) continue;
+      if (!Object.keys(days).length && !old) continue;
+      const emp = employees.find(e => String(e.id) === empId);
+      const t = attTotals(days);
+      const fields = { Title: `${empId}|${month}`, EmployeeId: empId, EmployeeName: emp ? emp.name : "", Month: month, WorkedDays: String(t.worked), LateCount: String(t.late), LateMin: String(t.lateMin), AbsentDays: String(t.absent), LeaveDays: String(t.leave), SickDays: String(t.sick), HolidayDays: String(t.holiday), Days: json, UpdatedAt: new Date(now).toISOString() };
+      const base = `/sites/${siteId}/lists/${attListId}/items`;
+      let id;
+      if (old) { await graphFetch(`${base}/${old.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); id = old.itemId; }
+      else { id = (await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) })).id; }
+      tsAtt.set(key, { itemId: id, month, empId, days, upd: fields.UpdatedAt }); wrote++;
+    }
+    attLast = now;
+    attState.msg = `✓ Recalculated last ${TS_HISTORY_DAYS} days · ${byEmp.size} employees · ${wrote} month record(s) updated${warn.length ? " — ⚠ " + warn.slice(0, 4).join("; ") : ""}`;
+  } catch (err) { attState.msg = "✗ " + err.message; }
+  attRunning = false; attState.busy = false;
+  if (hrView && hrView.mode === "attendance") renderHRModal();
+}
+function openAttendance() {
+  if (!(canAccessHR || isPermissionAdmin) || !attListId) { toast("Attendance log list not set up yet (see SETUP_TEAMS_SYNC.md).", "error"); return; }
+  if (!attState.month) attState.month = toLocalYMD(new Date()).slice(0, 7);
+  attState.empId = null;
+  hrView = { mode: "attendance" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function attShiftMonth(delta) {
+  const [y, m] = attState.month.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  attState.month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; attState.empId = null; renderHRModal();
+}
+function attPick(id) { attState.empId = attState.empId === String(id) ? null : String(id); renderHRModal(); }
+function renderAttendance(box) {
+  box.style.width = "min(980px, 96vw)";
+  const kindStyle = { present: ["Present", "var(--green)"], late: ["Late", "var(--yellow)"], absent: ["Absent", "var(--red, #ef4444)"], leave: ["Leave", "var(--accent)"], sick: ["Sick", "#b197fc"], holiday: ["Holiday", "var(--text2)"], rest: ["Rest", "var(--text3)"], pending: ["Pending", "var(--text3)"] };
+  const rows = employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)).map(e => {
+    const r = tsAtt.get(`${e.id}|${attState.month}`);
+    return r ? { e, r, t: attTotals(r.days) } : null;
+  }).filter(Boolean).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const num = (n, color) => `<td style="text-align:right; padding:6px 8px; ${n ? `color:${color}; font-weight:700;` : "color:var(--text3);"}">${n}</td>`;
+  const sel = attState.empId ? rows.find(x => String(x.e.id) === attState.empId) : null;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+      <div><h3 style="margin-bottom:2px;">Attendance (from Teams Shifts)</h3>
+        <div style="font-size:12px; color:var(--text2);">Late minutes = clock-in minus shift start${TS_GRACE_MIN ? ` (after ${TS_GRACE_MIN} min grace)` : ""}. Leave / sick filed later are picked up automatically when the last ${TS_HISTORY_DAYS} days are recalculated.</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="attShiftMonth(-1)">&#9664;</button>
+      <b style="font-size:14px;">${escapeHtml(attState.month)}</b>
+      <button class="btn btn-secondary btn-sm" onclick="attShiftMonth(1)">&#9654;</button>
+      ${tsCanSync() ? `<button class="btn btn-primary btn-sm" ${attState.busy ? "disabled" : ""} onclick="runAttendanceHistory(true)">${attState.busy ? "Recalculating…" : "&#8635; Recalculate last " + TS_HISTORY_DAYS + " days"}</button>` : ""}
+      <span style="font-size:11px; color:var(--text3);">${attState.msg ? escapeHtml(attState.msg) : ""}</span>
+    </div>
+    <div style="overflow-x:auto; max-height:56vh; overflow-y:auto;">
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
+      <thead><tr style="color:var(--text3); text-align:right; position:sticky; top:0; background:var(--surface);"><th style="text-align:left; padding:6px 8px;">Employee</th><th style="text-align:left;">Team</th><th>Worked</th><th>Late</th><th>Late min</th><th>Absent</th><th>Leave</th><th>Sick</th><th>Holiday</th></tr></thead>
+      <tbody>${rows.length ? rows.map(({ e, t }) => `<tr onclick="attPick('${e.id}')" style="cursor:pointer; border-top:1px solid var(--border); ${String(e.id) === attState.empId ? "background:var(--surface2);" : ""}">
+        <td style="padding:6px 8px; font-weight:600;">${escapeHtml(e.name)}</td><td style="color:var(--text2);">${escapeHtml(displayTeam(e))}</td>
+        ${num(t.worked, "var(--green)")}${num(t.late, "var(--yellow)")}${num(t.lateMin, "var(--yellow)")}${num(t.absent, "var(--red, #ef4444)")}${num(t.leave, "var(--accent)")}${num(t.sick, "#b197fc")}${num(t.holiday, "var(--text2)")}</tr>`).join("")
+        : `<tr><td colspan="9" style="padding:14px 8px; color:var(--text3);">No attendance data for this month yet.${tsCanSync() ? " Click “Recalculate”." : ""}</td></tr>`}</tbody>
+    </table></div>
+    ${sel ? `<div style="margin-top:12px; border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
+      <div style="font-size:13px; font-weight:700; margin-bottom:6px;">${escapeHtml(sel.e.name)} — daily</div>
+      <div style="display:flex; flex-direction:column; gap:4px; max-height:30vh; overflow-y:auto;">
+      ${Object.keys(sel.r.days).sort().map(dd => { const d = sel.r.days[dd], [lab, col] = kindStyle[d.k] || [d.k, "var(--text2)"];
+        return `<div style="display:grid; grid-template-columns:60px 80px 1fr 1fr; gap:8px; font-size:12px; align-items:center;"><span>${attState.month}-${dd}</span><b style="color:${col};">${lab}${d.k === "late" ? ` ${d.m}m` : ""}</b>
+          <span style="color:var(--text2);">shift ${escapeHtml(d.ss || "")}–${escapeHtml(d.se || "")}</span><span style="color:var(--text3);">${d.in ? `in ${escapeHtml(d.in)}${d.out ? ` · out ${escapeHtml(d.out)}` : ""}` : escapeHtml(d.r || "")}</span></div>`; }).join("")}
+      </div></div>` : ""}`;
+}
+
 function scheduleStatusLabel(status) {
   const colors = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" };
   return HOME_TEXT.statusLabels[status] ? { text: HOME_TEXT.statusLabels[status], color: colors[status] } : null;
@@ -14861,7 +15083,8 @@ function homeStatusPillHtml(text, color, soon, statusKey) {
 }
 function homeStatusLineHtml() {
   const tsBtn = tsCanSync() ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openTsSettings()" title="${tsNeedsConsent ? "Teams permission needed — click to authorize" : "Teams Shifts sync settings"}">&#8635; Teams sync${tsNeedsConsent ? " ⚠" : ""}</button>` : "";
-  return homeStatusLineCore() + tsBtn;
+  const attBtn = attListId && (canAccessHR || isPermissionAdmin) ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openAttendance()" title="Late / absent / leave / sick summary from Teams Shifts">&#128202; Attendance</button>` : "";
+  return homeStatusLineCore() + tsBtn + attBtn;
 }
 function homeStatusLineCore() {
   if (isHomeLeadership()) {
