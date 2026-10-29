@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-28-01";
+const BUILD_ID = "2026-10-29-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -542,6 +542,7 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
+  teamsSyncListDisplayName: "HR Teams Sync", // Teams Shifts → attendance status (optional), see SETUP_TEAMS_SYNC.md
   companyEventImagesLibraryName: "Company Event Images", // document library for event header images (optional)
   companyEventsListDisplayName: "HR Company Events", // Elite Company Events (Home → Elite News + calendar), see SETUP_COMPANY_EVENTS.md
   emergencyContactsListDisplayName: "HR Emergency Contacts", // editable emergency contact list on the Organization page, see SETUP_EMERGENCY_CONTACTS.md
@@ -1081,8 +1082,9 @@ async function startApp() {
     await resolveSiteAndLists();
     await loadColumns();
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), checkEditPermission()]);
     refreshAccessFlags();
+    tsStartAuto();
     autoEmploymentStatus().then(n => { if (n) { toast(`${n} employee status${n === 1 ? "" : "es"} updated automatically (probation rule)`, "success"); renderContent(); } }).catch(() => {});
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1167,6 +1169,8 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
+  const tsMatch = (lists.value || []).find(l => l.displayName === CONFIG.teamsSyncListDisplayName);
+  tsListId = tsMatch ? tsMatch.id : null;
   const ceiMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventImagesLibraryName);
   companyEventImagesListId = ceiMatch ? ceiMatch.id : null;
   const ceMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventsListDisplayName);
@@ -12555,6 +12559,7 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "tsSettings") { renderTsSettings(box); return; }
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
   if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
   if (hrView.mode === "ceForm") { renderCompanyEventForm(box); return; }
@@ -13382,7 +13387,7 @@ async function reloadData() {
       return;
     }
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
-    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), checkEditPermission()]);
+    await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
     autoEmploymentStatus().catch(() => {});
@@ -14547,11 +14552,16 @@ function greetingPart() { const h = new Date().getHours(); return h < 12 ? "morn
 // Each returns null/[] until its data exists; the Home page already renders whatever they return.
 // Own status: return "working" | "leave" | "sick" | "off".
 function myCurrentScheduleStatus() {
-  return null; // TODO: wire to work schedule + leave records once available
+  const me = myEmployeeRecord();
+  const r = me && tsListId && tsFresh() ? tsStatus.get(String(me.id)) : null;
+  return r && r.status ? r.status : null; // from the Teams Shifts sync (see tsComputeStatus)
 }
 // Company-wide headcount for HOC / Managing Director / CEO: return { working, leave, sick, off } (numbers).
 function companyScheduleCounts() {
-  return null; // TODO: wire to the schedule system
+  if (!tsListId || !tsFresh() || !tsStatus.size) return null;
+  const c = { working: 0, leave: 0, sick: 0, off: 0 };
+  employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)).forEach(e => { const r = tsStatus.get(String(e.id)); if (r && c[r.status] != null) c[r.status]++; });
+  return c;
 }
 // Number of meetings the signed-in person has today (null = unknown).
 function todaysMeetingCount() {
@@ -14561,6 +14571,220 @@ function todaysMeetingCount() {
 function upcomingCompanyEvents(days) {
   const today = toLocalYMD(new Date());
   return companyEvents.filter(e => ceDays(e) >= 0 && ceDays(e) <= days || ceOngoing(e)).map(e => ({ date: e.date < today ? today : e.date, title: e.title }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Teams Shifts → portal attendance status  (see SETUP_TEAMS_SYNC.md)
+// The permission admin (Teams owner of every Shifts team) reads Shifts with HIS OWN Microsoft sign-in:
+//   shifts + time off (v1.0) and time cards = clock in/out (beta) → one status per employee
+//   working / leave / sick / off  → written to the "HR Teams Sync" SharePoint list.
+// Everybody else just READS that list (nobody else needs Teams permissions). One list, all-text columns:
+//   RecordType "Team"   : Title = Teams team name, TeamId, Enabled "Yes"/"No"
+//   RecordType "Status" : Title = employee name, EmployeeId, Status, Detail, SyncedAt
+//   RecordType "Meta"   : Title "LastSync", SyncedAt
+// ═══════════════════════════════════════════════════════════════════════════
+const TS_SCOPES = ["Schedule.Read.All", "Team.ReadBasic.All", "User.ReadBasic.All"];
+const TS_STALE_MIN = 20;        // a status older than this is treated as unknown
+const TS_AUTO_SYNC_MIN = 5;     // while the admin has the portal open
+const TS_SCHEDULED_COUNTS_AS_WORKING = false; // true: being inside a shift counts as Working even without clocking in
+let tsListId = null;
+let tsTeams = [];                // [{ itemId, teamId, name, enabled }]
+let tsStatus = new Map();        // employeeId -> { itemId, status, detail }
+let tsMeta = { itemId: null, syncedAt: "" };
+let tsReport = [];               // last sync log lines
+let tsJoined = null;             // teams the admin belongs to (for the settings screen)
+let tsBusy = false, tsNeedsConsent = false, tsTimer = null;
+
+function tsCanSync() { return !!(isPermissionAdmin && tsListId); }
+async function loadTeamsSync() {
+  tsTeams = []; tsStatus = new Map(); tsMeta = { itemId: null, syncedAt: "" };
+  if (!tsListId) return;
+  try {
+    let url = `/sites/${siteId}/lists/${tsListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const f = it.fields || {};
+        if (f["RecordType"] === "Team") tsTeams.push({ itemId: it.id, teamId: f["TeamId"] || "", name: f["Title"] || "", enabled: f["Enabled"] === "Yes" });
+        else if (f["RecordType"] === "Status") tsStatus.set(String(f["EmployeeId"] || ""), { itemId: it.id, status: f["Status"] || "", detail: f["Detail"] || "" });
+        else if (f["RecordType"] === "Meta") tsMeta = { itemId: it.id, syncedAt: f["SyncedAt"] || "" };
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) { console.warn("Could not load HR Teams Sync (list may not exist yet):", e); tsTeams = []; tsStatus = new Map(); }
+}
+function tsFresh() { return !!tsMeta.syncedAt && (Date.now() - new Date(tsMeta.syncedAt).getTime()) < TS_STALE_MIN * 60000; }
+
+// Pure: one person's status from their (already merged) Shifts data. Times are ms since epoch.
+function tsComputeStatus(now, shifts, timesOff, cards, scheduledCountsAsWorking) {
+  const off = (timesOff || []).find(t => t.s <= now && now < t.e);
+  if (off) return { status: /sick|medical|illness|\bsl\b/i.test(off.reason || "") ? "sick" : "leave", detail: off.reason || "Time off" };
+  const card = (cards || []).find(c => c.state === "clockedIn" || c.state === "onBreak");
+  if (card) return { status: "working", detail: card.state === "onBreak" ? "On break" : "Clocked in" };
+  const sh = (shifts || []).find(x => x.s <= now && now < x.e);
+  if (sh) return scheduledCountsAsWorking ? { status: "working", detail: "On shift (not clocked in)" } : { status: "off", detail: "On shift — not clocked in" };
+  const next = (shifts || []).filter(x => x.s > now).sort((a, b) => a.s - b.s)[0];
+  return { status: "off", detail: next ? "Next shift " + new Date(next.s).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "No shift" };
+}
+
+async function tsToken(interactive) {
+  const account = msalInstance.getActiveAccount();
+  if (!account) throw new Error("Please sign in.");
+  try { return (await msalInstance.acquireTokenSilent({ scopes: TS_SCOPES, account })).accessToken; }
+  catch (e) {
+    if (!interactive) { tsNeedsConsent = true; throw new Error("Teams permission needed — open “Teams sync” and click Sync now."); }
+    return (await msalInstance.acquireTokenPopup({ scopes: TS_SCOPES, account })).accessToken;
+  }
+}
+async function tsGet(token, path, beta) {
+  const res = await fetch(`https://graph.microsoft.com/${beta ? "beta" : "v1.0"}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) { let d = ""; try { d = (await res.json()).error.message; } catch (e) {} throw new Error(`${res.status} ${d}`.trim()); }
+  return res.json();
+}
+async function tsList(token, path, beta, maxPages) {
+  let url = path, out = [], pages = 0;
+  while (url && pages < (maxPages || 30)) {
+    const d = url.startsWith("http") ? await (async () => { const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } }); if (!r.ok) throw new Error(String(r.status)); return r.json(); })() : await tsGet(token, url, beta);
+    out = out.concat(d.value || []);
+    url = d["@odata.nextLink"] || null; pages++;
+  }
+  return out;
+}
+async function tsListFiltered(token, base, filter, beta) {
+  try { return await tsList(token, `${base}?$filter=${encodeURIComponent(filter)}`, beta); }
+  catch (e) { return await tsList(token, base, beta); } // some endpoints reject $filter → read all, filter locally
+}
+async function tsRecord(fields, existingId) {
+  const base = `/sites/${siteId}/lists/${tsListId}/items`;
+  if (existingId) { await graphFetch(`${base}/${existingId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); return existingId; }
+  const c = await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) });
+  return c.id;
+}
+
+async function tsSetTeamEnabled(teamId, name, enabled) {
+  if (!tsCanSync()) return;
+  const ex = tsTeams.find(t => t.teamId === teamId);
+  setSyncing(true);
+  try {
+    const id = await tsRecord({ Title: name, RecordType: "Team", TeamId: teamId, Enabled: enabled ? "Yes" : "No" }, ex && ex.itemId);
+    if (ex) { ex.enabled = enabled; ex.name = name; } else tsTeams.push({ itemId: id, teamId, name, enabled });
+    setSyncing(false, true);
+  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
+  if (hrView && hrView.mode === "tsSettings") renderHRModal();
+}
+
+async function runTeamsSync(interactive) {
+  if (!tsCanSync() || tsBusy) return;
+  const enabled = tsTeams.filter(t => t.enabled && t.teamId);
+  if (!enabled.length) { tsReport = ["No Teams are switched on yet — pick them in “Teams sync”."]; return; }
+  tsBusy = true; tsReport = [];
+  if (hrView && hrView.mode === "tsSettings") renderHRModal();
+  try {
+    const token = await tsToken(interactive);
+    tsNeedsConsent = false;
+    const now = Date.now();
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    const winFrom = new Date(dayStart.getTime() - 86400000).toISOString(), winTo = new Date(dayStart.getTime() + 2 * 86400000).toISOString();
+    const per = new Map(); // userId -> { shifts, timesOff, cards }
+    const slot = id => { if (!per.has(id)) per.set(id, { shifts: [], timesOff: [], cards: [] }); return per.get(id); };
+    for (const t of enabled) {
+      const line = { name: t.name, shifts: 0, off: 0, cards: 0, warn: [] };
+      try {
+        const reasons = {};
+        try { (await tsList(token, `/teams/${t.teamId}/schedule/timeOffReasons`)).forEach(r => { reasons[r.id] = r.displayName || ""; }); } catch (e) { line.warn.push("reasons: " + e.message); }
+        try {
+          const shifts = await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`);
+          shifts.forEach(s => { const sh = s.sharedShift; if (!sh || !s.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(s.userId).shifts.push({ s: a, e: b }); line.shifts++; } });
+        } catch (e) { line.warn.push("shifts: " + e.message); }
+        try {
+          const offs = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`);
+          offs.forEach(o => { const sh = o.sharedTimeOff; if (!sh || !o.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(o.userId).timesOff.push({ s: a, e: b, reason: reasons[sh.timeOffReasonId] || "" }); line.off++; } });
+        } catch (e) { line.warn.push("time off: " + e.message); }
+        try {
+          const cards = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, "state eq 'clockedIn' or state eq 'onBreak'", true);
+          cards.forEach(c => { if (c.userId && (c.state === "clockedIn" || c.state === "onBreak")) { slot(c.userId).cards.push({ state: c.state }); line.cards++; } });
+        } catch (e) { line.warn.push("clock in/out: " + e.message); }
+      } catch (e) { line.warn.push(e.message); }
+      tsReport.push(`${line.name}: ${line.shifts} shifts · ${line.off} time off · ${line.cards} clocked in${line.warn.length ? " — ⚠ " + line.warn.join("; ") : ""}`);
+    }
+    // userId -> email
+    const ids = [...per.keys()], mailOf = new Map();
+    for (let i = 0; i < ids.length; i += 100) {
+      const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
+      if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
+      ((await r.json()).value || []).forEach(u => mailOf.set(u.id, [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase())));
+    }
+    const byEmp = new Map(); let unmatched = 0;
+    per.forEach((v, uid) => {
+      const mails = mailOf.get(uid) || [];
+      const emp = employees.find(e => e.status !== "Resigned" && empEmails(e).some(m => mails.includes(m)));
+      if (!emp) { unmatched++; return; }
+      const a = byEmp.get(String(emp.id)) || { shifts: [], timesOff: [], cards: [] };
+      a.shifts.push(...v.shifts); a.timesOff.push(...v.timesOff); a.cards.push(...v.cards); byEmp.set(String(emp.id), a);
+    });
+    let wrote = 0;
+    for (const [empId, d] of byEmp) {
+      const emp = employees.find(e => String(e.id) === empId);
+      const r = tsComputeStatus(now, d.shifts, d.timesOff, d.cards, TS_SCHEDULED_COUNTS_AS_WORKING);
+      const ex = tsStatus.get(empId);
+      if (ex && ex.status === r.status && ex.detail === r.detail) continue;
+      const id = await tsRecord({ Title: emp.name, RecordType: "Status", EmployeeId: empId, Status: r.status, Detail: r.detail, SyncedAt: new Date(now).toISOString() }, ex && ex.itemId);
+      tsStatus.set(empId, { itemId: id, status: r.status, detail: r.detail }); wrote++;
+    }
+    for (const [empId, ex] of [...tsStatus]) { // no longer in any switched-on team → drop the stale record
+      if (!byEmp.has(empId)) { try { await graphFetch(`/sites/${siteId}/lists/${tsListId}/items/${ex.itemId}`, { method: "DELETE" }); } catch (e) {} tsStatus.delete(empId); }
+    }
+    const stamp = new Date(now).toISOString();
+    tsMeta.itemId = await tsRecord({ Title: "LastSync", RecordType: "Meta", SyncedAt: stamp }, tsMeta.itemId); tsMeta.syncedAt = stamp;
+    tsReport.push(`✓ ${byEmp.size} employees matched · ${wrote} updated${unmatched ? ` · ${unmatched} Teams user(s) not in the employee list (email mismatch?)` : ""}`);
+  } catch (err) { tsReport.push("✗ " + err.message); }
+  tsBusy = false;
+  if (hrView && hrView.mode === "tsSettings") renderHRModal();
+  if (activeTab === "Welcome" && !hrView) { try { renderContent(); } catch (e) {} }
+}
+function tsStartAuto() {
+  if (!tsCanSync() || tsTimer) return;
+  if (!tsTeams.some(t => t.enabled)) return;
+  runTeamsSync(false);
+  tsTimer = setInterval(() => runTeamsSync(false), TS_AUTO_SYNC_MIN * 60000);
+}
+
+async function openTsSettings() {
+  if (!tsCanSync()) return;
+  hrView = { mode: "tsSettings" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  if (!tsJoined) {
+    try { tsJoined = (await tsList(await tsToken(true), "/me/joinedTeams?$select=id,displayName")).map(t => ({ id: t.id, name: t.displayName })).sort((a, b) => a.name.localeCompare(b.name)); }
+    catch (e) { tsReport = ["✗ Could not list your Teams: " + e.message]; tsJoined = []; }
+    if (hrView && hrView.mode === "tsSettings") renderHRModal();
+  }
+}
+function renderTsSettings(box) {
+  box.style.width = "min(680px, 94vw)";
+  const known = new Map();
+  (tsJoined || []).forEach(t => known.set(t.id, { id: t.id, name: t.name, joined: true }));
+  tsTeams.forEach(t => { if (!known.has(t.teamId)) known.set(t.teamId, { id: t.teamId, name: t.name, joined: false }); });
+  const rows = [...known.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const on = id => { const t = tsTeams.find(x => x.teamId === id); return !!(t && t.enabled); };
+  const nOn = rows.filter(r => on(r.id)).length;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
+      <div><h3 style="margin-bottom:2px;">Teams Shifts sync</h3>
+        <div style="font-size:12px; color:var(--text2);">Switch on the Teams that use Shifts. Attendance (clock in/out), schedules and time off are read with your Microsoft account and shared with the portal.</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" ${tsBusy ? "disabled" : ""} onclick="runTeamsSync(true)">${tsBusy ? "Syncing…" : "&#8635; Sync now"}</button>
+      <span style="font-size:12px; color:var(--text2);">${nOn} team${nOn === 1 ? "" : "s"} on · last sync: ${tsMeta.syncedAt ? escapeHtml(new Date(tsMeta.syncedAt).toLocaleString()) : "never"} · auto every ${TS_AUTO_SYNC_MIN} min while this page is open</span>
+    </div>
+    ${tsReport.length ? `<div style="font-size:12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px; margin-bottom:10px; white-space:pre-wrap; line-height:1.6;">${tsReport.map(escapeHtml).join("\n")}</div>` : ""}
+    ${tsJoined === null ? `<div style="font-size:12px; color:var(--text3);">Loading your Teams…</div>` : `<div style="display:flex; flex-direction:column; gap:4px; max-height:46vh; overflow-y:auto;">
+      ${rows.map(r => `<label style="display:flex; align-items:center; gap:10px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; cursor:pointer; background:${on(r.id) ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "var(--surface)"};">
+        <input type="checkbox" ${on(r.id) ? "checked" : ""} onchange="tsSetTeamEnabled('${escapeAttr(r.id)}', '${jsAttrEscape(r.name)}', this.checked)" />
+        <span style="font-size:13px; flex:1;">${escapeHtml(r.name)}</span>
+        ${r.joined ? "" : `<span style="font-size:11px; color:var(--text3);">not a member now</span>`}</label>`).join("") || `<div style="font-size:12px; color:var(--text3);">You are not a member of any Teams team.</div>`}
+    </div>`}`;
 }
 
 function scheduleStatusLabel(status) {
@@ -14579,6 +14803,10 @@ function homeStatusPillHtml(text, color, soon) {
   return `<span style="display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:${color}; border:1px solid ${color}; ${soon ? "opacity:.75; font-style:italic;" : ""}">${escapeHtml(text)}</span>`;
 }
 function homeStatusLineHtml() {
+  const tsBtn = tsCanSync() ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openTsSettings()" title="${tsNeedsConsent ? "Teams permission needed — click to authorize" : "Teams Shifts sync settings"}">&#8635; Teams sync${tsNeedsConsent ? " ⚠" : ""}</button>` : "";
+  return homeStatusLineCore() + tsBtn;
+}
+function homeStatusLineCore() {
   if (isHomeLeadership()) {
     const counts = companyScheduleCounts();
     const order = ["working", "leave", "sick", "off"];
