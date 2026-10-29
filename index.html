@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-29-01";
+const BUILD_ID = "2026-10-29-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14593,7 +14593,7 @@ let tsStatus = new Map();        // employeeId -> { itemId, status, detail }
 let tsMeta = { itemId: null, syncedAt: "" };
 let tsReport = [];               // last sync log lines
 let tsJoined = null;             // teams the admin belongs to (for the settings screen)
-let tsBusy = false, tsNeedsConsent = false, tsTimer = null;
+let tsBusy = false, tsNeedsConsent = false, tsTimer = null, tsProgress = null;
 
 function tsCanSync() { return !!(isPermissionAdmin && tsListId); }
 async function loadTeamsSync() {
@@ -14636,15 +14636,22 @@ async function tsToken(interactive) {
     return (await msalInstance.acquireTokenPopup({ scopes: TS_SCOPES, account })).accessToken;
   }
 }
+// fetch with a timeout so one slow Graph call can never leave the sync hanging
+async function tsFetch(url, opts) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);
+  try { return await fetch(url, { ...(opts || {}), signal: ctl.signal }); }
+  catch (e) { throw new Error(e && e.name === "AbortError" ? "timed out (25s)" : (e.message || "network error")); }
+  finally { clearTimeout(timer); }
+}
 async function tsGet(token, path, beta) {
-  const res = await fetch(`https://graph.microsoft.com/${beta ? "beta" : "v1.0"}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await tsFetch(`https://graph.microsoft.com/${beta ? "beta" : "v1.0"}${path}`, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) { let d = ""; try { d = (await res.json()).error.message; } catch (e) {} throw new Error(`${res.status} ${d}`.trim()); }
   return res.json();
 }
 async function tsList(token, path, beta, maxPages) {
   let url = path, out = [], pages = 0;
-  while (url && pages < (maxPages || 30)) {
-    const d = url.startsWith("http") ? await (async () => { const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } }); if (!r.ok) throw new Error(String(r.status)); return r.json(); })() : await tsGet(token, url, beta);
+  while (url && pages < (maxPages || 10)) {
+    const d = url.startsWith("http") ? await (async () => { const r = await tsFetch(url, { headers: { Authorization: `Bearer ${token}` } }); if (!r.ok) throw new Error(String(r.status)); return r.json(); })() : await tsGet(token, url, beta);
     out = out.concat(d.value || []);
     url = d["@odata.nextLink"] || null; pages++;
   }
@@ -14687,30 +14694,46 @@ async function runTeamsSync(interactive) {
     const winFrom = new Date(dayStart.getTime() - 86400000).toISOString(), winTo = new Date(dayStart.getTime() + 2 * 86400000).toISOString();
     const per = new Map(); // userId -> { shifts, timesOff, cards }
     const slot = id => { if (!per.has(id)) per.set(id, { shifts: [], timesOff: [], cards: [] }); return per.get(id); };
-    for (const t of enabled) {
+    let done = 0;
+    tsProgress = { done: 0, total: enabled.length };
+    const lines = new Array(enabled.length);
+    const readTeam = async (t, idx) => {
       const line = { name: t.name, shifts: 0, off: 0, cards: 0, warn: [] };
       try {
         const reasons = {};
         try { (await tsList(token, `/teams/${t.teamId}/schedule/timeOffReasons`)).forEach(r => { reasons[r.id] = r.displayName || ""; }); } catch (e) { line.warn.push("reasons: " + e.message); }
-        try {
-          const shifts = await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`);
-          shifts.forEach(s => { const sh = s.sharedShift; if (!sh || !s.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(s.userId).shifts.push({ s: a, e: b }); line.shifts++; } });
-        } catch (e) { line.warn.push("shifts: " + e.message); }
-        try {
-          const offs = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`);
-          offs.forEach(o => { const sh = o.sharedTimeOff; if (!sh || !o.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(o.userId).timesOff.push({ s: a, e: b, reason: reasons[sh.timeOffReasonId] || "" }); line.off++; } });
-        } catch (e) { line.warn.push("time off: " + e.message); }
-        try {
-          const cards = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, "state eq 'clockedIn' or state eq 'onBreak'", true);
-          cards.forEach(c => { if (c.userId && (c.state === "clockedIn" || c.state === "onBreak")) { slot(c.userId).cards.push({ state: c.state }); line.cards++; } });
-        } catch (e) { line.warn.push("clock in/out: " + e.message); }
+        await Promise.all([
+          (async () => {
+            try {
+              const shifts = await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`);
+              shifts.forEach(s => { const sh = s.sharedShift; if (!sh || !s.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(s.userId).shifts.push({ s: a, e: b }); line.shifts++; } });
+            } catch (e) { line.warn.push("shifts: " + e.message); }
+          })(),
+          (async () => {
+            try {
+              const offs = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`);
+              offs.forEach(o => { const sh = o.sharedTimeOff; if (!sh || !o.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(o.userId).timesOff.push({ s: a, e: b, reason: reasons[sh.timeOffReasonId] || "" }); line.off++; } });
+            } catch (e) { line.warn.push("time off: " + e.message); }
+          })(),
+          (async () => {
+            try {
+              const cards = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, "state eq 'clockedIn' or state eq 'onBreak'", true);
+              cards.forEach(c => { if (c.userId && (c.state === "clockedIn" || c.state === "onBreak")) { slot(c.userId).cards.push({ state: c.state }); line.cards++; } });
+            } catch (e) { line.warn.push("clock in/out: " + e.message); }
+          })()
+        ]);
       } catch (e) { line.warn.push(e.message); }
-      tsReport.push(`${line.name}: ${line.shifts} shifts · ${line.off} time off · ${line.cards} clocked in${line.warn.length ? " — ⚠ " + line.warn.join("; ") : ""}`);
-    }
+      lines[idx] = `${line.name}: ${line.shifts} shifts · ${line.off} time off · ${line.cards} clocked in${line.warn.length ? " — ⚠ " + line.warn.join("; ") : ""}`;
+      done++; tsProgress.done = done;
+      if (hrView && hrView.mode === "tsSettings") renderHRModal();
+    };
+    let next = 0; // small worker pool: 4 teams at a time
+    await Promise.all(Array.from({ length: Math.min(4, enabled.length) }, async () => { while (next < enabled.length) { const i = next++; await readTeam(enabled[i], i); } }));
+    tsReport.push(...lines);
     // userId -> email
     const ids = [...per.keys()], mailOf = new Map();
     for (let i = 0; i < ids.length; i += 100) {
-      const r = await fetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
+      const r = await tsFetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
       if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
       ((await r.json()).value || []).forEach(u => mailOf.set(u.id, [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase())));
     }
@@ -14775,7 +14798,7 @@ function renderTsSettings(box) {
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     <div style="display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;">
-      <button class="btn btn-primary btn-sm" ${tsBusy ? "disabled" : ""} onclick="runTeamsSync(true)">${tsBusy ? "Syncing…" : "&#8635; Sync now"}</button>
+      <button class="btn btn-primary btn-sm" ${tsBusy ? "disabled" : ""} onclick="runTeamsSync(true)">${tsBusy ? `Syncing${tsProgress ? ` ${tsProgress.done}/${tsProgress.total}` : ""}…` : "&#8635; Sync now"}</button>
       <span style="font-size:12px; color:var(--text2);">${nOn} team${nOn === 1 ? "" : "s"} on · last sync: ${tsMeta.syncedAt ? escapeHtml(new Date(tsMeta.syncedAt).toLocaleString()) : "never"} · auto every ${TS_AUTO_SYNC_MIN} min while this page is open</span>
     </div>
     ${tsReport.length ? `<div style="font-size:12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px; margin-bottom:10px; white-space:pre-wrap; line-height:1.6;">${tsReport.map(escapeHtml).join("\n")}</div>` : ""}
