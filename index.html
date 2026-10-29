@@ -505,7 +505,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-29-02";
+const BUILD_ID = "2026-10-29-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12560,6 +12560,7 @@ function renderHRModal() {
   }
 
   if (hrView.mode === "tsSettings") { renderTsSettings(box); return; }
+  if (hrView.mode === "tsList") { renderTsStatusList(box); return; }
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
   if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
   if (hrView.mode === "ceForm") { renderCompanyEventForm(box); return; }
@@ -14731,17 +14732,17 @@ async function runTeamsSync(interactive) {
     await Promise.all(Array.from({ length: Math.min(4, enabled.length) }, async () => { while (next < enabled.length) { const i = next++; await readTeam(enabled[i], i); } }));
     tsReport.push(...lines);
     // userId -> email
-    const ids = [...per.keys()], mailOf = new Map();
+    const ids = [...per.keys()], mailOf = new Map(), infoOf = new Map();
     for (let i = 0; i < ids.length; i += 100) {
       const r = await tsFetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
       if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
-      ((await r.json()).value || []).forEach(u => mailOf.set(u.id, [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase())));
+      ((await r.json()).value || []).forEach(u => { mailOf.set(u.id, [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase())); infoOf.set(u.id, { name: u.displayName || "", mail: u.mail || u.userPrincipalName || "", guest: u.userType === "Guest" || /#ext#/i.test(u.userPrincipalName || "") }); });
     }
-    const byEmp = new Map(); let unmatched = 0;
+    const byEmp = new Map(); let unmatched = 0, guests = 0; const unmatchedList = [];
     per.forEach((v, uid) => {
       const mails = mailOf.get(uid) || [];
       const emp = employees.find(e => e.status !== "Resigned" && empEmails(e).some(m => mails.includes(m)));
-      if (!emp) { unmatched++; return; }
+      if (!emp) { const inf = infoOf.get(uid) || {}; if (inf.guest) guests++; else { unmatched++; unmatchedList.push(`${inf.name || uid} <${inf.mail || "?"}>`); } return; }
       const a = byEmp.get(String(emp.id)) || { shifts: [], timesOff: [], cards: [] };
       a.shifts.push(...v.shifts); a.timesOff.push(...v.timesOff); a.cards.push(...v.cards); byEmp.set(String(emp.id), a);
     });
@@ -14759,7 +14760,8 @@ async function runTeamsSync(interactive) {
     }
     const stamp = new Date(now).toISOString();
     tsMeta.itemId = await tsRecord({ Title: "LastSync", RecordType: "Meta", SyncedAt: stamp }, tsMeta.itemId); tsMeta.syncedAt = stamp;
-    tsReport.push(`✓ ${byEmp.size} employees matched · ${wrote} updated${unmatched ? ` · ${unmatched} Teams user(s) not in the employee list (email mismatch?)` : ""}`);
+    tsReport.push(`✓ ${byEmp.size} employees matched · ${wrote} updated${guests ? ` · ${guests} guest/external user(s) ignored` : ""}${unmatched ? ` · ${unmatched} Teams user(s) not in the employee list` : ""}`);
+    if (unmatchedList.length) tsReport.push("Not matched (check their Email / TeamsEmail in HR Employees, or they may be former staff): " + unmatchedList.sort().join(", "));
   } catch (err) { tsReport.push("✗ " + err.message); }
   tsBusy = false;
   if (hrView && hrView.mode === "tsSettings") renderHRModal();
@@ -14772,6 +14774,37 @@ function tsStartAuto() {
   tsTimer = setInterval(() => runTeamsSync(false), TS_AUTO_SYNC_MIN * 60000);
 }
 
+// Who is in each status (opened from the Home counters): name, team, and the reason / detail.
+function openTsStatusList(key) {
+  if (!tsListId || !tsFresh()) return;
+  hrView = { mode: "tsList", key };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderTsStatusList(box) {
+  box.style.width = "min(640px, 94vw)";
+  const key = hrView.key;
+  const rows = employees.filter(e => e.status !== "Resigned" && !isCeoRec(e))
+    .map(e => ({ e, r: tsStatus.get(String(e.id)) })).filter(x => x.r && x.r.status === key)
+    .sort((a, b) => String(a.r.detail).localeCompare(String(b.r.detail)) || a.e.name.localeCompare(b.e.name));
+  const title = { working: "Working now", leave: "On leave", sick: "On sick leave", off: "Outside working hours" }[key] || key;
+  const color = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" }[key];
+  const where = e => displayCluster(e) ? `${displayTeam(e)} · ${displayCluster(e)}` : displayTeam(e);
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+      <div><h3 style="margin-bottom:2px; color:${color};">${escapeHtml(title)} <span style="color:var(--text3); font-weight:400;">· ${rows.length}</span></h3>
+        <div style="font-size:11px; color:var(--text3);">From Teams Shifts · last sync ${tsMeta.syncedAt ? escapeHtml(new Date(tsMeta.syncedAt).toLocaleTimeString()) : "—"}</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-top:12px; max-height:60vh; overflow-y:auto;">
+      ${rows.length ? rows.map(({ e, r }) => `<div style="display:flex; align-items:center; gap:10px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px;">
+        ${avatarHtml(e, 30, 11)}
+        <div style="flex:1; min-width:0;"><div style="font-size:13px; font-weight:600;">${escapeHtml(e.name)}</div>
+          <div style="font-size:11px; color:var(--text2);">${escapeHtml(where(e))} — ${escapeHtml(e.position || "—")}</div></div>
+        <span style="font-size:12px; font-weight:600; color:${color}; text-align:right; max-width:45%;">${escapeHtml(r.detail || "")}</span>
+      </div>`).join("") : `<div style="font-size:12px; color:var(--text3); padding:8px 0;">Nobody right now.</div>`}
+    </div>`;
+}
 async function openTsSettings() {
   if (!tsCanSync()) return;
   hrView = { mode: "tsSettings" };
@@ -14822,8 +14855,9 @@ function isHomeLeadership() {
   const name = String(me.name || "").trim().toLowerCase();
   return [ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === name);
 }
-function homeStatusPillHtml(text, color, soon) {
-  return `<span style="display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:${color}; border:1px solid ${color}; ${soon ? "opacity:.75; font-style:italic;" : ""}">${escapeHtml(text)}</span>`;
+function homeStatusPillHtml(text, color, soon, statusKey) {
+  const click = statusKey ? ` onclick="openTsStatusList('${statusKey}')" title="Click to see who" ` : "";
+  return `<span ${click} style="${statusKey ? "cursor:pointer; " : ""}display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:${color}; border:1px solid ${color}; ${soon ? "opacity:.75; font-style:italic;" : ""}">${escapeHtml(text)}</span>`;
 }
 function homeStatusLineHtml() {
   const tsBtn = tsCanSync() ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openTsSettings()" title="${tsNeedsConsent ? "Teams permission needed — click to authorize" : "Teams Shifts sync settings"}">&#8635; Teams sync${tsNeedsConsent ? " ⚠" : ""}</button>` : "";
@@ -14836,7 +14870,7 @@ function homeStatusLineCore() {
     const colors = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" };
     return `<span style="font-size:13.5px; color:var(--text2);">Right now,</span> ${order.map(k => {
       const n = counts && counts[k] != null ? counts[k] : "—";
-      return homeStatusPillHtml(`${n} ${HOME_TEXT.countLabels[k]}`, colors[k], !counts);
+      return homeStatusPillHtml(`${n} ${HOME_TEXT.countLabels[k]}`, colors[k], !counts, counts ? k : "");
     }).join(" ")}${counts ? "" : ` <span style="font-size:11.5px; color:var(--text3);">${escapeHtml(HOME_TEXT.countsSoon)}</span>`}`;
   }
   const st = scheduleStatusLabel(myCurrentScheduleStatus());
