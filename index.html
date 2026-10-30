@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-02";
+const BUILD_ID = "2026-10-30-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -16207,7 +16207,7 @@ function renderOrgChart() {
 
   return `
   <div class="welcome-card" style="position:relative;">
-    <div class="welcome-card-header"><h2>Company Organization</h2></div>
+    <div class="welcome-card-header"><h2>Company Organization</h2>${(canAccessHR && employeesListId) ? `<button class="btn btn-primary btn-sm" onclick="openDirectory()" title="All employees in one sortable table (HR only)" style="margin-left:auto;">&#128101; Employee Directory</button>` : ""}</div>
     <p style="color:var(--text3); font-size:12px; margin-top:6px;">Click a team box to jump straight to its documents.</p>
     ${addEmployeeIcon}
     <div class="org-tree-wrap">
