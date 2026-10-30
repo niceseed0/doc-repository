@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-04";
+const BUILD_ID = "2026-10-30-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12636,11 +12636,11 @@ function dirExportCsv() {
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 function renderDirectory(box) {
-  box.style.width = "min(1180px, 96vw)";
+  box.style.width = "min(1700px, 98vw)"; box.style.padding = "20px 22px";
   const st = dirState, uniq = f => [...new Set(employees.map(f).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const sel = (key, all, vals) => `<select onchange="dirSet('${key}', this.value)" style="width:auto;"><option value="">${all}</option>${vals.map(v => `<option value="${escapeHtml(v)}" ${st[key] === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}</select>`;
   box.innerHTML = `
-    <style>.dir-wrap{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:58vh}.dir-wrap table{border-collapse:collapse;width:100%;min-width:900px}.dir-wrap th,.dir-wrap td{padding:7px 11px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--border);font-size:13px}.dir-th{position:sticky;top:0;background:var(--surface2);cursor:pointer;user-select:none;font-size:11.5px!important;text-transform:uppercase;letter-spacing:.03em;color:var(--text2)}.dir-bar input,.dir-bar select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px}.dir-num{text-align:right!important;font-variant-numeric:tabular-nums}.dir-wrap tbody tr:hover{background:rgba(255,255,255,.04)}</style>
+    <style>.dir-wrap{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:68vh}.dir-wrap table{border-collapse:collapse;width:100%;min-width:1000px}.dir-wrap th,.dir-wrap td{padding:7px 11px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--border);font-size:13px}.dir-th{position:sticky;top:0;background:var(--surface2);cursor:pointer;user-select:none;font-size:11.5px!important;text-transform:uppercase;letter-spacing:.03em;color:var(--text2)}.dir-bar input,.dir-bar select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px}.dir-num{text-align:right!important;font-variant-numeric:tabular-nums}.dir-wrap tbody tr:hover{background:rgba(255,255,255,.04)}</style>
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
       <div><h3 style="margin-bottom:2px;">Employee Directory</h3><div style="font-size:12px; color:var(--text2);">Click a column heading to sort (&#9650; low to high, click again &#9660; high to low). Click a name to open the HR page.</div></div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
@@ -12664,6 +12664,7 @@ function renderDirectory(box) {
 function renderHRModal() {
   const box = document.getElementById("hrModalInner");
   if (!hrView) { box.innerHTML = ""; return; }
+  box.style.padding = ""; // directory view tightens it
   box.style.width = "min(560px, 92vw)"; // default; the cluster team org-chart view below widens this
   if (hrView.mode === "ceDetail" || hrView.mode === "ceForm") box.style.width = "min(860px, 94vw)"; // wide enough for event banners
 
