@@ -93,17 +93,17 @@
 const CHAPTERS = [
 { id: 1, title: "Fundamentals of Testing", minutes: 180,
   intro: "The vocabulary and mindset of testing: what testing is for, how it differs from debugging and QA, the seven principles, the test process and the skills a tester needs.",
-  lo: [["1.1.1","K1","Identify typical test objectives"],["1.1.2","K2","Differentiate testing from debugging"],["1.2.1","K2","Exemplify why testing is necessary"],["1.2.2","K1","Recall the relation between testing and quality assurance"],["1.2.3","K2","Distinguish between root cause, error, defect and failure"],["1.3.1","K2","Explain the seven testing principles"],["1.4.1","K2","Summarize the different test activities and tasks"],["1.4.2","K2","Explain the impact of context on the test process"],["1.4.3","K2","Differentiate the testware that supports the test activities"],["1.4.4","K2","Explain the value of maintaining traceability"],["1.4.5","K2","Compare the different roles in testing"],["1.5.1","K2","Give examples of the generic skills required for testing"],["1.5.2","K1","Recall the advantages of the whole team approach"],["1.5.3","K2","Distinguish the benefits and drawbacks of independence of testing"]],
+  lo: [["1.1.1","K1","Identify typical test objectives"],["1.1.2","K2","Differentiate testing from debugging"],["1.2.1","K2","Exemplify why testing is necessary"],["1.2.2","K1","Recall the relation between testing and quality assurance"],["1.2.3","K2","Distinguish between root cause, error, defect and failure"],["1.3.1","K2","Explain the seven testing principles"],["1.4.1","K2","Explain the different test activities and related tasks"],["1.4.2","K2","Explain the impact of context on the test process"],["1.4.3","K2","Differentiate the testware that supports the test activities"],["1.4.4","K2","Explain the value of maintaining traceability"],["1.4.5","K2","Compare the different roles in testing"],["1.5.1","K2","Give examples of the generic skills required for testing"],["1.5.2","K1","Recall the advantages of the whole team approach"],["1.5.3","K2","Distinguish the benefits and drawbacks of independence of testing"]],
   sections: [
    { t: "1.1 What is testing?", p: [
-     "Testing is a set of activities to <b>discover defects</b> and <b>evaluate the quality</b> of software artifacts (the <b>test objects</b>). It is more than running tests: it also includes planning, analysis, design, monitoring and completion.",
+     "Testing is a set of activities to <b>discover defects</b> and <b>evaluate the quality</b> of software work products (the <b>test objects</b>). It is more than running tests: it also includes planning, analysis, design, monitoring and completion.",
      "<b>Verification</b> = does the system meet the specified requirements? <b>Validation</b> = does it meet users' and stakeholders' needs in its real environment?",
      "<b>Dynamic testing</b> executes the software; <b>static testing</b> does not (reviews, static analysis).",
      "Typical objectives: evaluate work products, trigger failures and find defects, ensure coverage, reduce risk, verify requirements, verify compliance (contract/legal/regulatory), give information for decisions, build confidence, validate that the object works as stakeholders expect.",
-     "<b>Testing vs debugging:</b> testing triggers failures (dynamic) or finds defects directly (static). Debugging finds the cause of a failure, analyses it and removes it: reproduce → diagnose → fix. Confirmation testing then checks the fix; regression testing checks for side effects."]},
+     "<b>Testing vs debugging:</b> testing triggers failures (dynamic) or finds defects directly (static). Debugging finds the cause of a failure, analyses it and removes it: reproduce the failure → diagnose (find the defect) → fix the defect. Confirmation testing then checks the fix; regression testing checks for side effects."]},
    { t: "1.2 Why is testing necessary?", p: [
      "Testing is a cost-effective way to find defects early, to evaluate quality at each stage (supporting release decisions), to represent users' interests, and to meet contractual, legal or regulatory needs.",
-     "<b>Testing = quality control (QC)</b>: product-oriented, corrective. <b>QA</b> is process-oriented and preventive: follow and improve good processes so good products result. QA is everyone's responsibility.",
+     "<b>Testing is product-oriented and corrective</b> (v4.0.1 no longer calls it &ldquo;a form of QC&rdquo;). <b>QA</b> is process-oriented and preventive: follow and improve good processes so good products result. QA is everyone's responsibility. Test results are used by both QA and testing.",
      "<b>Error → defect → failure.</b> A person makes an <i>error</i> (mistake); it creates a <i>defect</i> (fault, bug) in a work product; executing the defect may cause a <i>failure</i> (the observable wrong behaviour). Not every defect causes a failure, and failures can also come from the environment (e.g. radiation).",
      "<b>Root cause</b> = the fundamental reason a problem occurred (e.g. time pressure, unclear requirement). Root cause analysis helps prevent similar defects."]},
    { t: "1.3 The seven testing principles", table: [["#","Principle","In one line"],
@@ -125,20 +125,20 @@ const CHAPTERS = [
      "<b>Whole-team approach</b> (from XP): any member with the right skills can do any task and everyone is responsible for quality. It improves communication and synergy, but may not suit contexts needing high independence (e.g. safety-critical).",
      "<b>Independence of testing:</b> author (none) → peers in the team (some) → testers outside the team (high) → outside the organisation (very high). Benefit: different biases find different defects. Drawbacks: isolation, communication problems, developers may feel less responsible, testers seen as bottleneck."]}
   ],
-  terms: ["coverage","debugging","defect","error","failure","quality assurance","root cause","test analysis","test basis","test case","test completion","test condition","test control","test data","test design","test execution","test implementation","test monitoring","test object","test objective","test planning","test procedure","testware","validation","verification"],
+  terms: ["coverage","debugging","defect","error","failure","quality assurance","root cause","test analysis","test basis","test case","test completion","test condition","test control","test data","test design","test execution","test implementation","test monitoring","test object","test objective","test planning","test procedure","test process","test result","testware","traceability","validation","verification"],
   tips: ["Know the order and purpose of the test activities and which work products each one produces.","Be able to tell error / defect / failure / root cause apart in a short scenario.","For each of the seven principles, expect a scenario that illustrates it."] },
 
 { id: 2, title: "Testing Throughout the Software Development Lifecycle", minutes: 130,
   intro: "How the SDLC changes testing, the five test levels, the four test types, confirmation vs regression testing and maintenance testing.",
-  lo: [["2.1.1","K2","Explain the impact of the chosen SDLC on testing"],["2.1.2","K1","Recall good testing practices that apply to all SDLCs"],["2.1.3","K1","Recall examples of test-first approaches to development"],["2.1.4","K2","Summarize how DevOps might have an impact on testing"],["2.1.5","K2","Explain the shift-left approach"],["2.1.6","K2","Explain how retrospectives can be used for process improvement"],["2.2.1","K2","Distinguish the different test levels"],["2.2.2","K2","Distinguish the different test types"],["2.2.3","K2","Distinguish confirmation testing from regression testing"],["2.3.1","K2","Summarize maintenance testing and its triggers"]],
+  lo: [["2.1.1","K2","Explain the impact of the chosen SDLC on testing"],["2.1.2","K1","Recall good testing practices that apply to all SDLCs"],["2.1.3","K1","Recall examples of test-first approaches to development"],["2.1.4","K2","Summarize how DevOps might have an impact on testing"],["2.1.5","K2","Explain shift left"],["2.1.6","K2","Explain how retrospectives can be used for process improvement"],["2.2.1","K2","Distinguish the different test levels"],["2.2.2","K2","Distinguish the different test types"],["2.2.3","K2","Distinguish confirmation testing from regression testing"],["2.3.1","K2","Summarize maintenance testing and its triggers"]],
   sections: [
    { t: "2.1 Testing in the context of an SDLC", p: [
      "The SDLC influences: scope and timing of test activities, level of test documentation detail, techniques and approach, extent of automation, and the tester's role.",
      "<b>Sequential</b> (waterfall, V-model): testers review requirements and design tests early, but dynamic testing waits for code. <b>Iterative/incremental</b>: static and dynamic testing at all levels in each iteration; needs fast feedback and a lot of regression testing. <b>Agile</b>: lightweight documentation, heavy automation for regression, manual testing mostly experience-based.",
      "<b>Good practices for any SDLC:</b> every development activity has a matching test activity; each test level has its own objectives; test analysis/design starts during the matching development phase; testers review drafts as soon as they exist.",
      "<b>Test-first approaches:</b> <b>TDD</b> – write a failing test, write code to pass it, refactor. <b>ATDD</b> – tests derived from acceptance criteria before development. <b>BDD</b> – behaviour in natural language (Given/When/Then) that is turned into executable tests.",
-     "<b>DevOps</b> joins development, testing and operations around CI/CD pipelines. Benefits: fast feedback, shift-left, stable automated environments, more attention to non-functional qualities, less repetitive manual testing. Challenges: the pipeline and tools must be built and maintained; automation needs effort; manual testing from the user's view is still needed.",
-     "<b>Shift-left</b> = test earlier: review specifications, write tests before code, use CI/CD, run static analysis before dynamic testing, start non-functional testing at component level. It costs more early but saves later.",
+     "<b>DevOps</b> joins development, testing and operations around CI/CD pipelines. Benefits: fast feedback, shift left, stable automated environments, more attention to non-functional qualities, less repetitive manual testing. Challenges: the pipeline and tools must be built and maintained; automation needs effort; manual testing from the user's view is still needed.",
+     "<b>Shift left</b> = test earlier: review specifications, write tests before code, use CI/CD, run static analysis before dynamic testing, start non-functional testing at component level. It costs more early but saves later.",
      "<b>Retrospectives</b> ask: what worked, what didn't, how do we improve? Benefits: better test efficiency/effectiveness, better testware, team bonding, better test basis quality, better dev–test cooperation. Follow up on the actions."]},
    { t: "2.2 Test levels and test types", table: [["Test level","Focus","Typical notes"],
      ["Component (unit)","Components in isolation","Developers; needs harnesses / unit-test frameworks"],
@@ -147,19 +147,19 @@ const CHAPTERS = [
      ["System integration","Interfaces to other systems and external services","Environment similar to production"],
      ["Acceptance","Validation and readiness for deployment","UAT, operational, contractual/regulatory, alpha and beta testing"]],
      p: ["Levels are distinguished by: test object, objectives, test basis, defects and failures found, approach and responsibilities.",
-     "<b>Test types:</b> <b>functional</b> (what the system does: completeness, correctness, appropriateness) · <b>non-functional</b> (how well – ISO 25010: performance efficiency, compatibility, usability, reliability, security, maintainability, portability) · <b>black-box</b> (specification-based) · <b>white-box</b> (structure-based). All four can be applied at every level.",
-     "<b>Confirmation testing</b> confirms the original defect is fixed (re-run the failed tests). <b>Regression testing</b> confirms the change had no adverse side effects (in the same or other components/systems). Do an impact analysis to size regression testing; regression suites are prime candidates for automation."]},
+     "<b>Test types:</b> <b>functional</b> (what the system does: completeness, correctness, appropriateness) · <b>non-functional</b> (how well – ISO 25010: performance efficiency, compatibility, usability (also called interaction capability), reliability, security, maintainability, portability (also called flexibility), <b>safety</b> – v4.0.1 lists 8 characteristics, ISO/IEC 25010:2023) · <b>black-box</b> (specification-based) · <b>white-box</b> (structure-based). All four can be applied at every level.",
+     "<b>Confirmation testing</b> confirms the original defect is fixed (re-run the failed tests). <b>Regression testing</b> confirms the change had no adverse side effects (in the same or other components/systems). Do an impact analysis to recognize the extent of regression testing; regression suites are prime candidates for automation."]},
    { t: "2.3 Maintenance testing", p: [
      "Maintenance can be corrective, adaptive (environment change), or improve performance/maintainability; releases may be planned or unplanned (hot fixes).",
      "<b>Triggers:</b> modifications (enhancements, fixes), upgrades or migrations (including data conversion), retirement (data archiving, restore/retrieval tests).",
      "<b>Scope</b> depends on the risk of the change, the size of the existing system and the size of the change. Test both the change and regressions in the unchanged (usually most of the) system."]}
   ],
   terms: ["acceptance testing","component integration testing","component testing","confirmation testing","functional testing","integration testing","maintenance testing","non-functional testing","regression testing","shift-left","system integration testing","system testing","test level","test type","white-box testing","black-box testing"],
-  tips: ["Match each test level to its test object and typical owner.","Do not confuse confirmation testing (the fix) with regression testing (side effects).","Know which non-functional characteristics ISO 25010 lists."] },
+  tips: ["Match each test level to its test object and typical owner.","Do not confuse confirmation testing (the fix) with regression testing (side effects).","Know the 8 non-functional characteristics (v4.0.1 added safety and the alternative names interaction capability / flexibility)."] },
 
 { id: 3, title: "Static Testing", minutes: 80,
   intro: "Examining work products without executing them: reviews and static analysis, the review process, roles, review types and success factors.",
-  lo: [["3.1.1","K1","Recognize types of products that can be examined by static test techniques"],["3.1.2","K2","Explain the value of static testing"],["3.1.3","K2","Compare and contrast static and dynamic testing"],["3.2.1","K1","Identify the benefits of early and frequent stakeholder feedback"],["3.2.2","K2","Summarize the activities of the review process"],["3.2.3","K1","Recall responsibilities of the principal review roles"],["3.2.4","K2","Compare and contrast the different review types"],["3.2.5","K1","Recall factors that contribute to a successful review"]],
+  lo: [["3.1.1","K1","Recognize types of work products that can be examined by static testing"],["3.1.2","K2","Explain the value of static testing"],["3.1.3","K2","Compare and contrast static and dynamic testing"],["3.2.1","K1","Identify the benefits of early and frequent stakeholder feedback"],["3.2.2","K2","Summarize the activities of the review process"],["3.2.3","K1","Recall responsibilities of the principal review roles"],["3.2.4","K2","Compare and contrast the different review types"],["3.2.5","K1","Recall factors that contribute to a successful review"]],
   sections: [
    { t: "3.1 Static testing basics", p: [
      "Static testing evaluates work products by manual examination (reviews) or with tools (static analysis). Almost any readable work product can be reviewed (requirements, code, test plans, test cases, backlog items, charters, contracts, models). Static analysis needs a formal structure (code, models).",
@@ -182,7 +182,7 @@ const CHAPTERS = [
 
 { id: 4, title: "Test Analysis and Design", minutes: 390,
   intro: "The biggest chapter: black-box, white-box and experience-based techniques, plus collaboration-based approaches. Expect calculation questions (K3).",
-  lo: [["4.1.1","K2","Distinguish black-box, white-box and experience-based techniques"],["4.2.1","K3","Use equivalence partitioning to derive test cases"],["4.2.2","K3","Use boundary value analysis to derive test cases"],["4.2.3","K3","Use decision table testing to derive test cases"],["4.2.4","K3","Use state transition testing to derive test cases"],["4.3.1","K2","Explain statement testing"],["4.3.2","K2","Explain branch testing"],["4.3.3","K2","Explain the value of white-box testing"],["4.4.1","K2","Explain error guessing"],["4.4.2","K2","Explain exploratory testing"],["4.4.3","K2","Explain checklist-based testing"],["4.5.1","K2","Explain how to write user stories collaboratively"],["4.5.2","K2","Classify the different options for writing acceptance criteria"],["4.5.3","K3","Use ATDD to derive test cases"]],
+  lo: [["4.1.1","K2","Distinguish black-box test techniques, white-box test techniques and experience-based test techniques"],["4.2.1","K3","Use equivalence partitioning to derive test cases"],["4.2.2","K3","Use boundary value analysis to derive test cases"],["4.2.3","K3","Use decision table testing to derive test cases"],["4.2.4","K3","Use state transition testing to derive test cases"],["4.3.1","K2","Explain statement testing"],["4.3.2","K2","Explain branch testing"],["4.3.3","K2","Explain the value of white-box testing"],["4.4.1","K2","Explain error guessing"],["4.4.2","K2","Explain exploratory testing"],["4.4.3","K2","Explain checklist-based testing"],["4.5.1","K2","Explain how to write user stories collaboratively"],["4.5.2","K2","Classify the different options for writing acceptance criteria"],["4.5.3","K3","Use ATDD to derive test cases"]],
   sections: [
    { t: "4.1 Technique families", table: [["Family","Based on","Notes"],
      ["Black-box (specification-based)","Specified behaviour, not internal structure","Tests stay valid if the implementation changes"],
@@ -200,8 +200,8 @@ const CHAPTERS = [
      "<b>Coverage items</b> are the columns with feasible combinations; coverage = exercised columns ÷ feasible columns. Remove infeasible columns, merge columns where a condition doesn't matter. Rules grow exponentially (2<sup>n</sup> for n Boolean conditions). Strength: finds missing combinations and requirement gaps or contradictions.",
      "<div class='ex'><b>Example.</b> Free delivery if (member = T) <i>or</i> (order ≥ $50). Two Boolean conditions → 4 rules: TT→free, TF→free, FT→free, FF→not free. Merged: member=T → free (order irrelevant); member=F &amp; order≥50 → free; member=F &amp; order&lt;50 → not free.</div>"]},
    { t: "4.2.4 State transition testing", p: [
-     "A state transition diagram shows <b>states</b> and valid <b>transitions</b>. Label syntax: <code>event [guard] / action</code>. A <b>state table</b> also shows invalid transitions (empty cells). A test case is a sequence of events and resulting states and usually covers several transitions.",
-     "<b>Coverage criteria:</b> <b>all states</b> (visit every state) · <b>valid transitions</b> / 0-switch (exercise every valid transition – most widely used) · <b>all transitions</b> (valid ones plus attempts at invalid ones, one invalid transition per test to avoid fault masking).",
+     "A state diagram (called a state transition diagram in v4.0) shows <b>states</b> and valid <b>transitions</b>. Label syntax: <code>event [guard] / action</code>. A <b>state table</b> also shows invalid transitions (empty cells). A test case is a sequence of events and resulting states and usually covers several transitions.",
+     "<b>Coverage criteria:</b> <b>all states</b> (exercise every state – v4.0.1 says &ldquo;exercised&rdquo;, not &ldquo;visited&rdquo;) · <b>valid transitions</b> / 0-switch (exercise every valid transition – most widely used) · <b>all transitions</b> (valid ones plus attempts at invalid ones, one invalid transition per test to avoid defect masking).",
      "Order of strength: all transitions ⊇ valid transitions ⊇ all states. Full valid-transition coverage guarantees all-states coverage."]},
    { t: "4.3 White-box techniques", p: [
      "<b>Statement testing:</b> coverage items are executable statements; coverage = statements executed ÷ total executable statements. 100% means every statement ran at least once, but data-dependent defects (e.g. division by zero) and untested decision outcomes can remain.",
@@ -235,7 +235,7 @@ const CHAPTERS = [
      ["Three-point","E = (a + 4m + b) / 6;  SD = (b − a) / 6","a=6, m=9, b=18 → E = 10, SD = 2 → 10 ± 2 hours"]] },
    { t: "5.1.5–5.1.7 Prioritisation, pyramid, quadrants", p: [
      "<b>Prioritisation strategies:</b> <b>risk-based</b> (highest risks first) · <b>coverage-based</b> (highest coverage first; <i>additional coverage</i> = each next test adds the most new coverage) · <b>requirements-based</b> (most important requirements first). Dependencies override priorities: a high-priority test that depends on a low-priority one must wait for it. Resource availability also matters.",
-     "<b>Test pyramid:</b> many small, fast, isolated tests at the bottom (unit/component); fewer integration/service tests in the middle; a few slow end-to-end/UI tests at the top.",
+     "<b>Test pyramid:</b> many small, fast, isolated tests at the bottom (unit/component); fewer integration/service tests in the middle; a few slow end-to-end/UI tests at the top. The higher the layer: the lower the test granularity, the lower the test isolation, the higher the test execution time.",
      "<b>Testing quadrants</b> (Agile) combine business-facing vs technology-facing and support-the-team vs critique-the-product: <b>Q1</b> technology/support – component and integration tests (automated, in CI) · <b>Q2</b> business/support – functional tests, examples, story tests, API tests · <b>Q3</b> business/critique – exploratory, usability, UAT (often manual) · <b>Q4</b> technology/critique – smoke and non-functional tests (except usability), often automated."]},
    { t: "5.2 Risk management", p: [
      "<b>Risk</b> = potential event with an adverse effect. <b>Risk level</b> combines <b>likelihood</b> and <b>impact</b> (quantitative: likelihood × impact; qualitative: risk matrix).",
@@ -252,7 +252,7 @@ const CHAPTERS = [
      "<b>Defect management</b> needs a workflow from discovery to closure: log → analyse and classify → decide (fix, keep, reject…) → close. Reported anomalies may turn out to be false positives or change requests.",
      "<b>A defect report</b> typically contains: unique ID · title/summary · date, author and role · test object and environment · context (test case, activity, technique) · description with steps to reproduce, logs/screenshots · expected vs actual result · severity · priority · status · references. Goals: give enough information to resolve it, track quality, suggest process improvements."]}
   ],
-  terms: ["defect management","defect report","entry criteria","exit criteria","product risk","project risk","risk analysis","risk assessment","risk control","risk identification","risk level","risk mitigation","risk monitoring","risk-based testing","test approach","test completion report","test control","test monitoring","test plan","test progress report","test pyramid","testing quadrants"],
+  terms: ["defect management","defect report","entry criteria","exit criteria","product risk","project risk","risk analysis","risk assessment","risk control","risk identification","risk level","risk mitigation","risk monitoring","risk-based testing","test approach","test completion report","test control","test monitoring","test plan","test progress report","test pyramid","test strategy","testing quadrants"],
   tips: ["Practise the three-point formula and the ratio estimate by hand.","For prioritisation questions: order by priority first, then fix the order wherever a dependency forces it.","Know which fields belong in a defect report and which are optional extras."] },
 
 { id: 6, title: "Test Tools", minutes: 20,
@@ -280,7 +280,7 @@ const CHAPTERS = [
 const META = {
 1: { weight: 8, must: [
       "Error → defect → failure, and root cause: tell them apart in a short scenario.",
-      "Testing vs debugging; testing = quality CONTROL, QA = process-oriented prevention.",
+      "Testing vs debugging; testing = product-oriented, corrective; QA = process-oriented prevention.",
       "The 7 principles: match a scenario to the right principle.",
       "The 7 test activities in order, what each produces (testware), and the value of traceability.",
       "Independence of testing (levels) and the whole-team approach."],
@@ -290,17 +290,17 @@ const META = {
       { pri: "core", trap: "The 2018 (v3.1) sample exams use older names: <i>pesticide paradox</i> = “tests wear out”, <i>absence-of-errors fallacy</i> = “absence-of-defects fallacy”. “Testers must catch every bug” → <i>testing shows presence of defects</i>." },
       { pri: "core", bg: [1], trap: "Analysis = <i>what</i> to test (conditions); design = <i>how</i> (cases, data). Implementation = procedures, suites, data, environment, schedule; execution = running and logging." },
       { pri: "skim" }],
-     marks: ["<b>Testing = quality control (QC)</b>", "Not every defect causes a failure", "Debugging finds the cause of a failure, analyses it and removes it",
+     marks: ["<b>Testing is product-oriented and corrective</b>", "Not every defect causes a failure", "Debugging finds the cause of a failure, analyses it and removes it",
        "(<i>what</i> to test: test conditions from the test basis)", "(<i>how</i> to test: test cases, coverage items, data and environment needs)",
        "One person can hold both.", "author (none) → peers in the team (some) → testers outside the team (high) → outside the organisation (very high)"] },
 2: { weight: 6, must: [
       "The 5 test levels: object, focus and typical owner of each.",
       "Functional / non-functional / black-box / white-box: all four apply at every level.",
       "Confirmation testing (is the fix OK?) vs regression testing (did it break anything else?).",
-      "TDD vs ATDD vs BDD, shift-left, DevOps benefits.",
+      "TDD vs ATDD vs BDD, shift left, DevOps benefits.",
       "Maintenance testing triggers: modification, migration, retirement."],
      sec: [
-      { pri: "know", bg: [0], trap: "TDD / ATDD / BDD: remember what drives the tests (unit code / acceptance criteria / behaviour in Given-When-Then). Shift-left does not mean skipping later testing." },
+      { pri: "know", bg: [0], trap: "TDD / ATDD / BDD: remember what drives the tests (unit code / acceptance criteria / behaviour in Given-When-Then). Shift left does not mean skipping later testing." },
       { pri: "core", trap: "Do not confuse test <i>level</i> (where) with test <i>type</i> (what is checked). Integration = interfaces between components (or systems)." },
       { pri: "know", trap: "Maintenance testing is triggered by modification, migration or retirement – not by a plan to test maintainability." }],
      marks: ["<b>TDD</b> – write a failing test, write code to pass it, refactor", "<b>ATDD</b> – tests derived from acceptance criteria before development",
@@ -365,8 +365,8 @@ const META = {
 const CHAPTERS_KO = [
 { id: 1, title: "테스팅 기초", minutes: 180, weight: 8,
   intro: "테스팅의 용어와 사고방식: 테스팅의 목적, 디버깅·품질 보증과의 차이, 7가지 원리, 테스트 프로세스, 테스터에게 필요한 기술.",
-  lo: [["1.1.1","K1","일반적인 테스트 목적을 식별할 수 있다"],["1.1.2","K2","테스팅과 디버깅을 구별할 수 있다"],["1.2.1","K2","테스팅이 필요한 이유를 예를 들어 설명할 수 있다"],["1.2.2","K1","테스팅과 품질 보증의 관계를 상기할 수 있다"],["1.2.3","K2","근본 원인, 오류, 결함, 장애를 구별할 수 있다"],["1.3.1","K2","테스팅의 7가지 원리를 설명할 수 있다"],["1.4.1","K2","다양한 테스트 활동과 업무를 요약할 수 있다"],["1.4.2","K2","정황이 테스트 프로세스에 미치는 영향을 설명할 수 있다"],["1.4.3","K2","테스트 활동을 지원하는 테스트웨어를 구분할 수 있다"],["1.4.4","K2","추적성을 유지하는 것의 가치를 설명할 수 있다"],["1.4.5","K2","테스팅에 참여하는 다양한 역할을 비교할 수 있다"],["1.5.1","K2","테스팅에 필요한 보편적인 기술의 예를 제시할 수 있다"],["1.5.2","K1","전체 팀 접근법의 장점을 상기할 수 있다"],["1.5.3","K2","독립적 테스팅의 장단점을 구분할 수 있다"]],
-  must: ["오류 → 결함 → 장애, 그리고 근본 원인: 짧은 시나리오에서 서로 구별하기.","테스팅과 디버깅의 차이, 테스팅 = 품질 <u>관리(QC)</u>, 품질 보증(QA) = 프로세스 중심의 예방.","7가지 원리: 시나리오를 보고 알맞은 원리 고르기.","테스트 활동 순서와 각 활동의 산출물(테스트웨어), 추적성의 가치.","독립적 테스팅의 수준과 전체 팀 접근법."],
+  lo: [["1.1.1","K1","일반적인 테스트 목적을 식별할 수 있다"],["1.1.2","K2","테스팅과 디버깅을 구별할 수 있다"],["1.2.1","K2","테스팅이 필요한 이유를 예를 들어 설명할 수 있다"],["1.2.2","K1","테스팅과 품질 보증의 관계를 상기할 수 있다"],["1.2.3","K2","근본 원인, 오류, 결함, 장애를 구별할 수 있다"],["1.3.1","K2","테스팅의 7가지 원리를 설명할 수 있다"],["1.4.1","K2","다양한 테스트 활동과 관련 업무를 설명할 수 있다"],["1.4.2","K2","정황이 테스트 프로세스에 미치는 영향을 설명할 수 있다"],["1.4.3","K2","테스트 활동을 지원하는 테스트웨어를 구분할 수 있다"],["1.4.4","K2","추적성을 유지하는 것의 가치를 설명할 수 있다"],["1.4.5","K2","테스팅에 참여하는 다양한 역할을 비교할 수 있다"],["1.5.1","K2","테스팅에 필요한 보편적인 기술의 예를 제시할 수 있다"],["1.5.2","K1","전체 팀 접근법의 장점을 상기할 수 있다"],["1.5.3","K2","독립적 테스팅의 장단점을 구분할 수 있다"]],
+  must: ["오류 → 결함 → 장애, 그리고 근본 원인: 짧은 시나리오에서 서로 구별하기.","테스팅과 디버깅의 차이, 테스팅 = 제품 중심의 교정적 접근(v4.0.1에서 “QC의 한 형태”라는 표현이 삭제됨), 품질 보증(QA) = 프로세스 중심의 예방.","7가지 원리: 시나리오를 보고 알맞은 원리 고르기.","테스트 활동 순서와 각 활동의 산출물(테스트웨어), 추적성의 가치.","독립적 테스팅의 수준과 전체 팀 접근법."],
   sections: [
    { t: "1.1 테스팅이란 무엇인가?", pri: "core", trap: "베리피케이션 = <i>명세된 요구사항</i>을 충족하는가, 밸리데이션 = 사용자의 <i>실제 요구</i>를 충족하는가. 디버깅은 개발 활동이지 테스팅이 아니다.", p: [
      "테스팅은 소프트웨어 산출물(<b>테스트 대상</b>)의 <b>결함을 발견</b>하고 <b>품질을 평가</b>하는 활동의 집합이다. 테스트 실행만이 아니라 계획, 분석, 설계, 모니터링, 완료까지 포함한다.",
@@ -376,13 +376,13 @@ const CHAPTERS_KO = [
      "<mark><b>테스팅 vs 디버깅:</b></mark> 테스팅은 장애를 유발하거나(동적) 결함을 직접 발견한다(정적). 디버깅은 장애의 원인을 찾아 분석하고 제거한다(재현 → 진단 → 수정). 이후 확인 테스팅으로 수정을 검증하고, 리그레션 테스팅으로 부작용을 확인한다."]},
    { t: "1.2 테스팅이 왜 필요한가?", pri: "core", bg: [0], trap: "테스팅 ≠ QA. 테스팅은 품질 <i>관리</i>(제품의 결함을 발견), QA는 프로세스 중심의 예방이다. 결함이 항상 장애를 일으키는 것은 아니다.", p: [
      "테스팅은 결함을 조기에 발견하는 비용 효율적인 방법이며, 각 단계에서 품질을 평가하고(출시 결정 지원), 사용자 이익을 대변하며, 계약·법규 요구를 충족하게 해준다.",
-     "<mark><b>테스팅 = 품질 관리(QC)</b></mark>: 제품 중심, 교정적. <b>QA</b>는 프로세스 중심, 예방적: 좋은 프로세스를 따르고 개선해 좋은 제품이 나오게 한다. QA는 모두의 책임이다.",
+     "<mark><b>테스팅은 제품 중심의 교정적 접근</b></mark>이다(v4.0.1은 더 이상 “품질 관리(QC)의 한 형태”라고 쓰지 않는다). <b>QA</b>는 프로세스 중심, 예방적: 좋은 프로세스를 따르고 개선해 좋은 제품이 나오게 한다. QA는 모두의 책임이다. 테스트 결과는 QA와 테스팅 양쪽에서 쓰인다.",
      "<b>오류 → 결함 → 장애.</b> 사람이 <i>오류</i>(실수)를 범하면 작업 산출물에 <i>결함</i>(fault, bug)이 생기고, 결함이 실행되면 <i>장애</i>(눈에 보이는 잘못된 동작)가 일어날 수 있다. <mark>모든 결함이 장애를 일으키는 것은 아니며</mark>, 장애는 환경 조건(예: 방사선)에서도 발생할 수 있다.",
      "<b>근본 원인</b> = 문제가 발생한 근본적인 이유(예: 일정 압박, 불명확한 요구사항). 근본 원인 분석은 유사한 결함의 재발 방지를 돕는다."]},
    { t: "1.3 테스팅 원리 (7가지)", pri: "core", trap: "2018(v3.1) 샘플 시험은 옛 용어를 쓴다: <i>살충제 패러독스</i> = “테스트 효과는 줄어든다”, <i>오류-부재의 궤변</i> = “결함-부재는 궤변이다”. “테스터는 모든 버그를 잡아야 한다”에 대한 반박 → <i>테스팅은 결함의 존재를 밝힌다</i>.", table: [["#","원리","한 줄 요약"],
      ["1","테스팅은 결함의 존재를 밝히는 활동이지, 결함이 없음을 증명하지는 않는다","통과한 테스트는 정확성을 증명하지 못한다"],
      ["2","완벽한 테스팅은 불가능하다","기법, 우선순위, 리스크로 노력을 집중한다"],
-     ["3","조기 테스팅으로 시간과 비용을 절약할 수 있다","정적·동적 테스팅을 가능한 빨리 시작(시프트-레프트)"],
+     ["3","조기 테스팅으로 시간과 비용을 절약할 수 있다","정적·동적 테스팅을 가능한 빨리 시작(시프트 레프트)"],
      ["4","결함은 집중된다","소수의 컴포넌트에 대부분의 결함이 몰린다(파레토)"],
      ["5","테스트 효과는 줄어든다","같은 테스트를 반복하면 새 결함을 덜 찾는다 – 테스트와 데이터를 갱신"],
      ["6","테스팅은 정황에 의존적이다","안전 필수 소프트웨어와 게임은 다르게 테스트한다"],
@@ -398,21 +398,21 @@ const CHAPTERS_KO = [
      "<b>전체 팀 접근법</b>(XP에서 유래): 적합한 기술을 가진 팀원이면 누구나 어떤 업무도 수행하며, 모두가 품질에 책임이 있다. 의사소통과 시너지가 좋아지지만 높은 독립성이 필요한 환경(예: 안전 필수)에는 맞지 않을 수 있다.",
      "<b>독립적 테스팅:</b> <mark>저자(없음) → 팀 내 동료(일부) → 팀 외부 테스터(높음) → 조직 외부(매우 높음)</mark>. 장점: 서로 다른 편향이 서로 다른 결함을 찾는다. 단점: 고립, 의사소통 문제, 개발자가 책임감을 덜 느낌, 테스터가 병목으로 인식됨."]}
   ],
-  terms: ["커버리지","디버깅","결함","오류","장애","품질 보증","근본 원인","테스트 분석","테스트 베이시스","테스트 케이스","테스트 완료","테스트 컨디션","테스트 제어","테스트 데이터","테스트 설계","테스트 실행","테스트 구현","테스트 모니터링","테스트 대상","테스트 목적","테스트 계획","테스트 절차","테스트웨어","밸리데이션","베리피케이션"],
+  terms: ["커버리지","디버깅","결함","오류","장애","품질 보증","근본 원인","테스트 분석","테스트 베이시스","테스트 케이스","테스트 완료","테스트 컨디션","테스트 제어","테스트 데이터","테스트 설계","테스트 실행","테스트 구현","테스트 모니터링","테스트 대상","테스트 목적","테스트 계획","테스트 절차","테스트 프로세스","테스트 결과","테스트웨어","추적성","밸리데이션","베리피케이션"],
   tips: ["테스트 활동의 순서와 목적, 각 활동이 만드는 작업 산출물을 알아둔다.","짧은 시나리오에서 오류 / 결함 / 장애 / 근본 원인을 구별할 수 있어야 한다.","7가지 원리 각각을 보여주는 시나리오가 출제된다."] },
 
 { id: 2, title: "소프트웨어 개발수명주기(SDLC)와 테스팅", minutes: 130, weight: 6,
   intro: "SDLC가 테스팅에 미치는 영향, 5가지 테스트 레벨, 4가지 테스트 유형, 확인 테스팅과 리그레션 테스팅, 유지보수 테스팅.",
-  lo: [["2.1.1","K2","SDLC가 테스팅에 미치는 영향을 설명할 수 있다"],["2.1.2","K1","모든 SDLC에 적용되는 좋은 테스팅 프랙티스를 상기할 수 있다"],["2.1.3","K1","개발에서 테스트 우선 접근법의 예를 들 수 있다"],["2.1.4","K2","DevOps가 테스팅에 미치는 영향을 요약할 수 있다"],["2.1.5","K2","시프트-레프트 접근법을 설명할 수 있다"],["2.1.6","K2","프로세스 개선을 위한 방법으로 회고의 사용을 설명할 수 있다"],["2.2.1","K2","테스트 레벨을 구별할 수 있다"],["2.2.2","K2","테스트 유형을 구별할 수 있다"],["2.2.3","K2","확인 테스팅을 리그레션 테스팅과 구별할 수 있다"],["2.3.1","K2","유지보수 테스팅과 유발요인을 요약할 수 있다"]],
-  must: ["5가지 테스트 레벨: 각 레벨의 테스트 대상, 초점, 일반적인 수행자.","기능 / 비기능 / 블랙박스 / 화이트박스 4가지 유형은 모든 레벨에 적용 가능.","확인 테스팅(수정이 됐나?) vs 리그레션 테스팅(다른 곳이 깨지지 않았나?).","TDD vs ATDD vs BDD, 시프트-레프트, DevOps의 장점.","유지보수 테스팅의 유발요인: 변경, 마이그레이션, 폐기."],
+  lo: [["2.1.1","K2","SDLC가 테스팅에 미치는 영향을 설명할 수 있다"],["2.1.2","K1","모든 SDLC에 적용되는 좋은 테스팅 프랙티스를 상기할 수 있다"],["2.1.3","K1","개발에서 테스트 우선 접근법의 예를 들 수 있다"],["2.1.4","K2","DevOps가 테스팅에 미치는 영향을 요약할 수 있다"],["2.1.5","K2","시프트 레프트를 설명할 수 있다"],["2.1.6","K2","프로세스 개선을 위한 방법으로 회고의 사용을 설명할 수 있다"],["2.2.1","K2","테스트 레벨을 구별할 수 있다"],["2.2.2","K2","테스트 유형을 구별할 수 있다"],["2.2.3","K2","확인 테스팅을 리그레션 테스팅과 구별할 수 있다"],["2.3.1","K2","유지보수 테스팅과 유발요인을 요약할 수 있다"]],
+  must: ["5가지 테스트 레벨: 각 레벨의 테스트 대상, 초점, 일반적인 수행자.","기능 / 비기능 / 블랙박스 / 화이트박스 4가지 유형은 모든 레벨에 적용 가능.","확인 테스팅(수정이 됐나?) vs 리그레션 테스팅(다른 곳이 깨지지 않았나?).","TDD vs ATDD vs BDD, 시프트 레프트, DevOps의 장점.","유지보수 테스팅의 유발요인: 변경, 마이그레이션, 폐기."],
   sections: [
-   { t: "2.1 SDLC에서의 테스팅", pri: "know", bg: [0], trap: "TDD / ATDD / BDD: 무엇이 테스트를 이끄는지 기억(단위 코드 / 인수 조건 / Given-When-Then 행위). 시프트-레프트는 이후 단계의 테스팅을 건너뛴다는 뜻이 아니다.", p: [
+   { t: "2.1 SDLC에서의 테스팅", pri: "know", bg: [0], trap: "TDD / ATDD / BDD: 무엇이 테스트를 이끄는지 기억(단위 코드 / 인수 조건 / Given-When-Then 행위). 시프트 레프트는 이후 단계의 테스팅을 건너뛴다는 뜻이 아니다.", p: [
      "SDLC는 테스트 활동의 범위와 시기, 테스트 문서화 수준, 기법과 접근법, 자동화 정도, 테스터의 역할에 영향을 준다.",
      "<b>순차 모델</b>(폭포수, V-모델): 테스터가 요구사항을 일찍 리뷰하고 테스트를 설계하지만 동적 테스팅은 코드가 나올 때까지 기다린다. <b>반복·점증 모델</b>: 매 반복마다 모든 레벨에서 정적·동적 테스팅 수행, 빠른 피드백과 많은 리그레션 테스팅 필요. <b>애자일</b>: 문서는 가볍게, 리그레션은 자동화 중심, 수동 테스팅은 대부분 경험 기반.",
      "<b>모든 SDLC에 적용되는 모범 사례:</b> 모든 개발 활동에는 대응하는 테스트 활동이 있다. 각 테스트 레벨은 고유한 목적이 있다. 테스트 분석·설계는 대응하는 개발 단계 중에 시작한다. 테스터는 초안이 나오는 즉시 리뷰한다.",
      "<b>테스트 우선 접근법:</b> <mark><b>TDD</b> – 실패하는 테스트를 먼저 작성, 통과할 코드 작성, 리팩터링</mark>. <mark><b>ATDD</b> – 개발 전에 인수 조건에서 테스트 도출</mark>. <mark><b>BDD</b> – 자연어(Given/When/Then)로 행위를 표현하고 실행 가능한 테스트로 변환</mark>.",
-     "<b>DevOps</b>는 CI/CD 파이프라인을 중심으로 개발·테스팅·운영을 결합한다. 장점: 빠른 피드백, 시프트-레프트, 안정적인 자동화 환경, 비기능 품질에 더 많은 관심, 반복적인 수동 테스팅 감소. 과제: 파이프라인과 도구 구축·유지, 자동화 노력, 사용자 관점의 수동 테스팅은 여전히 필요.",
-     "<b>시프트-레프트</b> = 더 일찍 테스트: 명세 리뷰, 코드 전 테스트 작성, CI/CD 사용, 동적 테스팅 전에 정적 분석, 컴포넌트 레벨에서 비기능 테스팅 시작. 초기 비용은 더 들지만 이후 비용을 절감한다.",
+     "<b>DevOps</b>는 CI/CD 파이프라인을 중심으로 개발·테스팅·운영을 결합한다. 장점: 빠른 피드백, 시프트 레프트, 안정적인 자동화 환경, 비기능 품질에 더 많은 관심, 반복적인 수동 테스팅 감소. 과제: 파이프라인과 도구 구축·유지, 자동화 노력, 사용자 관점의 수동 테스팅은 여전히 필요.",
+     "<b>시프트 레프트</b> = 더 일찍 테스트: 명세 리뷰, 코드 전 테스트 작성, CI/CD 사용, 동적 테스팅 전에 정적 분석, 컴포넌트 레벨에서 비기능 테스팅 시작. 초기 비용은 더 들지만 이후 비용을 절감한다.",
      "<b>회고</b>는 무엇이 잘 됐고, 안 됐고, 어떻게 개선할지를 묻는다. 효과: 테스팅 효율·효과 향상, 테스트웨어 품질 향상, 팀 결속, 테스트 베이시스 품질 향상, 개발-테스트 협업 개선. 후속 조치를 반드시 이행한다."]},
    { t: "2.2 테스트 레벨과 테스트 유형", pri: "core", trap: "테스트 <i>레벨</i>(어디서)과 테스트 <i>유형</i>(무엇을 확인)을 혼동하지 말 것. 통합 = 컴포넌트(또는 시스템) 간 인터페이스.", table: [["테스트 레벨","초점","참고"],
      ["컴포넌트(단위)","격리된 컴포넌트","개발자 수행, 하네스/단위 테스트 프레임워크 필요"],
@@ -421,19 +421,19 @@ const CHAPTERS_KO = [
      ["시스템 통합","다른 시스템 및 외부 서비스와의 인터페이스","운영 환경과 유사한 환경"],
      ["인수","밸리데이션과 배포 준비 상태","UAT, 운영, 계약/법규, 알파·베타 테스팅"]],
      p: ["레벨은 테스트 대상, 목적, 테스트 베이시스, 발견되는 결함과 장애, 접근법, 책임으로 구분한다.",
-     "<b>테스트 유형:</b> <b>기능</b>(시스템이 무엇을 하는가: 완전성, 정확성, 적절성) · <b>비기능</b>(얼마나 잘 하는가 – ISO 25010: 성능 효율성, 호환성, 사용성, 신뢰성, 보안성, 유지보수성, 이식성) · <b>블랙박스</b>(명세 기반) · <b>화이트박스</b>(구조 기반). <mark>네 가지 모두 모든 레벨에서 적용할 수 있다.</mark>",
+     "<b>테스트 유형:</b> <b>기능</b>(시스템이 무엇을 하는가: 완전성, 정확성, 적절성) · <b>비기능</b>(얼마나 잘 하는가 – ISO/IEC 25010:2023 – v4.0.1은 8가지: 성능 효율성, 호환성, 사용성(= 상호작용 능력, interaction capability), 신뢰성, 보안성, 유지보수성, 이식성(= 유연성, flexibility), <b>안전성(safety)</b>) · <b>블랙박스</b>(명세 기반) · <b>화이트박스</b>(구조 기반). <mark>네 가지 모두 모든 레벨에서 적용할 수 있다.</mark>",
      "<mark><b>확인 테스팅</b>은 원래 결함이 고쳐졌는지 확인한다(실패했던 테스트를 재실행).</mark> <mark><b>리그레션 테스팅</b>은 변경이 부작용을 일으키지 않았는지 확인한다</mark>(같은 컴포넌트나 다른 컴포넌트·시스템에서). 영향 분석으로 리그레션 테스팅 규모를 정하고, 리그레션 스위트는 자동화 1순위 후보다."]},
    { t: "2.3 유지보수 테스팅", pri: "know", trap: "유지보수 테스팅의 유발요인은 변경, 마이그레이션, 폐기이다 – 유지보수성을 테스트하겠다는 결정 자체는 유발요인이 아니다.", p: [
      "유지보수는 교정적, 적응적(환경 변화), 성능·유지보수성 개선 목적일 수 있으며, 릴리스는 계획된 것이거나 계획되지 않은 것(핫픽스)일 수 있다.",
      "<mark><b>유발요인:</b> 변경(개선, 수정), 업그레이드 또는 마이그레이션(데이터 변환 포함), 폐기(데이터 보관, 복원·검색 테스트).</mark>",
      "<b>범위</b>는 변경의 리스크, 기존 시스템의 크기, 변경의 크기에 따라 달라진다. 변경 자체와 변경되지 않은 시스템(보통 대부분)의 리그레션을 모두 테스트한다."]}
   ],
-  terms: ["인수 테스팅","컴포넌트 통합 테스팅","컴포넌트 테스팅","확인 테스팅","기능 테스팅","통합 테스팅","유지보수 테스팅","비기능 테스팅","리그레션 테스팅","시프트-레프트","시스템 통합 테스팅","시스템 테스팅","테스트 레벨","테스트 유형","화이트박스 테스팅","블랙박스 테스팅"],
-  tips: ["각 테스트 레벨을 테스트 대상과 일반적인 수행자에 연결해 외운다.","확인 테스팅(수정 확인)과 리그레션 테스팅(부작용 확인)을 혼동하지 않는다.","ISO 25010이 나열하는 비기능 품질 특성을 알아둔다."] },
+  terms: ["인수 테스팅","컴포넌트 통합 테스팅","컴포넌트 테스팅","확인 테스팅","기능 테스팅","통합 테스팅","유지보수 테스팅","비기능 테스팅","리그레션 테스팅","시프트 레프트","시스템 통합 테스팅","시스템 테스팅","테스트 레벨","테스트 유형","화이트박스 테스팅","블랙박스 테스팅"],
+  tips: ["각 테스트 레벨을 테스트 대상과 일반적인 수행자에 연결해 외운다.","확인 테스팅(수정 확인)과 리그레션 테스팅(부작용 확인)을 혼동하지 않는다.","비기능 품질 특성 8가지를 알아둔다 (v4.0.1에서 안전성이 추가되고 사용성/이식성의 다른 이름이 병기됨)."] },
 
 { id: 3, title: "정적 테스팅", minutes: 80, weight: 4,
   intro: "작업 산출물을 실행하지 않고 검사하는 방법: 리뷰와 정적 분석, 리뷰 프로세스, 역할, 리뷰 유형, 성공 요소.",
-  lo: [["3.1.1","K1","다양한 정적 테스트 기법으로 검토할 수 있는 산출물 유형을 인식할 수 있다"],["3.1.2","K2","정적 테스팅의 가치를 설명할 수 있다"],["3.1.3","K2","정적 테스팅과 동적 테스팅을 비교하고 대조할 수 있다"],["3.2.1","K1","이해관계자 피드백을 조기에 자주 받을 때의 이점을 식별할 수 있다"],["3.2.2","K2","리뷰 프로세스에서 수행하는 활동을 요약할 수 있다"],["3.2.3","K1","리뷰를 수행할 때 주요 역할별로 어떤 책임이 부과되는지 상기할 수 있다"],["3.2.4","K2","다양한 리뷰 유형을 비교하고 대조할 수 있다"],["3.2.5","K1","성공적인 리뷰에 기여하는 요소를 상기할 수 있다"]],
+  lo: [["3.1.1","K1","정적 테스팅으로 검토할 수 있는 작업 산출물 유형을 인식할 수 있다"],["3.1.2","K2","정적 테스팅의 가치를 설명할 수 있다"],["3.1.3","K2","정적 테스팅과 동적 테스팅을 비교하고 대조할 수 있다"],["3.2.1","K1","이해관계자 피드백을 조기에 자주 받을 때의 이점을 식별할 수 있다"],["3.2.2","K2","리뷰 프로세스에서 수행하는 활동을 요약할 수 있다"],["3.2.3","K1","리뷰를 수행할 때 주요 역할별로 어떤 책임이 부과되는지 상기할 수 있다"],["3.2.4","K2","다양한 리뷰 유형을 비교하고 대조할 수 있다"],["3.2.5","K1","성공적인 리뷰에 기여하는 요소를 상기할 수 있다"]],
   must: ["리뷰 프로세스: 계획 → 시작 → 개별 리뷰 → 의사소통 및 분석 → 수정 및 보고.","리뷰 역할: 관리자, 저자, 중재자(퍼실리테이터), 서기, 리뷰어, 리뷰 리더.","리뷰 유형: 비공식 리뷰, 워크쓰루, 기술 리뷰, 인스펙션 – 누가 주도하고 얼마나 공식적인가.","정적 테스팅은 결함을 직접 발견하고, 동적 테스팅은 장애를 보여준다."],
   sections: [
    { t: "3.1 정적 테스팅 기초", pri: "know", bg: [0], trap: "정적 테스팅은 <i>결함</i>을 직접 발견하고, 동적 테스팅은 <i>장애</i>를 일으킨다. 정적 분석으로는 성능을 측정할 수 없다.", p: [
@@ -457,7 +457,7 @@ const CHAPTERS_KO = [
 
 { id: 4, title: "테스트 분석 및 설계", minutes: 390, weight: 11,
   intro: "가장 큰 챕터: 블랙박스, 화이트박스, 경험 기반 기법과 협업 기반 접근법. 계산 문제(K3)가 출제된다.",
-  lo: [["4.1.1","K2","블랙박스, 화이트박스, 경험 기반 테스트 기법을 구별할 수 있다"],["4.2.1","K3","동등 분할을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.2","K3","경계값 분석을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.3","K3","결정 테이블 테스팅을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.4","K3","상태 전이 테스팅을 사용해 테스트 케이스를 도출할 수 있다"],["4.3.1","K2","구문 테스팅을 설명할 수 있다"],["4.3.2","K2","분기 테스팅을 설명할 수 있다"],["4.3.3","K2","화이트박스 테스팅의 가치를 설명할 수 있다"],["4.4.1","K2","오류 추정을 설명할 수 있다"],["4.4.2","K2","탐색적 테스팅을 설명할 수 있다"],["4.4.3","K2","체크리스트 기반 테스팅을 설명할 수 있다"],["4.5.1","K2","개발자 및 업무 대표자와 협업해 사용자 스토리를 작성하는 방법을 설명할 수 있다"],["4.5.2","K2","인수 조건을 작성하는 여러 가지 방법을 분류할 수 있다"],["4.5.3","K3","인수 테스트 주도 개발(ATDD)을 사용해 테스트 케이스를 도출할 수 있다"]],
+  lo: [["4.1.1","K2","블랙박스 테스트 기법, 화이트박스 테스트 기법, 경험 기반 테스트 기법을 구별할 수 있다"],["4.2.1","K3","동등 분할을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.2","K3","경계값 분석을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.3","K3","결정 테이블 테스팅을 사용해 테스트 케이스를 도출할 수 있다"],["4.2.4","K3","상태 전이 테스팅을 사용해 테스트 케이스를 도출할 수 있다"],["4.3.1","K2","구문 테스팅을 설명할 수 있다"],["4.3.2","K2","분기 테스팅을 설명할 수 있다"],["4.3.3","K2","화이트박스 테스팅의 가치를 설명할 수 있다"],["4.4.1","K2","오류 추정을 설명할 수 있다"],["4.4.2","K2","탐색적 테스팅을 설명할 수 있다"],["4.4.3","K2","체크리스트 기반 테스팅을 설명할 수 있다"],["4.5.1","K2","개발자 및 업무 대표자와 협업해 사용자 스토리를 작성하는 방법을 설명할 수 있다"],["4.5.2","K2","인수 조건을 작성하는 여러 가지 방법을 분류할 수 있다"],["4.5.3","K3","인수 테스트 주도 개발(ATDD)을 사용해 테스트 케이스를 도출할 수 있다"]],
   must: ["동등 분할: 유효 및 비유효 분할을 모두 세기.","경계값 분석: 2-값 vs 3-값 – 알맞은 경계값 나열.","결정 테이블: 규칙(열), 불가능한 열과 병합된 열, 커버리지.","상태 전이: 유효 전이(0-스위치) 커버리지, 상태 테이블, 테스트 개수 세기.","구문 vs 분기 커버리지: 분기 100% ⇒ 구문 100% (역은 성립 안 함).","오류 추정, 탐색적(차터, 시간 제한), 체크리스트 기반; 사용자 스토리(3C, INVEST), 인수 조건, ATDD."],
   sections: [
    { t: "4.1 테스트 기법 개요", pri: "know", trap: "블랙박스 = 명세, 화이트박스 = 구조, 경험 기반 = 테스터의 지식. “이것은 어느 계열인가?” 식의 분류 문제가 출제된다.", table: [["계열","기반","참고"],
@@ -476,8 +476,8 @@ const CHAPTERS_KO = [
      "<b>커버리지 항목</b>은 실현 가능한 조합의 열이며, 커버리지 = 실행한 열 ÷ 실현 가능한 열. 불가능한 열은 제거하고, 조건이 무관한 열은 병합한다. <mark>규칙 수는 기하급수적으로 늘어난다(불리언 조건 n개일 때 2<sup>n</sup>).</mark> 강점: 누락된 조합과 요구사항의 공백·모순을 찾는다.",
      "<div class='ex'><b>예.</b> (회원 = T) <i>또는</i> (주문 ≥ $50)이면 무료 배송. 불리언 조건 2개 → 규칙 4개: TT→무료, TF→무료, FT→무료, FF→유료. 병합: 회원=T → 무료(주문 무관); 회원=F &amp; 주문≥50 → 무료; 회원=F &amp; 주문&lt;50 → 유료.</div>"]},
    { t: "4.2.4 상태 전이 테스팅", pri: "core", trap: "다이어그램에서 유효 전이를 먼저 세고, 그것을 모두 커버하는 최소 경로를 찾는다. 유효 전이 커버리지는 모든 상태 커버리지를 보장하지만 그 반대는 아니다.", p: [
-     "상태 전이 다이어그램은 <b>상태</b>와 유효한 <b>전이</b>를 보여준다. <mark>레이블 문법: <code>이벤트 [가드] / 액션</code></mark>. <b>상태 테이블</b>은 비유효 전이(빈 칸)도 보여준다. 테스트 케이스는 이벤트와 결과 상태의 시퀀스이며 보통 여러 전이를 커버한다.",
-     "<b>커버리지 기준:</b> <b>모든 상태</b>(모든 상태 방문) · <b>유효 전이</b> / 0-스위치(모든 유효 전이 실행 – 가장 널리 사용) · <b>모든 전이</b>(유효 전이 + 비유효 전이 시도, 결함 마스킹을 피하려고 테스트당 비유효 전이 하나).",
+     "상태 다이어그램(v4.0의 “상태 전이 다이어그램”)은 <b>상태</b>와 유효한 <b>전이</b>를 보여준다. <mark>레이블 문법: <code>이벤트 [가드] / 액션</code></mark>. <b>상태 테이블</b>은 비유효 전이(빈 칸)도 보여준다. 테스트 케이스는 이벤트와 결과 상태의 시퀀스이며 보통 여러 전이를 커버한다.",
+     "<b>커버리지 기준:</b> <b>모든 상태</b>(모든 상태 실행 — v4.0.1은 “방문(visited)” 대신 “실행(exercised)”) · <b>유효 전이</b> / 0-스위치(모든 유효 전이 실행 – 가장 널리 사용) · <b>모든 전이</b>(유효 전이 + 비유효 전이 시도, 결함 마스킹을 피하려고 테스트당 비유효 전이 하나).",
      "<mark>강도 순서: 모든 전이 ⊇ 유효 전이 ⊇ 모든 상태. 유효 전이를 100% 커버하면 모든 상태 커버리지가 보장된다.</mark>"]},
    { t: "4.3 화이트박스 테스트 기법", pri: "core", trap: "구문 커버리지 100%는 분기 커버리지 100%를 뜻하지 않는다. v3.1 샘플 시험의 “결정 커버리지”는 시험 목적상 v4.0의 “분기 커버리지”와 같은 개념이다.", p: [
      "<b>구문 테스팅:</b> 커버리지 항목은 실행 가능한 구문; 커버리지 = 실행한 구문 ÷ 전체 실행 가능한 구문. 100%면 모든 구문이 최소 한 번 실행됐다는 뜻이지만, 데이터에 의존하는 결함(예: 0으로 나누기)과 테스트되지 않은 결정 결과는 남을 수 있다.",
@@ -512,7 +512,7 @@ const CHAPTERS_KO = [
      ["3점 추정","<mark>E = (a + 4m + b) / 6;  SD = (b − a) / 6</mark>","a=6, m=9, b=18 → E = 10, SD = 2 → 10 ± 2 시간"]] },
    { t: "5.1.5–5.1.7 우선순위, 피라미드, 사분면", pri: "core", trap: "먼저 우선순위로 정렬하고, 의존성 때문에 필요한 곳만 순서를 바꾼다. 의존성이 우선순위보다 앞선다.", p: [
      "<b>우선순위 전략:</b> <b>리스크 기반</b>(가장 큰 리스크 먼저) · <b>커버리지 기반</b>(커버리지가 큰 것 먼저; <i>추가 커버리지</i> = 다음 테스트가 새 커버리지를 가장 많이 더하는 순서) · <b>요구사항 기반</b>(가장 중요한 요구사항 먼저). <mark>의존성이 우선순위보다 앞선다</mark>: 우선순위가 높은 테스트가 낮은 테스트에 의존하면 그것을 기다려야 한다. 자원 가용성도 고려한다.",
-     "<b>테스트 피라미드:</b> 아래쪽에는 작고 빠르고 격리된 테스트(단위/컴포넌트)가 많고, 중간에는 통합/서비스 테스트가 적고, 맨 위에는 느린 엔드투엔드/UI 테스트가 소수.",
+     "<b>테스트 피라미드:</b> 아래쪽에는 작고 빠르고 격리된 테스트(단위/컴포넌트)가 많고, 중간에는 통합/서비스 테스트가 적고, 맨 위에는 느린 엔드투엔드/UI 테스트가 소수. 위층일수록 테스트 세분성(granularity)과 테스트 격리 정도는 낮고 테스트 실행 시간은 길다.",
      "<b>테스팅 사분면</b>(애자일)은 업무 지향 vs 기술 지향, 팀 지원 vs 제품 비평을 조합한다: <b>Q1</b> 기술/팀 지원 – 컴포넌트·통합 테스트(자동화, CI) · <b>Q2</b> 업무/팀 지원 – 기능 테스트, 예제, 스토리 테스트, API 테스트 · <b>Q3</b> 업무/제품 비평 – 탐색적, 사용성, UAT(대개 수동) · <b>Q4</b> 기술/제품 비평 – 스모크 및 비기능 테스트(사용성 제외), 대개 자동화."]},
    { t: "5.2 리스크 관리", pri: "core", trap: "제품 리스크 = 제품 품질에 관한 것(잘못된 계산, 낮은 보안성). 프로젝트 리스크 = 프로젝트 관리에 관한 것(일정, 기술, 테스트 환경 지연).", p: [
      "<b>리스크</b> = 부정적 영향을 줄 수 있는 잠재적 사건. <mark><b>리스크 수준</b>은 <b>발생 가능성</b>과 <b>영향도</b>의 조합</mark>(정량: 가능성 × 영향도; 정성: 리스크 매트릭스).",
@@ -529,7 +529,7 @@ const CHAPTERS_KO = [
      "<b>결함 관리</b>에는 발견부터 종료까지의 워크플로가 필요하다: 기록 → 분석·분류 → 결정(수정, 보류, 거절 등) → 종료. 보고된 이상 사항이 가짜 양성이거나 변경 요청으로 밝혀질 수도 있다.",
      "<b>결함 보고서</b>의 일반 내용: 고유 ID · 제목/요약 · 날짜, 작성자와 역할 · 테스트 대상과 환경 · 정황(테스트 케이스, 활동, 기법) · 재현 절차, 로그/스크린샷이 포함된 설명 · <mark>기대결과 vs 실제 결과 · 심각도 · 우선순위 · 상태</mark> · 참조. 목적: 해결에 충분한 정보 제공, 품질 추적, 프로세스 개선 제안."]}
   ],
-  terms: ["결함 관리","결함 보고서","시작 조건","완료 조건","제품 리스크","프로젝트 리스크","리스크 분석","리스크 평가","리스크 제어","리스크 식별","리스크 수준","리스크 완화","리스크 모니터링","리스크 기반 테스팅","테스트 접근법","테스트 완료 보고서","테스트 제어","테스트 모니터링","테스트 계획서","테스트 진행 보고서","테스트 피라미드","테스팅 사분면"],
+  terms: ["결함 관리","결함 보고서","시작 조건","완료 조건","제품 리스크","프로젝트 리스크","리스크 분석","리스크 평가","리스크 제어","리스크 식별","리스크 수준","리스크 완화","리스크 모니터링","리스크 기반 테스팅","테스트 접근법","테스트 완료 보고서","테스트 제어","테스트 모니터링","테스트 계획서","테스트 진행 보고서","테스트 피라미드","테스트 전략","테스팅 사분면"],
   tips: ["3점 추정 공식과 비율 추정을 손으로 계산해 본다.","우선순위 문제: 우선순위 순으로 먼저 정렬하고, 의존성이 강제하는 곳만 순서를 고친다.","결함 보고서에 들어가는 필드와 선택 사항인 필드를 구분해 알아둔다."] },
 
 { id: 6, title: "테스트 도구", minutes: 20, weight: 2,
@@ -581,11 +581,11 @@ function toggleTheme() { const n = document.documentElement.getAttribute("data-t
 let lang = store.get("istqbLang", "en"); if (lang !== "ko") lang = "en";
 const I18N = {
   en: {
-    title: "ISTQB Foundation Level Training", sub: "CTFL · Syllabus v4.0 notes · Sample exams (v3.1)", doc: "ISTQB Foundation Level Training",
+    title: "ISTQB Foundation Level Training", sub: "CTFL · Syllabus v4.0.1 notes · Sample exams (v3.1)", doc: "ISTQB Foundation Level Training",
     tabStudy: "Study Guide", tabTest: "Self-Test", tabProgress: "My Progress", tabGloss: "Glossary", glossH: "ISTQB Glossary", glossSub: n => `${n} syllabus-related terms (English + KSTQB Korean). Tap an underlined word in the study notes to see its definition.`, glossSearch: "Search term or definition…", glossNone: "No matching terms.", glossAll: "Full glossary (647 terms):", glossFoot: ' Glossary terms and definitions: ISTQB&reg; Glossary V4.8.1 (glossary.istqb.org), &copy; ISTQB, licensed CC BY 4.0; Korean wording from the KSTQB glossary. Only the terms that appear in the Foundation syllabus are included.', glossClose: "Close", portal: "&larr; Portal", langLabel: "Language", themeTip: "Toggle light / dark",
-    footer: "Study notes are a condensed summary of the ISTQB&reg; Certified Tester Foundation Level Syllabus v4.0. Sample questions, answers and explanations are taken from the ISTQB&reg; Foundation Level 2018 v3.1 Sample Exams A, B and C &copy; International Software Testing Qualifications Board &mdash; reproduced for internal, non-commercial training with the source acknowledged. ISTQB&reg; is a registered trademark of the International Software Testing Qualifications Board.",
+    footer: "Study notes are a condensed summary of the ISTQB&reg; Certified Tester Foundation Level Syllabus v4.0.1 (errata release of 2024-09-15). Sample questions, answers and explanations are taken from the ISTQB&reg; Foundation Level 2018 v3.1 Sample Exams A, B and C &copy; International Software Testing Qualifications Board &mdash; reproduced for internal, non-commercial training with the source acknowledged. ISTQB&reg; is a registered trademark of the International Software Testing Qualifications Board.",
     pCore: "★ CORE – must know", pKnow: "KNOW", pSkim: "SKIM – low priority",
-    howto: n => `<b>How to use:</b> study the <span class="badge core">★ CORE</span> sections first (open by default), glance at <span class="badge know">KNOW</span>, and ignore <span class="badge skim">SKIM</span> unless you have time. Then press <b>Practice this chapter</b>. Notes follow <b>Syllabus v4.0</b>; the ${n} sample questions come from the <b>2018 v3.1</b> sample exams, so a few use older wording (the “Exam trap” boxes point out the differences).`,
+    howto: n => `<b>How to use:</b> study the <span class="badge core">★ CORE</span> sections first (open by default), glance at <span class="badge know">KNOW</span>, and ignore <span class="badge skim">SKIM</span> unless you have time. Then press <b>Practice this chapter</b>. Notes follow <b>Syllabus v4.0.1</b>; the ${n} sample questions come from the <b>2018 v3.1</b> sample exams, so a few use older wording (the “Exam trap” boxes point out the differences).`,
     legBlue: "Blue", legBlueT: " = key term", legYellow: "Yellow", legYellowT: " = exam-critical fact / rule / formula", legRed: "Red box", legRedT: " = common exam trap",
     studied: "✓ studied", markStudied: "☐ mark studied", secStudied: (a, b) => `${a}/${b} sections studied`,
     qNote: "Q = typical number of exam questions (of 40). Chapters 4 and 5 carry about half of the exam.",
@@ -613,11 +613,11 @@ const I18N = {
     koNoteOfficial: "Korean: official KSTQB translation", koNoteAI: "Korean: unofficial translation (no official version published)"
   },
   ko: {
-    title: "ISTQB 파운데이션 레벨 학습", sub: "CTFL · 실러버스 v4.0 노트 · 샘플 시험 (v3.1)", doc: "ISTQB 파운데이션 레벨 학습",
+    title: "ISTQB 파운데이션 레벨 학습", sub: "CTFL · 실러버스 v4.0.1 노트 · 샘플 시험 (v3.1)", doc: "ISTQB 파운데이션 레벨 학습",
     tabStudy: "스터디 가이드", tabTest: "자가 테스트", tabProgress: "내 진도", tabGloss: "용어집", glossH: "ISTQB 용어집", glossSub: n => `실라버스 관련 용어 ${n}개 (영어 + KSTQB 한글). 스터디 노트에서 밑줄 친 단어를 누르면 뜻이 나옵니다.`, glossSearch: "용어 또는 설명 검색…", glossNone: "일치하는 용어가 없습니다.", glossAll: "전체 용어집(647개):", glossFoot: ' 용어·정의 출처: ISTQB&reg; Glossary V4.8.1 (glossary.istqb.org), &copy; ISTQB, CC BY 4.0 라이선스. 한글 표기는 KSTQB 용어집 기준이며, Foundation 실라버스에 나오는 용어만 수록했습니다.', glossClose: "닫기", portal: "&larr; 포털", langLabel: "언어", themeTip: "라이트 / 다크 전환",
-    footer: "스터디 노트는 ISTQB&reg; Certified Tester Foundation Level Syllabus v4.0(KSTQB 한글판 용어 기준)을 요약한 것입니다. 샘플 문제, 정답, 해설은 ISTQB&reg; Foundation Level 2018 v3.1 Sample Exam A, B, C &copy; International Software Testing Qualifications Board 자료이며, 출처를 밝히고 사내 비상업적 교육 목적으로 복제했습니다. Exam A의 한글 문제·해설은 KSTQB 공식 번역본(v0.1)이고, Exam B·C의 한글은 공식본이 없어 자체 번역한 비공식 번역입니다. ISTQB&reg;는 International Software Testing Qualifications Board의 등록 상표입니다.",
+    footer: "스터디 노트는 ISTQB&reg; Certified Tester Foundation Level Syllabus v4.0.1(2024-09-15 정오표 반영, 한글 용어는 KSTQB v4.0 한글판 기준)을 요약한 것입니다. 샘플 문제, 정답, 해설은 ISTQB&reg; Foundation Level 2018 v3.1 Sample Exam A, B, C &copy; International Software Testing Qualifications Board 자료이며, 출처를 밝히고 사내 비상업적 교육 목적으로 복제했습니다. Exam A의 한글 문제·해설은 KSTQB 공식 번역본(v0.1)이고, Exam B·C의 한글은 공식본이 없어 자체 번역한 비공식 번역입니다. ISTQB&reg;는 International Software Testing Qualifications Board의 등록 상표입니다.",
     pCore: "★ 핵심 – 반드시 알아야 함", pKnow: "알아두기", pSkim: "건너뛰어도 됨",
-    howto: n => `<b>사용법:</b> <span class="badge core">★ 핵심</span> 섹션(기본으로 펼쳐짐)을 먼저 공부하고, <span class="badge know">알아두기</span>는 훑어보고, <span class="badge skim">건너뛰어도 됨</span>은 시간이 있을 때만 보세요. 그다음 <b>이 챕터 연습</b>을 누르세요. 노트는 <b>실러버스 v4.0</b> 기준이고 ${n}개의 샘플 문제는 <b>2018 v3.1</b> 샘플 시험에서 가져왔기 때문에 일부는 표현이 다를 수 있습니다(“시험 함정” 박스에서 차이를 알려줍니다).`,
+    howto: n => `<b>사용법:</b> <span class="badge core">★ 핵심</span> 섹션(기본으로 펼쳐짐)을 먼저 공부하고, <span class="badge know">알아두기</span>는 훑어보고, <span class="badge skim">건너뛰어도 됨</span>은 시간이 있을 때만 보세요. 그다음 <b>이 챕터 연습</b>을 누르세요. 노트는 <b>실러버스 v4.0.1</b> 기준이고 ${n}개의 샘플 문제는 <b>2018 v3.1</b> 샘플 시험에서 가져왔기 때문에 일부는 표현이 다를 수 있습니다(“시험 함정” 박스에서 차이를 알려줍니다).`,
     legBlue: "파란색", legBlueT: " = 핵심 용어", legYellow: "노란색", legYellowT: " = 시험에 꼭 나오는 사실 / 규칙 / 공식", legRed: "빨간 박스", legRedT: " = 자주 틀리는 시험 함정",
     studied: "✓ 학습 완료", markStudied: "☐ 학습 완료 표시", secStudied: (a, b) => `${a}/${b} 섹션 완료`,
     qNote: "Q = 시험 출제 문항 수 추정(40문항 중). 4장과 5장이 시험의 약 절반을 차지합니다.",
