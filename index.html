@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-03";
+const BUILD_ID = "2026-10-30-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12149,6 +12149,68 @@ function onHRChangeModeChange() {
   document.getElementById("hrChangeStatusWrap").style.display = mode === "update" ? "block" : "none";
 }
 
+// ── Edit hire date / birthday (HR group only) ───────────────────────────────
+function openEditDates(employeeId) {
+  if (!canAccessHR || !employeesListId) return; // defense in depth — the button is hidden for everyone else
+  if (!employees.find(e => e.id === employeeId)) return;
+  hrView = { mode: "editDates", employeeId };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function renderEditDates(box) {
+  box.style.width = "min(460px, 94vw)";
+  const emp = employees.find(e => e.id === hrView.employeeId); if (!emp) return;
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+      <h3 style="margin-bottom:2px;">Edit hire date / birthday</h3>
+      <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')" style="padding:4px 10px;">✕</button>
+    </div>
+    <div style="font-size:12px; color:var(--text2); margin-bottom:14px;">${escapeHtml(emp.name)} · ${escapeHtml(emp.position || "—")}</div>
+    <div class="form-group"><label>Hire date</label><input id="hrEdHire" type="date" value="${escapeAttr(dateOnly(emp.hireDate) || "")}" /></div>
+    <div class="form-group"><label>Birthday</label><input id="hrEdBirthday" type="date" value="${escapeAttr(dateOnly(emp.birthday) || "")}" /></div>
+    <div style="font-size:11.5px; color:var(--text3); margin:6px 0 14px;">Changing the hire date recalculates probation / regular status and leave credits. Every correction is written to this employee's position history.</div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="openEmployeeDetail('${emp.id}')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditDates()">Save</button>
+    </div>`;
+}
+async function submitEditDates() {
+  if (!canAccessHR) return;
+  const emp = employees.find(e => e.id === (hrView && hrView.employeeId)); if (!emp) return;
+  const hire = document.getElementById("hrEdHire").value, bday = document.getElementById("hrEdBirthday").value;
+  const oldHire = dateOnly(emp.hireDate) || "", oldBday = dateOnly(emp.birthday) || "";
+  if (hire === oldHire && bday === oldBday) { toast("Nothing changed.", "error"); return; }
+  const today = new Date().getFullYear() + "-" + String(new Date().getMonth() + 1).padStart(2, "0") + "-" + String(new Date().getDate()).padStart(2, "0");
+  if (hire && hire > today) { toast("Hire date cannot be in the future.", "error"); return; }
+  if (bday && bday >= today) { toast("Birthday must be in the past.", "error"); return; }
+  const fields = {};
+  const notes = [];
+  if (hire !== oldHire) { fields.HireDate = hire || null; notes.push(`Hire date corrected: ${oldHire || "—"} → ${hire || "—"}`); }
+  if (bday !== oldBday) { fields.Birthday = bday || null; notes.push(`Birthday corrected: ${oldBday ? "on file" : "—"} → ${bday ? "updated" : "—"}`); } // exact birthday is not copied into the history log
+  setSyncing(true);
+  try {
+    await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+    if ("HireDate" in fields) { emp.hireDate = fields.HireDate; emp.status = effectiveEmpStatus(emp.rawStatus || emp.status, emp.hireDate); }
+    if ("Birthday" in fields) emp.birthday = fields.Birthday;
+    if (positionHistoryListId) {
+      try {
+        const description = notes.join(" · ");
+        const created = await graphFetch(`/sites/${siteId}/lists/${positionHistoryListId}/items`, { method: "POST", body: JSON.stringify({ fields: { Title: emp.name, EmployeeId: String(emp.id), EffectiveDate: today, Description: description } }) });
+        allPositionHistory.push({ itemId: created && created.id, employeeId: String(emp.id), employeeName: emp.name, date: today, description });
+      } catch (e) { console.warn("Dates saved but history entry failed", e); }
+    }
+    setSyncing(false, true);
+    toast("Dates updated ✓", "success");
+    hrView = { mode: "detail", employeeId: emp.id };
+    hrDetail = await loadEmployeeDetail(emp.id);
+    renderHRModal();
+    renderContent(); // birthdays / org views may use these dates
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not save: " + err.message, "error");
+  }
+}
+
 async function submitLogChange() {
   const emp = employees.find(e => e.id === hrView.employeeId);
   if (!emp) return;
@@ -12705,6 +12767,7 @@ function renderHRModal() {
   }
 
   if (hrView.mode === "directory") { renderDirectory(box); return; }
+  if (hrView.mode === "editDates") { renderEditDates(box); return; }
   if (hrView.mode === "statusList") { renderStatusList(box); return; }
   if (hrView.mode === "mySchedule") { renderScheduleEditor(box); return; }
   if (hrView.mode === "attendance") { renderAttendance(box); return; }
@@ -13300,11 +13363,13 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           </div>
         </div>
       </div>
-      ${(emp.email || emp.birthday) ? `
-        <div style="display:flex; gap:20px; margin-top:12px;">
+      ${(emp.email || emp.birthday || canAccessHR) ? `
+        <div style="display:flex; gap:20px; margin-top:12px; flex-wrap:wrap; align-items:flex-end;">
+          ${canAccessHR && !selfView ? `<div><div style="font-size:11px; color:var(--text2);">Hire date</div><div style="font-size:13px;">${escapeHtml(dateOnly(emp.hireDate) || "—")}</div></div>` : ""}
           ${emp.email ? `<div><div style="font-size:11px; color:var(--text2);">Email</div><a href="mailto:${escapeAttr(emp.email)}" style="font-size:13px; color:var(--accent);">${escapeHtml(emp.email)}</a></div>` : ""}
           ${emp.altEmail ? `<div><div style="font-size:11px; color:var(--text2);">Teams / sign-in email</div><a href="mailto:${escapeAttr(emp.altEmail)}" style="font-size:13px; color:var(--accent);">${escapeHtml(emp.altEmail)}</a></div>` : ""}
           ${emp.birthday ? `<div><div style="font-size:11px; color:var(--text2);">Birthday</div><div style="font-size:13px;">${escapeHtml(monthDayLabel(emp.birthday))}</div></div>` : ""}
+          ${canAccessHR && !selfView ? `<button class="btn btn-secondary btn-sm" onclick="openEditDates('${emp.id}')" title="Correct hire date / birthday (HR only)">&#9998; Edit dates</button>` : ""}
         </div>
       ` : ""}
       ${usageThisYear.length ? `
