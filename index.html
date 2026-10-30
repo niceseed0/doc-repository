@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-05";
+const BUILD_ID = "2026-10-30-06";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14998,6 +14998,8 @@ async function loadAttendanceLog() {
 function refreshHomeStatus() {
   const el = document.getElementById("homeStatusLine");
   if (el && activeTab === "Welcome" && !hrView) el.innerHTML = homeStatusLineHtml();
+  const box = document.getElementById("mySchedBox");
+  if (box && activeTab === "Welcome" && !hrView) box.innerHTML = mySchedInnerHtml();
 }
 function startScheduleData() {
   if (schedTimer) return;
@@ -15365,7 +15367,7 @@ function homeStatusLineHtml() {
   const btn = (label, fn, tip) => ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="${fn}" title="${escapeAttr(tip)}">${label}</button>`;
   const mine = schedListId && myEmployeeRecord() ? btn("&#128339; My schedule", "openMySchedule()", "Set your working days and hours") : "";
   const att = (attListId || timeOffListId) && (canAccessHR || isPermissionAdmin) ? btn("&#128202; Attendance", "openAttendance()", "Record and review late / absent / leave / sick") : "";
-  return homeStatusLineCore() + mine + att;
+  return homeStatusLineCore();
 }
 function homeStatusLineCore() {
   if (isHomeLeadership()) {
@@ -15439,16 +15441,84 @@ function scheduleComingSoonBox(icon, title, desc) {
     <div class="req-desc">${escapeHtml(desc)}</div>
   </div>`;
 }
-function renderMySchedule() {
-  return `<div class="welcome-card">
-    <div class="welcome-card-header"><h2>My Schedule</h2></div>
-    <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
-      ${scheduleComingSoonBox("&#128197;", "Work Hours", "Your working days and hours, and whether you're currently on or off the clock. Will sync automatically once the Shifts app is connected.")}
-      ${scheduleComingSoonBox("&#127796;", "Leave & Time Off", "Approved and upcoming leave will appear here automatically.")}
-      ${scheduleComingSoonBox("&#128198;", "This Week's Meetings", "Your meetings for the next 7 days will appear here once meeting scheduling is added.")}
-    </div>
-  </div>`;
+// "My Schedule" card on Home: work hours (editable), leave & time off, and this calendar week's events.
+function mySchedMD(ymd) { const d = new Date(String(ymd).slice(0, 10) + "T00:00:00"); return isNaN(d) ? String(ymd) : d.toLocaleDateString("en-US", { month: "short", day: "numeric" }); }
+function mySchedChip(text, color) { return `<span style="font-size:11px; font-weight:600; color:${color}; border:1px solid ${color}; border-radius:999px; padding:1px 9px; white-space:nowrap;">${escapeHtml(text)}</span>`; }
+function mySchedSection(icon, title, bodyHtml, rightHtml) {
+  return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px 14px;">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;"><span>${icon}</span><span style="font-weight:700; font-size:14px;">${escapeHtml(title)}</span><span style="flex:1;"></span>${rightHtml || ""}</div>
+    ${bodyHtml}</div>`;
 }
+function mySchedWorkHtml(me) {
+  if (!schedListId || !me) return `<div style="font-size:12.5px; color:var(--text3);">The schedule list is not set up yet.</div>`;
+  const rec = schedMap.get(String(me.id));
+  const hasWeekly = rec && rec.weekly && Object.keys(rec.weekly).length;
+  if (!hasWeekly) return `<div style="font-size:12.5px; color:var(--text2); margin-bottom:8px;">You haven't set your working days and hours yet.</div><button class="btn btn-primary btn-sm" onclick="openMySchedule()">${escapeHtml(HOME_TEXT.setSchedule)}</button>`;
+  const r = empScheduleStatus(me), colors = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" };
+  const label = HOME_TEXT.statusLabels[r.status] || r.status;
+  const msgTpl = HOME_TEXT.workMessages[r.phase] || "";
+  const msg = msgTpl.replace("{time}", r.detail || "");
+  const todayDow = new Date().getDay();
+  const days = DOW_ORDER.map(d => {
+    const w = rec.weekly[d]; const isToday = d === todayDow;
+    return `<div style="text-align:center; padding:6px 2px; min-width:0; border-radius:8px; border:1px solid ${isToday ? "var(--accent)" : "var(--border)"}; background:${isToday ? "rgba(79,124,255,.12)" : "transparent"};">
+      <div style="font-size:11px; color:var(--text2); font-weight:600;">${DOW_NAME[d].slice(0, 3)}</div>
+      <div style="font-size:11px; margin-top:2px; color:${w ? "var(--text)" : "var(--text3)"};">${w ? `${escapeHtml(fmt12(w.s))}<br>${escapeHtml(fmt12(w.e))}` : "Off"}</div></div>`;
+  }).join("");
+  const today = toLocalYMD(new Date()), exc = Object.keys(rec.exceptions || {}).filter(k => k >= today).sort().slice(0, 4)
+    .map(k => { const x = rec.exceptions[k]; return `<div style="font-size:11.5px; color:var(--text2);">&bull; ${escapeHtml(mySchedMD(k))}: ${x.off ? "Day off" : `${escapeHtml(fmt12(x.s))} – ${escapeHtml(fmt12(x.e))}`}</div>`; }).join("");
+  return `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">${mySchedChip(label, colors[r.status] || "var(--text3)")}<span style="font-size:12.5px; color:var(--text2);">${escapeHtml(msg)}</span></div>
+    <div style="display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:5px; margin-top:8px;">${days}</div>
+    ${exc ? `<div style="margin-top:8px;"><div style="font-size:11px; color:var(--text3); margin-bottom:2px;">UPCOMING EXCEPTIONS</div>${exc}</div>` : ""}`;
+}
+function mySchedLeaveHtml(me) {
+  if (!me) return `<div style="font-size:12.5px; color:var(--text3);">No employee record found for your account.</div>`;
+  let credits = "";
+  try {
+    const ls = leaveStatus(me);
+    if (ls.phase === "probation") credits = `On probation — service credit from ${dateOnly(ls.regularizationDate.toISOString())}`;
+    else if (ls.phase === "serviceCredit") credits = `&#9889; Service credit ${ls.serviceCredit.left} / ${ls.serviceCredit.total} (expires ${dateOnly(ls.serviceCredit.expiresOn.toISOString())})`;
+    else if (ls.phase === "annual") credits = `&#127796; Vacation ${ls.vl.left} / ${ls.vl.base} &nbsp;·&nbsp; &#129298; Sick ${ls.sl.left} / ${ls.sl.base}${ls.birthday ? ` &nbsp;·&nbsp; &#127874; Birthday ${ls.birthday.left} / ${ls.birthday.total}` : ""}`;
+  } catch (e) { credits = ""; }
+  const today = toLocalYMD(new Date()), horizon = toLocalYMD(new Date(Date.now() + 120 * 86400000));
+  const rows = timeOffRows.filter(r => r.empId === String(me.id) && (r.end || r.start) >= today && r.start <= horizon).sort((a, b) => a.start.localeCompare(b.start));
+  const kindColor = { leave: "var(--yellow)", sick: "var(--red, #ef4444)", holiday: "var(--accent)", rest: "var(--text3)" };
+  const list = rows.length ? rows.slice(0, 6).map(r => {
+    const range = r.end && r.end !== r.start ? `${mySchedMD(r.start)} – ${mySchedMD(r.end)}` : mySchedMD(r.start);
+    const now = r.start <= today && (r.end || r.start) >= today;
+    return `<div style="display:flex; align-items:center; gap:8px; padding:5px 0; border-top:1px solid var(--border); font-size:12.5px;">${mySchedChip(TIMEOFF_KINDS[r.kind] || r.kind, kindColor[r.kind] || "var(--text3)")}<span style="flex:1;">${escapeHtml(r.label || TIMEOFF_KINDS[r.kind] || "")}</span><span style="color:var(--text2); white-space:nowrap;">${escapeHtml(range)}${now ? " · now" : ""}</span></div>`;
+  }).join("") : `<div style="font-size:12.5px; color:var(--text3); padding-top:2px;">No upcoming leave or sick leave.</div>`;
+  return `${credits ? `<div style="font-size:12.5px; color:var(--text2); margin-bottom:6px;">${credits}</div>` : ""}${list}
+    <div style="font-size:11px; color:var(--text3); margin-top:6px;">Leave, sick leave and holidays are recorded by HR and appear here automatically.</div>`;
+}
+function mySchedWeekHtml() {
+  const now = new Date(), start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()); // Sunday-first, same as the calendar
+  const todayYmd = toLocalYMD(now), parts = []; let total = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), ymd = toLocalYMD(d);
+    let evs = []; try { evs = calendarEventsFor(ymd) || []; } catch (e) { evs = []; }
+    total += evs.length;
+    if (!evs.length) continue;
+    parts.push(`<div style="padding:6px 0; border-top:1px solid var(--border);">
+      <div style="font-size:11.5px; font-weight:700; color:${ymd === todayYmd ? "var(--accent)" : "var(--text2)"}; margin-bottom:3px;">${d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}${ymd === todayYmd ? " · Today" : ""}</div>
+      ${evs.map(e => `<div class="cal-ev cal-ev-${escapeAttr(e.type || "task")}" title="${escapeAttr(e.title)}" ${e.onclick ? `onclick="${e.onclick}"` : ""} style="${e.onclick ? "cursor:pointer;" : ""} white-space:normal; margin-bottom:3px;">${escapeHtml(e.title)}</div>`).join("")}</div>`);
+  }
+  const range = `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  return { range, html: total ? parts.join("") : `<div style="font-size:12.5px; color:var(--text3);">Nothing on the calendar this week.</div>` };
+}
+function mySchedInnerHtml() {
+  const me = myEmployeeRecord(), wk = mySchedWeekHtml();
+  const editBtn = schedListId && me ? `<button class="btn btn-secondary btn-sm" onclick="openMySchedule()" title="Set your working days and hours">&#9998; Edit schedule</button>` : "";
+  const attBtn = (attListId || timeOffListId) && (canAccessHR || isPermissionAdmin) ? `<button class="btn btn-secondary btn-sm" onclick="openAttendance()" title="Record and review late / absent / leave / sick">&#128202; Attendance</button>` : "";
+  const addBtn = peListId ? `<button class="btn btn-secondary btn-sm" onclick="openPeForm(null)" title="Add to my calendar">+ Add</button>` : "";
+  return `<div class="welcome-card-header"><h2>My Schedule</h2><div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">${editBtn}${attBtn}</div></div>
+    <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
+      ${mySchedSection("&#128197;", "Work Hours", mySchedWorkHtml(me))}
+      ${mySchedSection("&#127796;", "Leave & Time Off", mySchedLeaveHtml(me))}
+      ${mySchedSection("&#128198;", "This Week", wk.html, `<span style="font-size:11.5px; color:var(--text3);">${escapeHtml(wk.range)}</span>${addBtn}`)}
+    </div>`;
+}
+function renderMySchedule() { return `<div class="welcome-card" id="mySchedBox">${mySchedInnerHtml()}</div>`; }
 
 // ── "My Tasks of the Week": merges Weekly PM Report / Attendance Dashboard, General Task
 // assignments, and the Quarterly Feedback quota into one due-today/overdue vs due-this-week view.
