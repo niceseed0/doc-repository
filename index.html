@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-06";
+const BUILD_ID = "2026-10-30-07";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -6217,7 +6217,7 @@ function unifiedTaskAlerts() {
   }));
   const qa = qfAlert();
   const quarterly = qa ? [qa] : [];
-  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
+  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts(), ...mrUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
 }
 function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -10974,13 +10974,74 @@ function mrFindConflict(c, ignoreId) {
   }
   return null;
 }
+// Participants are stored as "Name <email>, Name2 <email2>" in the existing Participants column (older free-text bookings stay valid).
+function mrParseParts(str) {
+  return String(str || "").split(",").map(x => x.trim()).filter(Boolean).map(x => {
+    const m = /^(.*?)\s*<([^>]+)>$/.exec(x);
+    return m ? { name: m[1].trim(), email: m[2].trim().toLowerCase() } : { name: x, email: "" };
+  });
+}
+function mrSerializeParts(arr) { return (arr || []).map(p => p.email ? `${p.name} <${p.email}>` : p.name).join(", "); }
+function mrPartsNames(str) { return mrParseParts(str).map(p => p.name).join(", "); }
+function mrMyIdentity() {
+  const me = myEmployeeRecord();
+  return { emails: [srMyEmail(), me && me.email, me && me.altEmail].filter(Boolean).map(x => String(x).toLowerCase()), name: me ? String(me.name || "").trim().toLowerCase() : "" };
+}
+function mrIsParticipant(b, id) {
+  id = id || mrMyIdentity();
+  const raw = String(b.participants || ""), parts = mrParseParts(raw);
+  if (parts.some(p => p.email && id.emails.includes(p.email))) return true;
+  if (!id.name) return false;
+  if (raw.includes("<")) return parts.some(p => !p.email && p.name.toLowerCase() === id.name);
+  return id.name.length >= 3 && raw.toLowerCase().includes(id.name); // older free-text bookings
+}
+function mrIsMine(b, id) { id = id || mrMyIdentity(); return b.organizerEmail === srMyEmail() || mrIsParticipant(b, id); }
 function mrMyCalendarEvents(ymd) {
   if (!mrListId || !mrBookings.length) return [];
-  const me = myEmployeeRecord(); const email = srMyEmail();
-  const nm = me ? String(me.name || "").trim().toLowerCase() : "";
-  return mrOn(ymd).filter(b => b.organizerEmail === email || (nm.length >= 3 && String(b.participants).toLowerCase().includes(nm)))
+  const id = mrMyIdentity();
+  return mrOn(ymd).filter(b => mrIsMine(b, id))
     .map(b => ({ title: `${b.start} ${b.title} (${b.room.split(" ")[0]} conf. room)`, type: "meeting", onclick: `openMrDetail('${b.itemId}','${ymd}','cal')` }));
 }
+// Home-page alerts for meetings I was invited to (next 3 days, until the meeting ends).
+function mrUnifiedAlerts() {
+  if (!mrListId || !mrBookings.length) return [];
+  const id = mrMyIdentity(), out = [], now = Date.now();
+  mrBookings.filter(b => b.organizerEmail !== srMyEmail() && mrIsParticipant(b, id)).forEach(b => {
+    for (let i = 0; i <= 3; i++) {
+      const d = new Date(); d.setDate(d.getDate() + i); const ymd = toLocalYMD(d);
+      if (!mrOccursOn(b, ymd)) continue;
+      const startMs = new Date(`${ymd}T${b.start || "00:00"}:00`).getTime(), endMs = new Date(`${ymd}T${b.end || b.start || "23:59"}:00`).getTime();
+      if (endMs <= now) continue;
+      const level = startMs <= now ? "due" : alertLevelForDueMs(startMs); if (!level) continue;
+      out.push({ level, sortMs: startMs, onclick: `openMrDetail('${b.itemId}','${ymd}','cal')`, title: `\u{1F4C5} ${b.title}`, sub: `${b.room} · invited by ${b.organizerName || "—"}`,
+        dueLabel: `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${b.start}–${b.end}`, badge: level === "due" ? (startMs <= now ? "Now" : "Due now") : level === "d1" ? "D-1" : "D-3" });
+    }
+  });
+  return out;
+}
+// How many meetings the signed-in person has today (organizer or invited).
+function mrTodayCount() { if (!mrListId) return null; const id = mrMyIdentity(), t = toLocalYMD(new Date()); return mrOn(t).filter(b => mrIsMine(b, id)).length; }
+// Participant picker (search the employee list, click to add)
+function mrPartCandidates(q) {
+  q = String(q || "").trim().toLowerCase(); if (!q) return [];
+  const picked = new Set(((hrView && hrView.draft && hrView.draft.parts) || []).map(p => p.name.toLowerCase()));
+  return employees.filter(e => e.status !== "Resigned" && !picked.has(String(e.name).toLowerCase()) && (`${e.name} ${e.team || ""} ${e.position || ""}`.toLowerCase().includes(q))).slice(0, 8);
+}
+function mrPartSearch() {
+  const q = (document.getElementById("mrPartQ") || {}).value || "", box = document.getElementById("mrPartOpts"); if (!box) return;
+  const c = mrPartCandidates(q);
+  box.style.display = q.trim() ? "block" : "none";
+  box.innerHTML = c.length ? c.map(e => `<div class="mr-opt" onmousedown="event.preventDefault(); mrPartAdd('${e.id}')" style="padding:7px 10px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--border);">${escapeHtml(e.name)} <span style="color:var(--text3); font-size:11.5px;">${escapeHtml([e.team, e.position].filter(Boolean).join(" · "))}${(e.email || e.altEmail) ? "" : " · no email on file"}</span></div>`).join("") : `<div style="padding:8px 10px; font-size:12.5px; color:var(--text3);">No matching employee.</div>`;
+}
+function mrPartKey(ev) { if (ev.key === "Enter") { ev.preventDefault(); const c = mrPartCandidates(ev.target.value); if (c.length) mrPartAdd(c[0].id); } }
+function mrPartAdd(empId) {
+  const e = employees.find(x => x.id === String(empId)); const h = hrView; if (!e || !h || h.mode !== "mrForm") return;
+  mrCapture(); h.draft.parts = h.draft.parts || [];
+  if (h.draft.parts.length >= 60) { toast("That's the maximum number of participants.", "error"); return; }
+  h.draft.parts.push({ name: String(e.name).trim(), email: String(e.email || e.altEmail || "").toLowerCase() });
+  renderHRModal(); const q = document.getElementById("mrPartQ"); if (q) q.focus();
+}
+function mrPartRemove(i) { const h = hrView; if (!h || h.mode !== "mrForm") return; mrCapture(); h.draft.parts.splice(i, 1); renderHRModal(); }
 async function openMeetingRooms(ymd) {
   if (!mrListId) return;
   document.getElementById("hrModal").classList.add("open");
@@ -11055,7 +11116,7 @@ function renderMrDetail(box) {
       <button class="btn btn-secondary" onclick="mrBackFromDetail()" style="padding:4px 10px;">✕</button>
     </div>
     ${row("Room", escapeHtml(b.room))}${row("When", escapeHtml(when))}${row("Time", `${escapeHtml(b.start)} &ndash; ${escapeHtml(b.end)}`)}
-    ${row("Participants", escapeHtml(b.participants || "—"))}${row("Booked by", escapeHtml(b.organizerName))}
+    ${row("Participants", escapeHtml(mrPartsNames(b.participants) || "—"))}${row("Booked by", escapeHtml(b.organizerName))}
     <div class="modal-actions">
       ${mrCanManage(b) ? `<button class="btn btn-secondary" onclick="deleteMrBooking()" style="margin-right:auto;">${b.kind === "Regular" ? "Delete whole series" : "Delete"}</button><button class="btn btn-secondary" onclick="openMrForm('${b.itemId}')">Edit</button>` : ""}
       <button class="btn btn-primary" onclick="mrBackFromDetail()">Close</button>
@@ -11078,8 +11139,8 @@ function openMrForm(id, ymd) {
   const ex = id ? mrBookings.find(b => b.itemId === String(id)) : null;
   if (ex ? !mrCanManage(ex) : !mrCanBook()) return;
   const day = ymd || mrState.ymd || toLocalYMD(new Date());
-  const d = ex ? { title: ex.title, room: ex.room, kind: ex.kind, date: ex.date, weekday: ex.weekday == null ? 1 : ex.weekday, until: ex.until, start: ex.start, end: ex.end, participants: ex.participants }
-    : { title: "", room: MR_ROOMS[0], kind: "OneOff", date: day, weekday: new Date(day + "T00:00:00").getDay(), until: "", start: "09:00", end: "10:00", participants: "" };
+  const d = ex ? { title: ex.title, room: ex.room, kind: ex.kind, date: ex.date, weekday: ex.weekday == null ? 1 : ex.weekday, until: ex.until, start: ex.start, end: ex.end, parts: mrParseParts(ex.participants) }
+    : { title: "", room: MR_ROOMS[0], kind: "OneOff", date: day, weekday: new Date(day + "T00:00:00").getDay(), until: "", start: "09:00", end: "10:00", parts: [] };
   hrView = { mode: "mrForm", id: ex ? ex.itemId : null, draft: d };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
@@ -11096,7 +11157,6 @@ function mrCapture() {
   if (g("mrUntil")) d.until = g("mrUntil").value;
   if (g("mrStart")) d.start = g("mrStart").value;
   if (g("mrEnd")) d.end = g("mrEnd").value;
-  if (g("mrPart")) d.participants = g("mrPart").value;
 }
 function mrFormChange() { mrCapture(); renderHRModal(); }
 function renderMrForm(box) {
@@ -11123,7 +11183,11 @@ function renderMrForm(box) {
       <div class="form-group" style="flex:1;"><label>Start *</label><input id="mrStart" type="time" value="${escapeAttr(d.start)}" /></div>
       <div class="form-group" style="flex:1;"><label>End *</label><input id="mrEnd" type="time" value="${escapeAttr(d.end)}" /></div>
     </div>
-    <div class="form-group"><label>Participants</label><textarea id="mrPart" style="min-height:60px;" maxlength="1000" placeholder="Names, separated by commas (they will see it on their calendar)">${escapeHtml(d.participants)}</textarea></div>
+    <div class="form-group" style="position:relative;"><label>Participants <span style="font-weight:400; color:var(--text3);">(type a name — they get an alert on their Home page and see it on their calendar)</span></label>
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${(d.parts || []).map((p, i) => `<span style="display:inline-flex; align-items:center; gap:6px; background:var(--surface2); border:1px solid var(--border); border-radius:999px; padding:2px 6px 2px 10px; font-size:12.5px;">${escapeHtml(p.name)}${p.email ? "" : ` <span title="No email on file — matched by name only" style="color:var(--yellow);">&#9888;</span>`}<span onclick="mrPartRemove(${i})" style="cursor:pointer; color:var(--text3);">&#10005;</span></span>`).join("")}</div>
+      <input id="mrPartQ" type="text" autocomplete="off" placeholder="Search employees by name, team or position…" oninput="mrPartSearch()" onkeydown="mrPartKey(event)" onblur="setTimeout(() => { const b = document.getElementById('mrPartOpts'); if (b) b.style.display = 'none'; }, 150)" />
+      <div id="mrPartOpts" style="display:none; position:absolute; z-index:10; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:220px; overflow-y:auto; margin-top:2px; box-shadow:0 6px 20px rgba(0,0,0,.4);"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-secondary" onclick="openMeetingRooms()">Cancel</button>
       <button class="btn btn-primary" onclick="saveMrBooking()">Save</button>
@@ -11148,7 +11212,7 @@ async function saveMrBooking() {
   const cand = { kind: d.kind, weekday: d.kind === "Regular" ? d.weekday : null, date: d.date || "", until: d.kind === "Regular" ? (d.until || "") : "", room: d.room, start: d.start, end: d.end };
   const clash = mrFindConflict(cand, ex ? ex.itemId : null);
   if (clash) { toast(`${d.room} is already booked on ${clash.ymd} ${clash.b.start}–${clash.b.end} (${clash.b.title}).`, "error"); return; }
-  const fields = { Title: title, Room: d.room, Kind: d.kind, Weekday: d.kind === "Regular" ? String(d.weekday) : "", EventDate: d.date || "", RepeatUntil: cand.until, StartTime: d.start, EndTime: d.end, Participants: (d.participants || "").trim() };
+  const fields = { Title: title, Room: d.room, Kind: d.kind, Weekday: d.kind === "Regular" ? String(d.weekday) : "", EventDate: d.date || "", RepeatUntil: cand.until, StartTime: d.start, EndTime: d.end, Participants: mrSerializeParts(d.parts) };
   setSyncing(true);
   try {
     if (ex) {
@@ -14831,7 +14895,7 @@ function companyScheduleCounts() {
 }
 // Number of meetings the signed-in person has today (null = unknown).
 function todaysMeetingCount() {
-  return null; // TODO: wire to meeting scheduling
+  return mrTodayCount();
 }
 // Company events starting within `days` days: [{ date: "YYYY-MM-DD", title }] sorted by date.
 function upcomingCompanyEvents(days) {
