@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-30-01";
+const BUILD_ID = "2026-10-30-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12463,6 +12463,142 @@ async function deleteEmployeeRecord(employeeId) {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// EMPLOYEE DIRECTORY — everyone in one sortable / filterable table (HR group only)
+// Employees without a cluster are shown as "Admin". Current salary = latest EffectiveDate in HR Salary History.
+// ═════════════════════════════════════════════════════════════════════
+const DIR_ADMIN = "Admin";
+let dirState = { q: "", cluster: "", team: "", pos: "", stat: "", former: false, sk: "hire", sd: 1, sal: true };
+let dirSalary = new Map(); // employeeId -> { amount, date } (latest only)
+let dirSalaryOk = true;    // false when the salary list is missing / unreadable
+const DIR_COLS = [
+  { k: "name", label: "Name" }, { k: "team", label: "Team" }, { k: "cluster", label: "Cluster" }, { k: "pos", label: "Position" },
+  { k: "stat", label: "Status" }, { k: "hire", label: "Hire date" }, { k: "ten", label: "Tenure" },
+  { k: "sal", label: "Salary (₱ / month)", num: true, salary: true }, { k: "chg", label: "Last change", salary: true }
+];
+function dirClusterOf(e) { return e.cluster || DIR_ADMIN; }
+function dirTenureMonths(e) {
+  if (!e.hireDate) return null;
+  const a = new Date(String(e.hireDate).slice(0, 10) + "T00:00:00"), b = e.status === "Resigned" && e.separationDate ? new Date(String(e.separationDate).slice(0, 10) + "T00:00:00") : new Date();
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.max(0, Math.floor((b - a) / 2629800000));
+}
+function dirTenureText(m) { return m == null ? "—" : m < 12 ? m + " mo" : (m / 12).toFixed(1) + " yrs"; }
+function dirSalaryOf(e) { return dirSalary.get(String(e.id)) || null; }
+async function dirLoadSalaries() {
+  dirSalary = new Map(); dirSalaryOk = true;
+  if (!salaryHistoryListId || !(canAccessHR || canAccessSalary)) { dirSalaryOk = false; return; }
+  try {
+    let url = `/sites/${siteId}/lists/${salaryHistoryListId}/items?$expand=fields&$top=2000`;
+    while (url) {
+      const data = await graphFetch(url);
+      (data.value || []).forEach(it => {
+        const id = it.fields["EmployeeId"]; if (!id || it.fields["Amount"] == null) return;
+        const rec = { amount: Number(it.fields["Amount"]), date: String(it.fields["EffectiveDate"] || "").slice(0, 10) };
+        const cur = dirSalary.get(String(id));
+        if (!cur || rec.date >= cur.date) dirSalary.set(String(id), rec);
+      });
+      url = data["@odata.nextLink"] || null;
+    }
+  } catch (e) { console.warn("Directory: could not read salary history", e); dirSalary = new Map(); dirSalaryOk = false; }
+}
+async function openDirectory() {
+  if (!canAccessHR || !employeesListId) return;
+  hrView = { mode: "directory" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  await dirLoadSalaries();
+  if (hrView && hrView.mode === "directory") dirRefresh();
+}
+function dirRows() {
+  const st = dirState, q = st.q.trim().toLowerCase();
+  const rows = employees.filter(e =>
+    (st.former || e.status !== "Resigned") &&
+    (!q || e.name.toLowerCase().includes(q)) &&
+    (!st.cluster || dirClusterOf(e) === st.cluster) && (!st.team || e.team === st.team) &&
+    (!st.pos || e.position === st.pos) && (!st.stat || e.status === st.stat));
+  const val = e => {
+    switch (st.sk) {
+      case "name": return e.name.toLowerCase(); case "team": return (e.team || "").toLowerCase(); case "cluster": return dirClusterOf(e).toLowerCase();
+      case "pos": return (e.position || "").toLowerCase(); case "stat": return e.status;
+      case "hire": return e.hireDate ? String(e.hireDate).slice(0, 10) : null;
+      case "ten": { const m = dirTenureMonths(e); return m; }
+      case "sal": { const s = dirSalaryOf(e); return s ? s.amount : null; }
+      case "chg": { const s = dirSalaryOf(e); return s && s.date ? s.date : null; }
+    } return null;
+  };
+  rows.sort((a, b) => {
+    const x = val(a), y = val(b);
+    if (x == null && y == null) return a.name.localeCompare(b.name);
+    if (x == null) return 1; if (y == null) return -1; // empty values always last
+    return (x > y ? 1 : x < y ? -1 : a.name.localeCompare(b.name)) * st.sd;
+  });
+  return rows;
+}
+function dirSet(key, value) { dirState[key] = value; dirRefresh(); }
+function dirSort(k) { if (dirState.sk === k) dirState.sd = -dirState.sd; else { dirState.sk = k; dirState.sd = 1; } dirRefresh(); }
+function dirToggle(key) { dirState[key] = !dirState[key]; renderHRModal(); dirRefresh(); }
+function dirStatusClass(s) { return s === "Regular" ? "var(--green)" : s === "Probationary" ? "var(--yellow)" : s === "Contractual" ? "var(--accent)" : s === "Resigned" ? "var(--red)" : "var(--text2)"; }
+function dirRefresh() {
+  const head = document.getElementById("dirHead"); if (!head || !hrView || hrView.mode !== "directory") return;
+  const showSal = dirSalaryOk && dirState.sal;
+  const cols = DIR_COLS.filter(c => !c.salary || dirSalaryOk);
+  head.innerHTML = cols.map(c => `<th class="dir-th ${c.num ? "dir-num" : ""}" onclick="dirSort('${c.k}')">${c.label} <span style="color:var(--accent);">${dirState.sk === c.k ? (dirState.sd > 0 ? "&#9650;" : "&#9660;") : ""}</span></th>`).join("");
+  const rows = dirRows();
+  document.getElementById("dirBody").innerHTML = rows.length ? rows.map(e => {
+    const s = dirSalaryOf(e);
+    return `<tr>
+      <td><a style="color:var(--accent); cursor:pointer;" onclick="openEmployeeDetail('${e.id}')">${escapeHtml(e.name)}</a></td>
+      <td>${escapeHtml(e.team || "—")}</td><td>${escapeHtml(dirClusterOf(e))}</td><td>${escapeHtml(e.position || "—")}</td>
+      <td><span style="color:${dirStatusClass(e.status)}; font-weight:600; font-size:12px;">${escapeHtml(e.status)}</span></td>
+      <td>${escapeHtml(dateOnly(e.hireDate) || "—")}</td><td>${dirTenureText(dirTenureMonths(e))}</td>
+      ${dirSalaryOk ? `<td class="dir-num"><span style="${showSal ? "" : "filter:blur(5px); user-select:none;"}">${s ? s.amount.toLocaleString("en-PH") : "—"}</span></td><td>${s && s.date ? escapeHtml(dateOnly(s.date)) : "—"}</td>` : ""}
+    </tr>`;
+  }).join("") : `<tr><td colspan="${cols.length}" style="color:var(--text2); padding:14px;">No matching employees.</td></tr>`;
+  const withSal = rows.map(dirSalaryOf).filter(Boolean), tot = withSal.reduce((a, s) => a + s.amount, 0);
+  const blur = showSal ? "" : "filter:blur(5px); user-select:none;";
+  document.getElementById("dirFoot").innerHTML = `<span><b>${rows.length}</b> ${rows.length === 1 ? "person" : "people"}</span>` +
+    (dirSalaryOk ? `<span>Total monthly: <b style="${blur}">₱${tot.toLocaleString("en-PH")}</b></span><span>Average: <b style="${blur}">₱${withSal.length ? Math.round(tot / withSal.length).toLocaleString("en-PH") : 0}</b></span><span style="color:var(--text3);">${withSal.length} with salary on file</span>` : `<span style="color:var(--text3);">Salary column unavailable (HR Salary History list not found or no access).</span>`);
+}
+function dirExportCsv() {
+  const rows = dirRows(), withSal = dirSalaryOk && dirState.sal;
+  const esc = v => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const head = ["Name", "Team", "Cluster", "Position", "Status", "Hire date", "Tenure (months)"].concat(withSal ? ["Monthly salary (PHP)", "Last salary change"] : []);
+  const lines = [head].concat(rows.map(e => {
+    const s = dirSalaryOf(e), m = dirTenureMonths(e);
+    return [e.name, e.team, dirClusterOf(e), e.position, e.status, e.hireDate ? String(e.hireDate).slice(0, 10) : "", m == null ? "" : m].concat(withSal ? [s ? s.amount : "", s ? s.date : ""] : []);
+  }));
+  const blob = new Blob(["﻿" + lines.map(r => r.map(esc).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = "employee-directory-" + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function renderDirectory(box) {
+  box.style.width = "min(1180px, 96vw)";
+  const st = dirState, uniq = f => [...new Set(employees.map(f).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const sel = (key, all, vals) => `<select onchange="dirSet('${key}', this.value)" style="width:auto;"><option value="">${all}</option>${vals.map(v => `<option value="${escapeHtml(v)}" ${st[key] === v ? "selected" : ""}>${escapeHtml(v)}</option>`).join("")}</select>`;
+  box.innerHTML = `
+    <style>.dir-wrap{border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:58vh}.dir-wrap table{border-collapse:collapse;width:100%;min-width:900px}.dir-wrap th,.dir-wrap td{padding:7px 11px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--border);font-size:13px}.dir-th{position:sticky;top:0;background:var(--surface2);cursor:pointer;user-select:none;font-size:11.5px!important;text-transform:uppercase;letter-spacing:.03em;color:var(--text2)}.dir-bar input,.dir-bar select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px}.dir-num{text-align:right!important;font-variant-numeric:tabular-nums}.dir-wrap tbody tr:hover{background:rgba(255,255,255,.04)}</style>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:2px;">
+      <div><h3 style="margin-bottom:2px;">Employee Directory</h3><div style="font-size:12px; color:var(--text2);">Click a column heading to sort (&#9650; low to high, click again &#9660; high to low). Click a name to open the HR page.</div></div>
+      <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="dir-bar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:12px 0;">
+      <input type="text" placeholder="Search name…" value="${escapeHtml(st.q)}" oninput="dirSet('q', this.value)" style="width:170px;" />
+      ${sel("cluster", "All clusters", [...new Set(employees.map(dirClusterOf))].sort((a, b) => a.localeCompare(b)))}
+      ${sel("team", "All teams", uniq(e => e.team))}
+      ${sel("pos", "All positions", uniq(e => e.position))}
+      ${sel("stat", "All statuses", uniq(e => e.status))}
+      <button class="btn btn-secondary btn-sm" onclick="dirToggle('former')">${st.former ? "Hide former members" : "Show former members"}</button>
+      <span style="flex:1;"></span>
+      <button class="btn btn-secondary btn-sm" onclick="dirToggle('sal')">${st.sal ? "&#128176; Salary: shown" : "&#128176; Salary: hidden"}</button>
+      <button class="btn btn-secondary btn-sm" onclick="dirExportCsv()">&#11015; Export CSV</button>
+    </div>
+    <div class="dir-wrap"><table><thead><tr id="dirHead"></tr></thead><tbody id="dirBody"></tbody></table></div>
+    <div id="dirFoot" style="display:flex; gap:18px; flex-wrap:wrap; font-size:12.5px; color:var(--text2); margin-top:10px;"></div>`;
+  dirRefresh();
+}
+
 function renderHRModal() {
   const box = document.getElementById("hrModalInner");
   if (!hrView) { box.innerHTML = ""; return; }
@@ -12568,6 +12704,7 @@ function renderHRModal() {
     return;
   }
 
+  if (hrView.mode === "directory") { renderDirectory(box); return; }
   if (hrView.mode === "statusList") { renderStatusList(box); return; }
   if (hrView.mode === "mySchedule") { renderScheduleEditor(box); return; }
   if (hrView.mode === "attendance") { renderAttendance(box); return; }
@@ -13804,6 +13941,7 @@ function renderRequests() {
     ...mpHrCard(),
     ...qrReviewCards(),
     ...itCards(),
+    ...(canAccessHR && employeesListId ? [{ icon: "&#128101;", title: "Employee Directory", desc: "All employees in one sortable, filterable table — team, position, hire date, salary.", onclick: "openDirectory()" }] : []),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     mpsCard(),
     ...(canAccessSalary ? [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "Leave and sick usage for all employees, by year.", onclick: "openLeaveReport()" }] : [{ icon: "&#127796;", title: "Leave & Sick Status", desc: "" }]),
