@@ -5,6 +5,9 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
+<!-- Security: scripts may only come from this page itself and Microsoft's sign-in library CDN; no plugins; no <base> hijack.
+     (Inline scripts stay allowed because the portal is a single file.) -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' https://alcdn.msauth.net https://alcdn.msftauth.net; object-src 'none'; base-uri 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Elite Global Portal System</title>
 <script src="https://alcdn.msauth.net/browser/2.38.2/js/msal-browser.min.js"></script>
@@ -505,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-10-29-05";
+const BUILD_ID = "2026-10-29-10";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -542,8 +545,9 @@ const CONFIG = {
   quarterlyRecommendationsListDisplayName: "HR Quarterly Recommendations", // recommendations + one Batch row per released quarter, see SETUP_QUARTERLY_RECOMMENDATION.md
   personalEventsListDisplayName: "HR Personal Events", // personal calendar items + reminders, see SETUP_OFFICE_AND_INVENTORY.md
   meetingRoomsListDisplayName: "HR Meeting Rooms", // room bookings + weekly regular meetings
-  attendanceLogListDisplayName: "HR Attendance Log", // monthly late/absent/leave/sick per employee, see SETUP_TEAMS_SYNC.md
-  teamsSyncListDisplayName: "HR Teams Sync", // Teams Shifts → attendance status (optional), see SETUP_TEAMS_SYNC.md
+  attendanceLogListDisplayName: "HR Attendance Log", // late / absent per employee per month (HR only), see SETUP_ATTENDANCE_TEAMS_SYNC.md
+  workScheduleListDisplayName: "HR Work Schedules", // each person's own weekly schedule + exceptions, see SETUP_ATTENDANCE
+  timeOffListDisplayName: "HR Time Off", // leave / sick / holiday / rest ranges recorded by HR, see SETUP_ATTENDANCE
   companyEventImagesLibraryName: "Company Event Images", // document library for event header images (optional)
   companyEventsListDisplayName: "HR Company Events", // Elite Company Events (Home → Elite News + calendar), see SETUP_COMPANY_EVENTS.md
   emergencyContactsListDisplayName: "HR Emergency Contacts", // editable emergency contact list on the Organization page, see SETUP_EMERGENCY_CONTACTS.md
@@ -1085,7 +1089,7 @@ async function startApp() {
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadTeamsSync(), loadAttendanceLog(), checkEditPermission()]);
     refreshAccessFlags();
-    tsStartAuto();
+    startScheduleData();
     autoEmploymentStatus().then(n => { if (n) { toast(`${n} employee status${n === 1 ? "" : "es"} updated automatically (probation rule)`, "success"); renderContent(); } }).catch(() => {});
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
     document.getElementById("authScreen").style.display = "none";
@@ -1170,8 +1174,10 @@ async function resolveSiteAndLists() {
   qrReviewsListId = qrRevMatch ? qrRevMatch.id : null; // optional — reviewers cannot decide without it
   const peMatch = (lists.value || []).find(l => l.displayName === CONFIG.personalEventsListDisplayName);
   peListId = peMatch ? peMatch.id : null; // optional — the "add to my schedule" feature is off if missing
-  const tsMatch = (lists.value || []).find(l => l.displayName === CONFIG.teamsSyncListDisplayName);
-  tsListId = tsMatch ? tsMatch.id : null;
+  const wsMatch = (lists.value || []).find(l => l.displayName === CONFIG.workScheduleListDisplayName);
+  schedListId = wsMatch ? wsMatch.id : null; // optional — "My schedule" stays hidden if missing
+  const toMatch = (lists.value || []).find(l => l.displayName === CONFIG.timeOffListDisplayName);
+  timeOffListId = toMatch ? toMatch.id : null; // optional — leave / sick recording is off if missing
   const attMatch = (lists.value || []).find(l => l.displayName === CONFIG.attendanceLogListDisplayName);
   attListId = attMatch ? attMatch.id : null;
   const ceiMatch = (lists.value || []).find(l => l.displayName === CONFIG.companyEventImagesLibraryName);
@@ -12562,9 +12568,10 @@ function renderHRModal() {
     return;
   }
 
-  if (hrView.mode === "tsSettings") { renderTsSettings(box); return; }
-  if (hrView.mode === "tsList") { renderTsStatusList(box); return; }
+  if (hrView.mode === "statusList") { renderStatusList(box); return; }
+  if (hrView.mode === "mySchedule") { renderScheduleEditor(box); return; }
   if (hrView.mode === "attendance") { renderAttendance(box); return; }
+  if (hrView.mode === "attRecord") { renderAttRecord(box); return; }
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
   if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
   if (hrView.mode === "ceForm") { renderCompanyEventForm(box); return; }
@@ -14374,23 +14381,61 @@ function goToHistoryDocument(documentId) {
 
 // ── Guideline page ───────────────────────────────────────────────────────
 function sanitizeGuideHtml(html) {
-  // Basic sanitization: strip script/style tags and inline event handlers.
-  const div = document.createElement("div");
-  div.innerHTML = html || "";
-  div.querySelectorAll("script, style, iframe, object, embed").forEach(el => el.remove());
-  div.querySelectorAll("*").forEach(el => {
-    [...el.attributes].forEach(attr => {
-      if (/^on/i.test(attr.name) || attr.name === "srcdoc") el.removeAttribute(attr.name);
+  // Allow-list sanitizer. The HTML is parsed with DOMParser, which builds an inert document: nothing in it
+  // (images, scripts, handlers) loads or runs while we clean it. Only the tags/attributes our editors produce
+  // survive; links are limited to http(s)/mailto and images to http(s), data:image or the SharePoint image key.
+  const ALLOWED = new Set(["A","B","STRONG","I","EM","U","S","STRIKE","DEL","SUB","SUP","BR","HR","P","DIV","SPAN","FONT",
+    "H1","H2","H3","H4","H5","H6","UL","OL","LI","BLOCKQUOTE","PRE","CODE","TABLE","THEAD","TBODY","TFOOT","TR","TD","TH","IMG","CENTER"]);
+  const DROP = new Set(["SCRIPT","STYLE","IFRAME","FRAME","FRAMESET","OBJECT","EMBED","APPLET","SVG","MATH","FORM","INPUT","BUTTON",
+    "TEXTAREA","SELECT","OPTION","LINK","META","BASE","TEMPLATE","NOSCRIPT","TITLE","HEAD","AUDIO","VIDEO","SOURCE","CANVAS","DIALOG","PORTAL"]);
+  const STYLE_OK = /^(color|font-size|font-weight|font-style|font-family|text-decoration(-line)?|text-align|line-height|letter-spacing|max-width|width|height|margin(-[a-z]+)?|padding(-[a-z]+)?|border(-[a-z-]+)?|list-style(-type)?|vertical-align|white-space|word-break)$/;
+  const doc = new DOMParser().parseFromString("<!doctype html><body>" + (html || ""), "text/html");
+  const safeUrl = (u, imgOnly) => {
+    const v = String(u || "").trim().replace(/[\u0000-\u001f\u007f\s]+/g, "");
+    if (/^https?:\/\//i.test(v)) return true;
+    if (!imgOnly && /^mailto:/i.test(v)) return true;
+    if (imgOnly && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(v)) return true;
+    return false;
+  };
+  const clean = (node) => {
+    [...node.children].forEach(el => {
+      const tag = el.tagName;
+      if (DROP.has(tag)) { el.remove(); return; }
+      if (!ALLOWED.has(tag)) { clean(el); el.replaceWith(...el.childNodes); return; } // unknown tag: keep its text, drop the tag
+      [...el.attributes].forEach(attr => {
+        const n = attr.name.toLowerCase(), v = attr.value;
+        let keep = false;
+        if (n === "style") {
+          const keepStyle = [];
+          for (const prop of el.style) {
+            const val = el.style.getPropertyValue(prop);
+            if (STYLE_OK.test(prop) && !/url\s*\(|expression|javascript|@import|\\/i.test(val)) keepStyle.push(`${prop}:${val}`);
+          }
+          if (keepStyle.length) el.setAttribute("style", keepStyle.join(";")); else el.removeAttribute("style");
+          return;
+        }
+        if (n === "class") {
+          const cls = v.split(/\s+/).filter(c => /^guide-[a-z0-9-]+$/i.test(c)).join(" ");
+          if (cls) el.setAttribute("class", cls); else el.removeAttribute("class");
+          return;
+        }
+        if (tag === "A" && n === "href") keep = safeUrl(v, false);
+        else if (tag === "A" && (n === "target" || n === "rel")) keep = false; // set below
+        else if (tag === "IMG" && n === "src") keep = !el.hasAttribute("data-spimg") && safeUrl(v, true); // data-spimg images are re-fetched with the viewer's sign-in
+        else if (tag === "IMG" && n === "data-spimg") keep = /^[\w .()\-]{1,200}$/.test(v);
+        else if (tag === "IMG" && (n === "alt" || n === "width" || n === "height")) keep = true;
+        else if (tag === "FONT" && (n === "color" || n === "size" || n === "face")) keep = true;
+        else if ((n === "align" || n === "colspan" || n === "rowspan") && /^[\w%-]{1,12}$/.test(v)) keep = true;
+        if (!keep) el.removeAttribute(attr.name);
+      });
+      if (tag === "A") {
+        if (el.hasAttribute("href")) { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener noreferrer"); }
+      }
+      clean(el);
     });
-    // Our toolbar never sets a background color — strip any that snuck in (e.g. from pasted
-    // content) so text never ends up sitting on a hardcoded dark box in light mode.
-    if (el.tagName === "IMG" && el.hasAttribute("data-spimg")) el.removeAttribute("src"); // re-fetched with the viewer's sign-in
-    if (el.style) {
-      el.style.removeProperty("background");
-      el.style.removeProperty("background-color");
-    }
-  });
-  return div.innerHTML;
+  };
+  clean(doc.body);
+  return doc.body.innerHTML;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -14538,7 +14583,18 @@ const HOME_TEXT = {
   statusSoon: "Status — coming soon",
   statusLabels: { working: "Working", leave: "On Leave", sick: "On Sick Leave", off: "Outside Working Hours" },
   countLabels: { working: "working", leave: "on leave", sick: "on sick leave", off: "outside working hours" },
-  countsSoon: "Live headcount coming soon",
+  countsSoon: "Nobody has set a schedule yet.",
+  setSchedule: "Set your schedule",
+  // Shown next to your status. {time} = shift start. Reword freely.
+  workMessages: {
+    working: "It's working hours now — have a great shift!",
+    before: "Your shift starts at {time}.",
+    after: "Thank you for your hard work today. Rest well!",
+    dayoff: "Enjoy your day off!",
+    holiday: "Enjoy your day off!",
+    leave: "Enjoy your leave — see you soon!",
+    sick: "Take care and get well soon."
+  },
   defaultByPart: { morning: "Hope you have a great day ahead.", afternoon: "Hope your day is going well.", evening: "Hope you had a good day." }
 };
 const GREETING_BUSY_TASK_COUNT = 3;     // this many tasks due today/overdue → "lots to do" line
@@ -14555,17 +14611,18 @@ function greetingPart() { const h = new Date().getHours(); return h < 12 ? "morn
 
 // ── Hooks for the schedule system (Shifts app / leave / meetings / company events) ──────────
 // Each returns null/[] until its data exists; the Home page already renders whatever they return.
-// Own status: return "working" | "leave" | "sick" | "off".
+// Own status → { status, detail, phase } from your own schedule + HR-recorded time off (null until you set a schedule).
 function myCurrentScheduleStatus() {
   const me = myEmployeeRecord();
-  const r = me && tsListId && tsFresh() ? tsStatus.get(String(me.id)) : null;
-  return r && r.status ? r.status : null; // from the Teams Shifts sync (see tsComputeStatus)
+  if (!me || !schedListId) return null;
+  const r = empScheduleStatus(me);
+  return r.status === "none" ? null : r;
 }
-// Company-wide headcount for HOC / Managing Director / CEO: return { working, leave, sick, off } (numbers).
+// Company-wide headcount for HOC / Managing Director / CEO: { working, leave, sick, off, none } (numbers), or null if nobody has a schedule yet.
 function companyScheduleCounts() {
-  if (!tsListId || !tsFresh() || !tsStatus.size) return null;
-  const c = { working: 0, leave: 0, sick: 0, off: 0 };
-  employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)).forEach(e => { const r = tsStatus.get(String(e.id)); if (r && c[r.status] != null) c[r.status]++; });
+  if (!schedListId || (!schedMap.size && !timeOffRows.length)) return null;
+  const c = { working: 0, leave: 0, sick: 0, off: 0, none: 0 }, now = new Date();
+  activeStaff().forEach(e => { const r = empScheduleStatus(e, now); if (c[r.status] != null) c[r.status]++; });
   return c;
 }
 // Number of meetings the signed-in person has today (null = unknown).
@@ -14579,226 +14636,196 @@ function upcomingCompanyEvents(days) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Teams Shifts → portal attendance status  (see SETUP_TEAMS_SYNC.md)
-// The permission admin (Teams owner of every Shifts team) reads Shifts with HIS OWN Microsoft sign-in:
-//   shifts + time off (v1.0) and time cards = clock in/out (beta) → one status per employee
-//   working / leave / sick / off  → written to the "HR Teams Sync" SharePoint list.
-// Everybody else just READS that list (nobody else needs Teams permissions). One list, all-text columns:
-//   RecordType "Team"   : Title = Teams team name, TeamId, Enabled "Yes"/"No"
-//   RecordType "Status" : Title = employee name, EmployeeId, Status, Detail, SyncedAt
-//   RecordType "Meta"   : Title "LastSync", SyncedAt
+// Work schedule, time off and attendance — everything is entered in the portal (no Teams sync). See SETUP_ATTENDANCE.md
+//   "HR Work Schedules" : one row per employee — Weekly (JSON) + Exceptions (JSON). Everyone edits THEIR OWN row.
+//   "HR Time Off"       : leave / sick / holiday / rest ranges entered by HR. Readable by everyone (feeds the Home headcount),
+//                         so it only holds a generic label — never a medical reason.
+//   "HR Attendance Log" : late + absent per day, one row per employee per month (HR only).
+// Status now = today's time off → else today's schedule window (exceptions override the weekly pattern; overnight shifts supported).
 // ═══════════════════════════════════════════════════════════════════════════
-const TS_SCOPES = ["Schedule.Read.All", "Team.ReadBasic.All", "User.ReadBasic.All"];
-const TS_STALE_MIN = 20;        // a status older than this is treated as unknown
-const TS_AUTO_SYNC_MIN = 5;     // while the admin has the portal open
-const TS_SCHEDULED_COUNTS_AS_WORKING = false; // true: being inside a shift counts as Working even without clocking in
-let tsListId = null;
-let tsTeams = [];                // [{ itemId, teamId, name, enabled }]
-let tsStatus = new Map();        // employeeId -> { itemId, status, detail }
-let tsMeta = { itemId: null, syncedAt: "" };
-let tsReport = [];               // last sync log lines
-let tsJoined = null;             // teams the admin belongs to (for the settings screen)
-let tsBusy = false, tsNeedsConsent = false, tsTimer = null, tsProgress = null;
+const SCHED_REFRESH_MIN = 5;
+const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const DOW_NAME = { 0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday" };
+const TIMEOFF_KINDS = { leave: "Leave", sick: "Sick Leave", holiday: "Holiday", rest: "Rest Day" };
+const LEAVE_LABELS = ["Vacation Leave", "Emergency Leave", "Maternity / Paternity Leave", "Bereavement Leave", "Unpaid Leave", "Leave"];
+let schedListId = null, timeOffListId = null, attListId = null;
+let schedMap = new Map();         // empId -> { itemId, weekly: {dow: {s,e}}, exceptions: {ymd: {off} | {s,e}}, upd }
+let timeOffRows = [];             // [{ itemId, empId, empName, kind, label, start, end }]
+let attLog = new Map();           // `${empId}|${YYYY-MM}` -> { itemId, month, empId, days: {dd: rec}, upd }
+let attClosed = new Map();        // 'YYYY-MM' -> { itemId, by, at }  months HR has closed (stored as a marker row in HR Attendance Log)
+let schedTimer = null, schedClock = null;
+let schedEdit = null, attForm = null;
+let attState = { month: "", empId: null, busy: false, msg: "" };
 
-function tsCanSync() { return !!(isPermissionAdmin && tsListId); }
-async function loadTeamsSync() {
-  tsTeams = []; tsStatus = new Map(); tsMeta = { itemId: null, syncedAt: "" };
-  if (!tsListId) return;
-  try {
-    let url = `/sites/${siteId}/lists/${tsListId}/items?$expand=fields&$top=2000`;
-    while (url) {
-      const data = await graphFetch(url);
-      (data.value || []).forEach(it => {
-        const f = it.fields || {};
-        if (f["RecordType"] === "Team") tsTeams.push({ itemId: it.id, teamId: f["TeamId"] || "", name: f["Title"] || "", enabled: f["Enabled"] === "Yes" });
-        else if (f["RecordType"] === "Status") tsStatus.set(String(f["EmployeeId"] || ""), { itemId: it.id, status: f["Status"] || "", detail: f["Detail"] || "" });
-        else if (f["RecordType"] === "Meta") tsMeta = { itemId: it.id, syncedAt: f["SyncedAt"] || "" };
-      });
-      url = data["@odata.nextLink"] || null;
-    }
-  } catch (e) { console.warn("Could not load HR Teams Sync (list may not exist yet):", e); tsTeams = []; tsStatus = new Map(); }
+// ── pure helpers (unit-tested) ────────────────────────────────────────────
+function ymdAdd(ymd, n) { const d = new Date(ymd + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function ymdDow(ymd) { return new Date(ymd + "T00:00:00Z").getUTCDay(); }
+function hmToMin(hm) { const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; }
+function fmt12(hm) {
+  const m = hmToMin(hm); if (m == null) return "";
+  let h = Math.floor(m / 60) % 24; const mi = m % 60, ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12;
+  return h + ":" + String(mi).padStart(2, "0") + " " + ap;
 }
-function tsFresh() { return !!tsMeta.syncedAt && (Date.now() - new Date(tsMeta.syncedAt).getTime()) < TS_STALE_MIN * 60000; }
-
-// Pure: one person's status from their (already merged) Shifts data. Times are ms since epoch.
-function tsComputeStatus(now, shifts, timesOff, cards, scheduledCountsAsWorking) {
-  const off = (timesOff || []).find(t => t.s <= now && now < t.e);
-  if (off) { const k = tsReasonKind(off.reason); return k === "rest" || k === "holiday" ? { status: "off", detail: off.reason || "Rest Day" } : { status: k === "sick" ? "sick" : "leave", detail: off.reason || "Time off" }; }
-  const card = (cards || []).find(c => c.state === "clockedIn" || c.state === "onBreak");
-  if (card) return { status: "working", detail: card.state === "onBreak" ? "On break" : "Clocked in" };
-  const sh = (shifts || []).find(x => x.s <= now && now < x.e);
-  if (sh) return scheduledCountsAsWorking ? { status: "working", detail: "On shift (not clocked in)" } : { status: "off", detail: "On shift — not clocked in" };
-  const next = (shifts || []).filter(x => x.s > now).sort((a, b) => a.s - b.s)[0];
-  return { status: "off", detail: next ? "Next shift " + new Date(next.s).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "No shift" };
+// The working window of a schedule on one date: { s, e } ("HH:MM") or null (day off / nothing set).
+function schedWindow(sched, ymd) {
+  if (!sched) return null;
+  const ex = sched.exceptions && sched.exceptions[ymd];
+  const ok = w => w && hmToMin(w.s) != null && hmToMin(w.e) != null && !w.off ? { s: w.s, e: w.e } : null;
+  if (ex) return ok(ex);
+  return ok(sched.weekly && sched.weekly[String(ymdDow(ymd))]);
 }
-
-async function tsToken(interactive) {
-  const account = msalInstance.getActiveAccount();
-  if (!account) throw new Error("Please sign in.");
-  try { return (await msalInstance.acquireTokenSilent({ scopes: TS_SCOPES, account })).accessToken; }
-  catch (e) {
-    if (!interactive) { tsNeedsConsent = true; throw new Error("Teams permission needed — open “Teams sync” and click Sync now."); }
-    return (await msalInstance.acquireTokenPopup({ scopes: TS_SCOPES, account })).accessToken;
+// One person's status at `now` (a local Date). offRows = that person's HR Time Off rows.
+// → { status: working|leave|sick|off|none, detail, phase: working|before|after|dayoff|leave|sick|holiday|none }
+function schedStatus(now, sched, offRows) {
+  const ymd = toLocalYMD(now), nowMin = now.getHours() * 60 + now.getMinutes();
+  const wToday = schedWindow(sched, ymd), wYest = schedWindow(sched, ymdAdd(ymd, -1));
+  const carry = !!(wYest && hmToMin(wYest.e) <= hmToMin(wYest.s) && nowMin < hmToMin(wYest.e)); // overnight shift from yesterday still running
+  const off = (offRows || []).find(r => r.start <= ymd && ymd <= r.end);
+  const workingDay = sched ? !!(wToday || carry) : true; // leave only matters on a day the person was due to work
+  if (off && workingDay) {
+    if (off.kind === "sick") return { status: "sick", detail: off.label || "Sick Leave", phase: "sick" };
+    if (off.kind === "leave") return { status: "leave", detail: off.label || "Leave", phase: "leave" };
+    return { status: "off", detail: off.label || TIMEOFF_KINDS[off.kind] || "Day off", phase: "holiday" };
   }
+  if (!sched) return { status: "none", detail: "No schedule set", phase: "none" };
+  if (carry) return { status: "working", detail: "Until " + fmt12(wYest.e), phase: "working" };
+  if (!wToday) return { status: "off", detail: "Day off", phase: "dayoff" };
+  const s = hmToMin(wToday.s), e = hmToMin(wToday.e);
+  if (e > s) {
+    if (nowMin < s) return { status: "off", detail: "Starts " + fmt12(wToday.s), phase: "before", at: wToday.s };
+    if (nowMin >= e) return { status: "off", detail: "Ended " + fmt12(wToday.e), phase: "after" };
+    return { status: "working", detail: "Until " + fmt12(wToday.e), phase: "working" };
+  }
+  if (nowMin >= s) return { status: "working", detail: "Until " + fmt12(wToday.e) + " tomorrow", phase: "working" };
+  return { status: "off", detail: "Starts " + fmt12(wToday.s), phase: "before", at: wToday.s };
 }
-// fetch with a timeout so one slow Graph call can never leave the sync hanging
-async function tsFetch(url, opts) {
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);
-  try { return await fetch(url, { ...(opts || {}), signal: ctl.signal }); }
-  catch (e) { throw new Error(e && e.name === "AbortError" ? "timed out (25s)" : (e.message || "network error")); }
-  finally { clearTimeout(timer); }
+function attTotals(days) {
+  const t = { worked: 0, late: 0, lateMin: 0, absent: 0, leave: 0, sick: 0, holiday: 0 };
+  Object.values(days || {}).forEach(d => {
+    if (d.k === "present") t.worked++;
+    else if (d.k === "late") { t.worked++; t.late++; t.lateMin += Number(d.m) || 0; }
+    else if (d.k === "absent") t.absent++;
+    else if (d.k === "leave") t.leave++;
+    else if (d.k === "sick") t.sick++;
+    else if (d.k === "holiday" || d.k === "rest") t.holiday++;
+  });
+  return t;
 }
-async function tsGet(token, path, beta) {
-  const res = await tsFetch(`https://graph.microsoft.com/${beta ? "beta" : "v1.0"}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) { let d = ""; try { d = (await res.json()).error.message; } catch (e) {} throw new Error(`${res.status} ${d}`.trim()); }
-  return res.json();
+// Every recorded day for one employee in a date range: log entries (late/absent) + days covered by HR Time Off
+// (counted only on days the person was due to work: the schedule if set, else Mon–Fri). Time off wins over a log entry.
+function attMergedDays(empId, fromYMD, toYMD) {
+  const out = {};
+  attLog.forEach(r => {
+    if (r.empId !== String(empId)) return;
+    Object.entries(r.days).forEach(([dd, rec]) => { const ymd = `${r.month}-${dd}`; if (ymd >= fromYMD && ymd <= toYMD) out[ymd] = { ...rec, src: "log" }; });
+  });
+  const sched = schedMap.get(String(empId)) || null;
+  timeOffRows.forEach(r => {
+    if (r.empId !== String(empId) || r.end < fromYMD || r.start > toYMD) return;
+    const a = r.start < fromYMD ? fromYMD : r.start, b = r.end > toYMD ? toYMD : r.end;
+    for (let d = a, guard = 0; d <= b && guard < 400; d = ymdAdd(d, 1), guard++) {
+      const works = sched ? !!schedWindow(sched, d) : (ymdDow(d) >= 1 && ymdDow(d) <= 5);
+      if (works) out[d] = { k: r.kind, r: r.label, src: "off", itemId: r.itemId };
+    }
+  });
+  return out;
 }
-async function tsList(token, path, beta, maxPages) {
-  let url = path, out = [], pages = 0;
-  while (url && pages < (maxPages || 10)) {
-    const d = url.startsWith("http") ? await (async () => { const r = await tsFetch(url, { headers: { Authorization: `Bearer ${token}` } }); if (!r.ok) throw new Error(String(r.status)); return r.json(); })() : await tsGet(token, url, beta);
-    out = out.concat(d.value || []);
-    url = d["@odata.nextLink"] || null; pages++;
+// For the evaluation form later: totals for one employee over a date range (YYYY-MM-DD inclusive).
+// Month review: the recorded days plus, for months HR has NOT closed yet, every past scheduled day without a record shown as Present
+// (a projection from the person's schedule). Closing a month saves those Present days for real, so later schedule edits can't change it.
+function attMonthDays(empId, fromYMD, toYMD, todayYMD) {
+  const out = attMergedDays(empId, fromYMD, toYMD);
+  const sched = schedMap.get(String(empId)) || null;
+  if (!sched) return out;
+  for (let d = fromYMD, guard = 0; d <= toYMD && d < todayYMD && guard < 400; d = ymdAdd(d, 1), guard++) {
+    if (out[d] || attClosed.has(d.slice(0, 7))) continue;
+    const w = schedWindow(sched, d);
+    if (w) out[d] = { k: "present", ss: w.s, se: w.e, src: "auto" };
   }
   return out;
 }
-async function tsListFiltered(token, base, filter, beta, maxPages) {
-  try { return await tsList(token, `${base}?$filter=${encodeURIComponent(filter)}`, beta, maxPages); }
-  catch (e) { return await tsList(token, base, beta, maxPages); } // some endpoints reject $filter → read all, filter locally
+function attendanceSummary(empId, fromYMD, toYMD) { return attTotals(attMonthDays(empId, fromYMD, toYMD, toLocalYMD(new Date()))); }
+
+// ── loading ────────────────────────────────────────────────────────────────
+async function pageAll(path) {
+  let url = path, out = [];
+  while (url) { const data = await graphFetch(url); out = out.concat(data.value || []); url = data["@odata.nextLink"] || null; }
+  return out;
 }
-async function tsRecord(fields, existingId) {
-  const base = `/sites/${siteId}/lists/${tsListId}/items`;
-  if (existingId) { await graphFetch(`${base}/${existingId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); return existingId; }
-  const c = await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) });
-  return c.id;
+async function loadWorkSchedules() {
+  const m = new Map();
+  if (schedListId) {
+    try {
+      (await pageAll(`/sites/${siteId}/lists/${schedListId}/items?$expand=fields&$top=2000`)).forEach(it => {
+        const f = it.fields || {}, id = String(f["EmployeeId"] || ""); if (!id) return;
+        let weekly = {}, exceptions = {}; try { weekly = JSON.parse(f["Weekly"] || "{}") || {}; } catch (e) {} try { exceptions = JSON.parse(f["Exceptions"] || "{}") || {}; } catch (e) {}
+        m.set(id, { itemId: it.id, weekly, exceptions, upd: f["UpdatedAt"] || "" });
+      });
+    } catch (e) { console.warn("Could not load HR Work Schedules:", e); return; }
+  }
+  schedMap = m;
+}
+async function loadTimeOff() {
+  const rows = [];
+  if (timeOffListId) {
+    try {
+      (await pageAll(`/sites/${siteId}/lists/${timeOffListId}/items?$expand=fields&$top=2000`)).forEach(it => {
+        const f = it.fields || {}; if (!f["EmployeeId"] || !f["StartDate"]) return;
+        rows.push({ itemId: it.id, empId: String(f["EmployeeId"]), empName: f["Title"] || "", kind: String(f["Kind"] || "leave").toLowerCase(), label: f["Label"] || "", start: String(f["StartDate"]).slice(0, 10), end: String(f["EndDate"] || f["StartDate"]).slice(0, 10) });
+      });
+    } catch (e) { console.warn("Could not load HR Time Off:", e); return; }
+  }
+  timeOffRows = rows;
+}
+async function loadAttendanceLog() {
+  const m = new Map(), closed = new Map();
+  if (attListId && (canAccessHR || isPermissionAdmin)) {
+    try {
+      (await pageAll(`/sites/${siteId}/lists/${attListId}/items?$expand=fields&$top=2000`)).forEach(it => {
+        const f = it.fields || {}; if (!f["EmployeeId"] || !f["Month"]) return;
+        if (f["EmployeeId"] === "_CLOSED") { let x = {}; try { x = JSON.parse(f["Days"] || "{}") || {}; } catch (e) {} closed.set(f["Month"], { itemId: it.id, by: x.by || "", at: x.at || f["UpdatedAt"] || "" }); return; }
+        let days = {}; try { days = JSON.parse(f["Days"] || "{}") || {}; } catch (e) {}
+        m.set(`${f["EmployeeId"]}|${f["Month"]}`, { itemId: it.id, month: f["Month"], empId: String(f["EmployeeId"]), days, upd: f["UpdatedAt"] || "" });
+      });
+    } catch (e) { console.warn("Could not load HR Attendance Log:", e); return; }
+  }
+  attLog = m; attClosed = closed;
+}
+function refreshHomeStatus() {
+  const el = document.getElementById("homeStatusLine");
+  if (el && activeTab === "Welcome" && !hrView) el.innerHTML = homeStatusLineHtml();
+}
+function startScheduleData() {
+  if (schedTimer) return;
+  const reload = async () => { await Promise.all([loadWorkSchedules(), loadTimeOff()]); refreshHomeStatus(); };
+  reload();
+  loadAttendanceLog();
+  schedTimer = setInterval(reload, SCHED_REFRESH_MIN * 60000);
+  schedClock = setInterval(refreshHomeStatus, 60000); // the status changes as the clock moves
 }
 
-async function tsSetTeamEnabled(teamId, name, enabled) {
-  if (!tsCanSync()) return;
-  const ex = tsTeams.find(t => t.teamId === teamId);
-  setSyncing(true);
-  try {
-    const id = await tsRecord({ Title: name, RecordType: "Team", TeamId: teamId, Enabled: enabled ? "Yes" : "No" }, ex && ex.itemId);
-    if (ex) { ex.enabled = enabled; ex.name = name; } else tsTeams.push({ itemId: id, teamId, name, enabled });
-    setSyncing(false, true);
-  } catch (err) { setSyncing(false, false); toast("Could not save: " + err.message, "error"); }
-  if (hrView && hrView.mode === "tsSettings") renderHRModal();
+// ── Who is in each status (opened from the Home counters) ─────────────────────
+function activeStaff() { return employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)); }
+function empScheduleStatus(emp, now) {
+  return schedStatus(now || new Date(), schedMap.get(String(emp.id)) || null, timeOffRows.filter(r => r.empId === String(emp.id)));
 }
-
-async function runTeamsSync(interactive) {
-  if (!tsCanSync() || tsBusy) return;
-  const enabled = tsTeams.filter(t => t.enabled && t.teamId);
-  if (!enabled.length) { tsReport = ["No Teams are switched on yet — pick them in “Teams sync”."]; return; }
-  tsBusy = true; tsReport = [];
-  if (hrView && hrView.mode === "tsSettings") renderHRModal();
-  try {
-    const token = await tsToken(interactive);
-    tsNeedsConsent = false;
-    const now = Date.now();
-    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-    const winFrom = new Date(dayStart.getTime() - 86400000).toISOString(), winTo = new Date(dayStart.getTime() + 2 * 86400000).toISOString();
-    const per = new Map(); // userId -> { shifts, timesOff, cards }
-    const slot = id => { if (!per.has(id)) per.set(id, { shifts: [], timesOff: [], cards: [] }); return per.get(id); };
-    let done = 0;
-    tsProgress = { done: 0, total: enabled.length };
-    const lines = new Array(enabled.length);
-    const readTeam = async (t, idx) => {
-      const line = { name: t.name, shifts: 0, off: 0, cards: 0, warn: [] };
-      try {
-        const reasons = {};
-        try { (await tsList(token, `/teams/${t.teamId}/schedule/timeOffReasons`)).forEach(r => { reasons[r.id] = r.displayName || ""; }); } catch (e) { line.warn.push("reasons: " + e.message); }
-        await Promise.all([
-          (async () => {
-            try {
-              const shifts = await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`);
-              shifts.forEach(s => { const sh = s.sharedShift; if (!sh || !s.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(s.userId).shifts.push({ s: a, e: b }); line.shifts++; } });
-            } catch (e) { line.warn.push("shifts: " + e.message); }
-          })(),
-          (async () => {
-            try {
-              const offs = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`);
-              offs.forEach(o => { const sh = o.sharedTimeOff; if (!sh || !o.userId) return; const a = Date.parse(sh.startDateTime), b = Date.parse(sh.endDateTime); if (b >= now - 86400000 && a <= now + 86400000) { slot(o.userId).timesOff.push({ s: a, e: b, reason: reasons[sh.timeOffReasonId] || "" }); line.off++; } });
-            } catch (e) { line.warn.push("time off: " + e.message); }
-          })(),
-          (async () => {
-            try {
-              const cards = await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, "state eq 'clockedIn' or state eq 'onBreak'", true);
-              cards.forEach(c => { if (c.userId && (c.state === "clockedIn" || c.state === "onBreak")) { slot(c.userId).cards.push({ state: c.state }); line.cards++; } });
-            } catch (e) { line.warn.push("clock in/out: " + e.message); }
-          })()
-        ]);
-      } catch (e) { line.warn.push(e.message); }
-      lines[idx] = `${line.name}: ${line.shifts} shifts · ${line.off} time off · ${line.cards} clocked in${line.warn.length ? " — ⚠ " + line.warn.join("; ") : ""}`;
-      done++; tsProgress.done = done;
-      if (hrView && hrView.mode === "tsSettings") renderHRModal();
-    };
-    let next = 0; // small worker pool: 4 teams at a time
-    await Promise.all(Array.from({ length: Math.min(4, enabled.length) }, async () => { while (next < enabled.length) { const i = next++; await readTeam(enabled[i], i); } }));
-    tsReport.push(...lines);
-    // userId -> email
-    const ids = [...per.keys()], mailOf = new Map(), infoOf = new Map();
-    for (let i = 0; i < ids.length; i += 100) {
-      const r = await tsFetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
-      if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
-      ((await r.json()).value || []).forEach(u => { mailOf.set(u.id, [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase())); infoOf.set(u.id, { name: u.displayName || "", mail: u.mail || u.userPrincipalName || "", guest: u.userType === "Guest" || /#ext#/i.test(u.userPrincipalName || "") }); });
-    }
-    const byEmp = new Map(); let unmatched = 0, guests = 0; const unmatchedList = [];
-    per.forEach((v, uid) => {
-      const mails = mailOf.get(uid) || [];
-      const emp = employees.find(e => e.status !== "Resigned" && empEmails(e).some(m => mails.includes(m)));
-      if (!emp) { const inf = infoOf.get(uid) || {}; if (inf.guest) guests++; else { unmatched++; unmatchedList.push(`${inf.name || uid} <${inf.mail || "?"}>`); } return; }
-      const a = byEmp.get(String(emp.id)) || { shifts: [], timesOff: [], cards: [] };
-      a.shifts.push(...v.shifts); a.timesOff.push(...v.timesOff); a.cards.push(...v.cards); byEmp.set(String(emp.id), a);
-    });
-    let wrote = 0;
-    for (const [empId, d] of byEmp) {
-      const emp = employees.find(e => String(e.id) === empId);
-      const r = tsComputeStatus(now, d.shifts, d.timesOff, d.cards, TS_SCHEDULED_COUNTS_AS_WORKING);
-      const ex = tsStatus.get(empId);
-      if (ex && ex.status === r.status && ex.detail === r.detail) continue;
-      const id = await tsRecord({ Title: emp.name, RecordType: "Status", EmployeeId: empId, Status: r.status, Detail: r.detail, SyncedAt: new Date(now).toISOString() }, ex && ex.itemId);
-      tsStatus.set(empId, { itemId: id, status: r.status, detail: r.detail }); wrote++;
-    }
-    for (const [empId, ex] of [...tsStatus]) { // no longer in any switched-on team → drop the stale record
-      if (!byEmp.has(empId)) { try { await graphFetch(`/sites/${siteId}/lists/${tsListId}/items/${ex.itemId}`, { method: "DELETE" }); } catch (e) {} tsStatus.delete(empId); }
-    }
-    const stamp = new Date(now).toISOString();
-    tsMeta.itemId = await tsRecord({ Title: "LastSync", RecordType: "Meta", SyncedAt: stamp }, tsMeta.itemId); tsMeta.syncedAt = stamp;
-    tsReport.push(`✓ ${byEmp.size} employees matched · ${wrote} updated${guests ? ` · ${guests} guest/external user(s) ignored` : ""}${unmatched ? ` · ${unmatched} Teams user(s) not in the employee list` : ""}`);
-    if (unmatchedList.length) tsReport.push("Not matched (check their Email / TeamsEmail in HR Employees, or they may be former staff): " + unmatchedList.sort().join(", "));
-  } catch (err) { tsReport.push("✗ " + err.message); }
-  tsBusy = false;
-  if (hrView && hrView.mode === "tsSettings") renderHRModal();
-  if (activeTab === "Welcome" && !hrView) { try { renderContent(); } catch (e) {} }
-}
-function tsStartAuto() {
-  if (!tsCanSync() || tsTimer) return;
-  if (!tsTeams.some(t => t.enabled)) return;
-  runTeamsSync(false);
-  if (attListId) setTimeout(() => runAttendanceHistory(false), 20000);
-  tsTimer = setInterval(() => { runTeamsSync(false); if (attListId && Date.now() - attLast > 60 * 60000) runAttendanceHistory(false); }, TS_AUTO_SYNC_MIN * 60000);
-}
-
-// Who is in each status (opened from the Home counters): name, team, and the reason / detail.
-function openTsStatusList(key) {
-  if (!tsListId || !tsFresh()) return;
-  hrView = { mode: "tsList", key };
+function openStatusList(key) {
+  hrView = { mode: "statusList", key };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
 }
-function renderTsStatusList(box) {
+function renderStatusList(box) {
   box.style.width = "min(640px, 94vw)";
-  const key = hrView.key;
-  const rows = employees.filter(e => e.status !== "Resigned" && !isCeoRec(e))
-    .map(e => ({ e, r: tsStatus.get(String(e.id)) })).filter(x => x.r && x.r.status === key)
+  const key = hrView.key, now = new Date();
+  const rows = activeStaff().map(e => ({ e, r: empScheduleStatus(e, now) })).filter(x => x.r.status === key)
     .sort((a, b) => String(a.r.detail).localeCompare(String(b.r.detail)) || a.e.name.localeCompare(b.e.name));
-  const title = { working: "Working now", leave: "On leave", sick: "On sick leave", off: "Outside working hours" }[key] || key;
-  const color = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)" }[key];
+  const title = { working: "Working now", leave: "On leave", sick: "On sick leave", off: "Outside working hours", none: "No schedule set yet" }[key] || key;
+  const color = { working: "var(--green)", leave: "var(--yellow)", sick: "var(--red, #ef4444)", off: "var(--text3)", none: "var(--text3)" }[key];
   const where = e => displayCluster(e) ? `${displayTeam(e)} · ${displayCluster(e)}` : displayTeam(e);
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
       <div><h3 style="margin-bottom:2px; color:${color};">${escapeHtml(title)} <span style="color:var(--text3); font-weight:400;">· ${rows.length}</span></h3>
-        <div style="font-size:11px; color:var(--text3);">From Teams Shifts · last sync ${tsMeta.syncedAt ? escapeHtml(new Date(tsMeta.syncedAt).toLocaleTimeString()) : "—"}</div></div>
+        <div style="font-size:11px; color:var(--text3);">From each person's own schedule and HR-recorded time off · as of ${escapeHtml(now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</div></div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     <div style="display:flex; flex-direction:column; gap:6px; margin-top:12px; max-height:60vh; overflow-y:auto;">
@@ -14810,215 +14837,113 @@ function renderTsStatusList(box) {
       </div>`).join("") : `<div style="font-size:12px; color:var(--text3); padding:8px 0;">Nobody right now.</div>`}
     </div>`;
 }
-async function openTsSettings() {
-  if (!tsCanSync()) return;
-  hrView = { mode: "tsSettings" };
+
+// ── My schedule (weekly pattern + date exceptions) ───────────────────────────
+function openMySchedule(empId) {
+  const me = myEmployeeRecord();
+  const target = empId ? employees.find(e => String(e.id) === String(empId)) : me;
+  if (!target) { toast("Your employee record was not found.", "error"); return; }
+  const isSelf = !!(me && String(me.id) === String(target.id));
+  if (!isSelf && !(canAccessHR || isPermissionAdmin)) return;
+  if (!schedListId) { toast("The “HR Work Schedules” list was not found (see SETUP_ATTENDANCE.md).", "error"); return; }
+  const cur = schedMap.get(String(target.id));
+  if (!isSelf && !cur) { toast(`${target.name} hasn't set a schedule yet — ask them to open “My schedule”.`, "error"); return; }
+  const weekly = {};
+  DOW_ORDER.forEach(d => { const w = cur ? (cur.weekly[String(d)] || null) : (d >= 1 && d <= 5 ? { s: "09:00", e: "18:00" } : null); weekly[d] = w ? { on: true, s: w.s, e: w.e } : { on: false, s: "09:00", e: "18:00" }; });
+  const keepFrom = ymdAdd(toLocalYMD(new Date()), -1);
+  const exceptions = cur ? Object.entries(cur.exceptions || {}).filter(([d]) => d >= keepFrom).sort().map(([d, x]) => ({ date: d, off: !!x.off, s: x.s || "09:00", e: x.e || "18:00" })) : [];
+  schedEdit = { empId: String(target.id), name: target.name, isSelf, weekly, exceptions, nx: { date: "", mode: "off", s: "09:00", e: "18:00" }, busy: false };
+  hrView = { mode: "mySchedule" };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
-  if (!tsJoined) {
-    try { tsJoined = (await tsList(await tsToken(true), "/me/joinedTeams?$select=id,displayName")).map(t => ({ id: t.id, name: t.displayName })).sort((a, b) => a.name.localeCompare(b.name)); }
-    catch (e) { tsReport = ["✗ Could not list your Teams: " + e.message]; tsJoined = []; }
-    if (hrView && hrView.mode === "tsSettings") renderHRModal();
-  }
 }
-function renderTsSettings(box) {
-  box.style.width = "min(680px, 94vw)";
-  const known = new Map();
-  (tsJoined || []).forEach(t => known.set(t.id, { id: t.id, name: t.name, joined: true }));
-  tsTeams.forEach(t => { if (!known.has(t.teamId)) known.set(t.teamId, { id: t.teamId, name: t.name, joined: false }); });
-  const rows = [...known.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const on = id => { const t = tsTeams.find(x => x.teamId === id); return !!(t && t.enabled); };
-  const nOn = rows.filter(r => on(r.id)).length;
+function schedSetDay(dow, key, val) { if (!schedEdit) return; schedEdit.weekly[dow][key] = key === "on" ? !!val : val; if (key === "on") renderHRModal(); }
+function schedCopyMonday() {
+  if (!schedEdit) return; const m = schedEdit.weekly[1];
+  [2, 3, 4, 5].forEach(d => { schedEdit.weekly[d] = { on: m.on, s: m.s, e: m.e }; }); renderHRModal();
+}
+function schedNx(key, val) { if (!schedEdit) return; schedEdit.nx[key] = val; if (key === "mode") renderHRModal(); }
+function schedAddException() {
+  const x = schedEdit && schedEdit.nx; if (!x) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(x.date)) { toast("Pick a date for the exception.", "error"); return; }
+  if (x.mode === "hours" && (hmToMin(x.s) == null || hmToMin(x.e) == null || x.s === x.e)) { toast("Enter valid start and end times.", "error"); return; }
+  schedEdit.exceptions = schedEdit.exceptions.filter(e => e.date !== x.date);
+  schedEdit.exceptions.push({ date: x.date, off: x.mode === "off", s: x.s, e: x.e });
+  schedEdit.exceptions.sort((a, b) => a.date.localeCompare(b.date));
+  schedEdit.nx.date = ""; renderHRModal();
+}
+function schedRemoveException(date) { if (!schedEdit) return; schedEdit.exceptions = schedEdit.exceptions.filter(e => e.date !== date); renderHRModal(); }
+function renderScheduleEditor(box) {
+  box.style.width = "min(560px, 94vw)";
+  const d = schedEdit; if (!d) return;
+  const timeIn = (val, onch, dis) => `<input type="time" value="${escapeAttr(val)}" ${dis ? "disabled" : ""} onchange="${onch}" style="padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px;" />`;
   box.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
-      <div><h3 style="margin-bottom:2px;">Teams Shifts sync</h3>
-        <div style="font-size:12px; color:var(--text2);">Switch on the Teams that use Shifts. Attendance (clock in/out), schedules and time off are read with your Microsoft account and shared with the portal.</div></div>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+      <div><h3 style="margin-bottom:2px;">${d.isSelf ? "My schedule" : escapeHtml(d.name) + " — schedule"}</h3>
+        <div style="font-size:12px; color:var(--text2);">Set your usual working days and hours. Your status on the Home page ("Working" / "Outside Working Hours") follows this. Use exceptions for one-off changes. For overnight shifts, set the end time earlier than the start (for example 22:00 → 07:00).</div></div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
-    <div style="display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;">
-      <button class="btn btn-primary btn-sm" ${tsBusy ? "disabled" : ""} onclick="runTeamsSync(true)">${tsBusy ? `Syncing${tsProgress ? ` ${tsProgress.done}/${tsProgress.total}` : ""}…` : "&#8635; Sync now"}</button>
-      <span style="font-size:12px; color:var(--text2);">${nOn} team${nOn === 1 ? "" : "s"} on · last sync: ${tsMeta.syncedAt ? escapeHtml(new Date(tsMeta.syncedAt).toLocaleString()) : "never"} · auto every ${TS_AUTO_SYNC_MIN} min while this page is open</span>
+    <div style="display:flex; flex-direction:column; gap:6px; margin:12px 0 6px;">
+      ${DOW_ORDER.map(dow => { const w = d.weekly[dow]; return `<div style="display:grid; grid-template-columns:120px 1fr 1fr; gap:10px; align-items:center;">
+        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600;"><input type="checkbox" ${w.on ? "checked" : ""} onchange="schedSetDay(${dow}, 'on', this.checked)" /> ${DOW_NAME[dow]}</label>
+        ${w.on ? `<div style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text2);">from ${timeIn(w.s, `schedSetDay(${dow}, 's', this.value)`)}</div>
+        <div style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text2);">to ${timeIn(w.e, `schedSetDay(${dow}, 'e', this.value)`)}</div>` : `<div style="font-size:12px; color:var(--text3); grid-column:2 / span 2;">Day off</div>`}
+      </div>`; }).join("")}
+      <div><button class="btn btn-secondary btn-sm" onclick="schedCopyMonday()" style="font-size:11px;">Copy Monday's hours to Tue–Fri</button></div>
     </div>
-    ${tsReport.length ? `<div style="font-size:12px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:8px 10px; margin-bottom:10px; white-space:pre-wrap; line-height:1.6;">${tsReport.map(escapeHtml).join("\n")}</div>` : ""}
-    ${tsJoined === null ? `<div style="font-size:12px; color:var(--text3);">Loading your Teams…</div>` : `<div style="display:flex; flex-direction:column; gap:4px; max-height:46vh; overflow-y:auto;">
-      ${rows.map(r => `<label style="display:flex; align-items:center; gap:10px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; cursor:pointer; background:${on(r.id) ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "var(--surface)"};">
-        <input type="checkbox" ${on(r.id) ? "checked" : ""} onchange="tsSetTeamEnabled('${escapeAttr(r.id)}', '${jsAttrEscape(r.name)}', this.checked)" />
-        <span style="font-size:13px; flex:1;">${escapeHtml(r.name)}</span>
-        ${r.joined ? "" : `<span style="font-size:11px; color:var(--text3);">not a member now</span>`}</label>`).join("") || `<div style="font-size:12px; color:var(--text3);">You are not a member of any Teams team.</div>`}
-    </div>`}`;
+    <div style="border-top:1px solid var(--border); margin-top:10px; padding-top:10px;">
+      <div style="font-size:13px; font-weight:700; margin-bottom:6px;">Exceptions (one-off changes)</div>
+      ${d.exceptions.length ? d.exceptions.map(x => `<div style="display:flex; align-items:center; gap:10px; font-size:12.5px; padding:4px 0;">
+        <span style="width:100px;">${escapeHtml(x.date)}</span><span style="flex:1; color:var(--text2);">${x.off ? "Day off" : `${escapeHtml(fmt12(x.s))} – ${escapeHtml(fmt12(x.e))}`}</span>
+        <button class="btn btn-secondary btn-sm" onclick="schedRemoveException('${escapeAttr(x.date)}')" style="padding:2px 8px;">✕</button></div>`).join("") : `<div style="font-size:12px; color:var(--text3); margin-bottom:6px;">None.</div>`}
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:6px;">
+        <input type="date" value="${escapeAttr(d.nx.date)}" onchange="schedNx('date', this.value)" style="padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px;" />
+        <select onchange="schedNx('mode', this.value)" style="padding:5px 8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px;">
+          <option value="off" ${d.nx.mode === "off" ? "selected" : ""}>Day off</option><option value="hours" ${d.nx.mode === "hours" ? "selected" : ""}>Different hours</option></select>
+        ${d.nx.mode === "hours" ? `${timeIn(d.nx.s, "schedNx('s', this.value)")} – ${timeIn(d.nx.e, "schedNx('e', this.value)")}` : ""}
+        <button class="btn btn-secondary btn-sm" onclick="schedAddException()">+ Add</button>
+      </div>
+    </div>
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closeHRModal()">Cancel</button>
+      <button class="btn btn-primary" ${d.busy ? "disabled" : ""} onclick="saveSchedule()">${d.busy ? "Saving…" : "Save"}</button>
+    </div>`;
+}
+async function saveSchedule() {
+  const d = schedEdit; if (!d || d.busy) return;
+  const weekly = {};
+  for (const dow of DOW_ORDER) {
+    const w = d.weekly[dow]; if (!w.on) continue;
+    if (hmToMin(w.s) == null || hmToMin(w.e) == null || w.s === w.e) { toast(`${DOW_NAME[dow]}: enter valid start and end times.`, "error"); return; }
+    weekly[dow] = { s: w.s, e: w.e };
+  }
+  const exceptions = {};
+  d.exceptions.forEach(x => { exceptions[x.date] = x.off ? { off: true } : { s: x.s, e: x.e }; });
+  const fields = { Title: d.name, EmployeeId: d.empId, Weekly: JSON.stringify(weekly), Exceptions: JSON.stringify(exceptions), UpdatedAt: new Date().toISOString() };
+  d.busy = true; renderHRModal(); setSyncing(true);
+  try {
+    const cur = schedMap.get(d.empId), base = `/sites/${siteId}/lists/${schedListId}/items`;
+    let id;
+    if (cur) { await graphFetch(`${base}/${cur.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); id = cur.itemId; }
+    else { id = (await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) })).id; }
+    schedMap.set(d.empId, { itemId: id, weekly, exceptions, upd: fields.UpdatedAt });
+    setSyncing(false, true); toast("Schedule saved.", "success");
+    schedEdit = null; closeHRModal(); refreshHomeStatus();
+  } catch (err) {
+    setSyncing(false, false); d.busy = false; renderHRModal();
+    toast("Could not save the schedule: " + err.message + (d.isSelf ? "" : " (you can only edit schedules you have permission for)"), "error");
+  }
 }
 
-// ── Attendance history (late minutes, absences, leave, sick) — see SETUP_TEAMS_SYNC.md part 2 ─────────────────────
-// Re-reads the last TS_HISTORY_DAYS days of Teams Shifts (schedules, time off, time cards) and rebuilds one row per
-// employee per month in "HR Attendance Log". Because whole days are recalculated every time, leave / sick entries that are
-// filed AFTER the fact (the usual case) automatically turn an earlier "Absent" into Sick / Leave.
-// Day rules (times are the viewer's local zone — the Philippines team is all UTC+8):
-//   time off covering the shift → Sick / Leave / Holiday / Rest (by the reason's name); no shift that day → ignored
-//   clock-in found for the shift → Present, or Late by (clock-in − shift start − grace) minutes
-//   no clock-in and the shift is over → Absent;  shift not over yet → Pending (not counted)
-const TS_HISTORY_DAYS = 45;
-const TS_GRACE_MIN = 0;           // minutes after shift start that still count as on time
-const TS_REST_RE = /rest\s*day|day\s*off|\brd\b/i;
-const TS_HOLIDAY_RE = /holiday/i;
-const TS_SICK_RE = /sick|medical|illness|\bsl\b/i;
-let attListId = null;
-let tsAtt = new Map();            // `${empId}|${YYYY-MM}` -> { itemId, month, empId, days: {dd: rec}, upd }
-let attState = { month: "", empId: null, busy: false, msg: "" };
-function tsReasonKind(reason) {
-  if (TS_REST_RE.test(reason || "")) return "rest";
-  if (TS_HOLIDAY_RE.test(reason || "")) return "holiday";
-  if (TS_SICK_RE.test(reason || "")) return "sick";
-  return "leave";
-}
-function tsHM(ms) { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
-// Pure: one employee's record for one day (null = nothing scheduled). Inputs are ms timestamps.
-function tsDayRecord(dayStart, dayEnd, now, shifts, timesOff, cards, graceMin) {
-  const sh = (shifts || []).filter(x => x.s >= dayStart && x.s < dayEnd).sort((a, b) => a.s - b.s);
-  if (!sh.length) return null; // no shift → nothing to judge (rest days etc. are not counted)
-  const s = sh[0].s, e = Math.max(...sh.map(x => x.e));
-  const base = { ss: tsHM(s), se: tsHM(e) };
-  const off = (timesOff || []).find(t => t.s <= s + 3600000 && t.e > s);
-  if (off) { const k = tsReasonKind(off.reason); return { ...base, k, r: off.reason || "" }; }
-  const card = (cards || []).filter(c => c.inMs >= s - 4 * 3600000 && c.inMs < e).sort((a, b) => a.inMs - b.inMs)[0];
-  if (card) {
-    const late = Math.round((card.inMs - s) / 60000) - (graceMin || 0);
-    return { ...base, k: late > 0 ? "late" : "present", m: late > 0 ? late : 0, in: tsHM(card.inMs), out: card.outMs ? tsHM(card.outMs) : "" };
-  }
-  if (e <= now) return { ...base, k: "absent" };
-  if (s > now) return null;
-  return { ...base, k: "pending" };
-}
-function attTotals(days) {
-  const t = { worked: 0, late: 0, lateMin: 0, absent: 0, leave: 0, sick: 0, holiday: 0 };
-  Object.values(days || {}).forEach(d => {
-    if (d.k === "present") t.worked++;
-    else if (d.k === "late") { t.worked++; t.late++; t.lateMin += d.m || 0; }
-    else if (d.k === "absent") t.absent++;
-    else if (d.k === "leave") t.leave++;
-    else if (d.k === "sick") t.sick++;
-    else if (d.k === "holiday") t.holiday++;
-  });
-  return t;
-}
-// For the evaluation form later: totals for one employee over a date range (YYYY-MM-DD inclusive).
-function attendanceSummary(empId, fromYMD, toYMD) {
-  const tot = { worked: 0, late: 0, lateMin: 0, absent: 0, leave: 0, sick: 0, holiday: 0 };
-  tsAtt.forEach(r => {
-    if (String(r.empId) !== String(empId)) return;
-    const part = {};
-    Object.entries(r.days).forEach(([dd, rec]) => { const ymd = `${r.month}-${dd}`; if (ymd >= fromYMD && ymd <= toYMD) part[dd] = rec; });
-    const t = attTotals(part); Object.keys(tot).forEach(k => { tot[k] += t[k]; });
-  });
-  return tot;
-}
-async function loadAttendanceLog() {
-  tsAtt = new Map();
-  if (!attListId || !(canAccessHR || isPermissionAdmin)) return;
-  try {
-    let url = `/sites/${siteId}/lists/${attListId}/items?$expand=fields&$top=2000`;
-    while (url) {
-      const data = await graphFetch(url);
-      (data.value || []).forEach(it => {
-        const f = it.fields || {};
-        if (!f["EmployeeId"] || !f["Month"]) return;
-        let days = {}; try { days = JSON.parse(f["Days"] || "{}"); } catch (e) {}
-        tsAtt.set(`${f["EmployeeId"]}|${f["Month"]}`, { itemId: it.id, month: f["Month"], empId: String(f["EmployeeId"]), days, upd: f["UpdatedAt"] || "" });
-      });
-      url = data["@odata.nextLink"] || null;
-    }
-  } catch (e) { console.warn("Could not load HR Attendance Log (list may not exist yet):", e); tsAtt = new Map(); }
-}
-let attRunning = false, attLast = 0;
-async function runAttendanceHistory(interactive) {
-  if (!tsCanSync() || !attListId || attRunning) return;
-  const enabled = tsTeams.filter(t => t.enabled && t.teamId);
-  if (!enabled.length) return;
-  attRunning = true; attState.busy = true; attState.msg = "Reading Teams Shifts history…";
-  if (hrView && hrView.mode === "attendance") renderHRModal();
-  try {
-    const token = await tsToken(interactive);
-    const now = Date.now();
-    const today0 = new Date(); today0.setHours(0, 0, 0, 0);
-    const startMs = today0.getTime() - TS_HISTORY_DAYS * 86400000, endMs = today0.getTime() + 86400000;
-    const winFrom = new Date(startMs - 86400000).toISOString(), winTo = new Date(endMs + 86400000).toISOString();
-    const per = new Map();
-    const slot = id => { if (!per.has(id)) per.set(id, { shifts: [], timesOff: [], cards: [] }); return per.get(id); };
-    let next = 0, warn = [];
-    const readTeam = async t => {
-      const reasons = {};
-      try { (await tsList(token, `/teams/${t.teamId}/schedule/timeOffReasons`)).forEach(r => { reasons[r.id] = r.displayName || ""; }); } catch (e) { return; } // no schedule in this team
-      await Promise.all([
-        (async () => { try {
-          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/shifts`, `sharedShift/startDateTime ge ${winFrom} and sharedShift/startDateTime le ${winTo}`, false, 40)).forEach(x => { const sh = x.sharedShift; if (sh && x.userId) slot(x.userId).shifts.push({ s: Date.parse(sh.startDateTime), e: Date.parse(sh.endDateTime) }); });
-        } catch (e) { warn.push(`${t.name} shifts: ${e.message}`); } })(),
-        (async () => { try {
-          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/timesOff`, `sharedTimeOff/endDateTime ge ${winFrom}`, false, 40)).forEach(x => { const sh = x.sharedTimeOff; if (sh && x.userId) slot(x.userId).timesOff.push({ s: Date.parse(sh.startDateTime), e: Date.parse(sh.endDateTime), reason: reasons[sh.timeOffReasonId] || "" }); });
-        } catch (e) { warn.push(`${t.name} time off: ${e.message}`); } })(),
-        (async () => { try {
-          (await tsListFiltered(token, `/teams/${t.teamId}/schedule/timeCards`, `clockInEvent/dateTime ge ${winFrom}`, true, 60)).forEach(c => { const a = c.clockInEvent && Date.parse(c.clockInEvent.dateTime); if (c.userId && a && a >= startMs - 86400000) slot(c.userId).cards.push({ inMs: a, outMs: c.clockOutEvent ? Date.parse(c.clockOutEvent.dateTime) : 0 }); });
-        } catch (e) { warn.push(`${t.name} clock in/out: ${e.message}`); } })()
-      ]);
-    };
-    await Promise.all(Array.from({ length: Math.min(4, enabled.length) }, async () => { while (next < enabled.length) { await readTeam(enabled[next++]); } }));
-    // userId -> employee
-    const ids = [...per.keys()], empOf = new Map();
-    for (let i = 0; i < ids.length; i += 100) {
-      const r = await tsFetch("https://graph.microsoft.com/v1.0/directoryObjects/getByIds", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ids: ids.slice(i, i + 100), types: ["user"] }) });
-      if (!r.ok) throw new Error("Could not resolve Teams users (" + r.status + ")");
-      ((await r.json()).value || []).forEach(u => { const mails = [u.mail, u.userPrincipalName].filter(Boolean).map(x => x.toLowerCase()); empOf.set(u.id, employees.find(e => e.status !== "Resigned" && empEmails(e).some(m => mails.includes(m))) || null); });
-    }
-    const byEmp = new Map();
-    per.forEach((v, uid) => { const emp = empOf.get(uid); if (!emp) return; const a = byEmp.get(String(emp.id)) || { shifts: [], timesOff: [], cards: [] }; a.shifts.push(...v.shifts); a.timesOff.push(...v.timesOff); a.cards.push(...v.cards); byEmp.set(String(emp.id), a); });
-    // rebuild days
-    const fresh = new Map(); // `${emp}|${month}` -> days
-    for (const [empId, d] of byEmp) {
-      for (let ms = startMs; ms < endMs; ms += 86400000) {
-        const day = new Date(ms); day.setHours(0, 0, 0, 0);
-        const ds = day.getTime(), de = ds + 86400000;
-        const rec = tsDayRecord(ds, de, now, d.shifts, d.timesOff, d.cards, TS_GRACE_MIN);
-        if (!rec) continue;
-        const ymd = toLocalYMD(day), key = `${empId}|${ymd.slice(0, 7)}`;
-        if (!fresh.has(key)) fresh.set(key, {});
-        fresh.get(key)[ymd.slice(8)] = rec;
-      }
-    }
-    // merge into stored months: replace only the days inside the window, keep older days
-    const winFromYMD = toLocalYMD(new Date(startMs));
-    let wrote = 0;
-    const keys = new Set([...fresh.keys()]);
-    tsAtt.forEach((r, k) => { if (r.month >= winFromYMD.slice(0, 7)) keys.add(k); });
-    for (const key of keys) {
-      const [empId, month] = key.split("|");
-      if (!byEmp.has(empId) && !tsAtt.has(key)) continue;
-      const old = tsAtt.get(key);
-      const days = {};
-      if (old) Object.entries(old.days).forEach(([dd, rec]) => { if (`${month}-${dd}` < winFromYMD) days[dd] = rec; });
-      Object.entries(fresh.get(key) || {}).forEach(([dd, rec]) => { days[dd] = rec; });
-      const json = JSON.stringify(days);
-      if (old && JSON.stringify(old.days) === json) continue;
-      if (!Object.keys(days).length && !old) continue;
-      const emp = employees.find(e => String(e.id) === empId);
-      const t = attTotals(days);
-      const fields = { Title: `${empId}|${month}`, EmployeeId: empId, EmployeeName: emp ? emp.name : "", Month: month, WorkedDays: String(t.worked), LateCount: String(t.late), LateMin: String(t.lateMin), AbsentDays: String(t.absent), LeaveDays: String(t.leave), SickDays: String(t.sick), HolidayDays: String(t.holiday), Days: json, UpdatedAt: new Date(now).toISOString() };
-      const base = `/sites/${siteId}/lists/${attListId}/items`;
-      let id;
-      if (old) { await graphFetch(`${base}/${old.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); id = old.itemId; }
-      else { id = (await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) })).id; }
-      tsAtt.set(key, { itemId: id, month, empId, days, upd: fields.UpdatedAt }); wrote++;
-    }
-    attLast = now;
-    attState.msg = `✓ Recalculated last ${TS_HISTORY_DAYS} days · ${byEmp.size} employees · ${wrote} month record(s) updated${warn.length ? " — ⚠ " + warn.slice(0, 4).join("; ") : ""}`;
-  } catch (err) { attState.msg = "✗ " + err.message; }
-  attRunning = false; attState.busy = false;
-  if (hrView && hrView.mode === "attendance") renderHRModal();
-}
+// ── HR: record attendance (late / absent in the log; leave / sick / holiday / rest as time off) ───────────────────
 function openAttendance() {
-  if (!(canAccessHR || isPermissionAdmin) || !attListId) { toast("Attendance log list not set up yet (see SETUP_TEAMS_SYNC.md).", "error"); return; }
+  if (!(canAccessHR || isPermissionAdmin) || !(attListId || timeOffListId)) { toast("Attendance lists are not set up yet (see SETUP_ATTENDANCE.md).", "error"); return; }
   if (!attState.month) attState.month = toLocalYMD(new Date()).slice(0, 7);
   attState.empId = null;
   hrView = { mode: "attendance" };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
+  Promise.all([loadAttendanceLog(), loadTimeOff()]).then(() => { if (hrView && hrView.mode === "attendance") renderHRModal(); });
 }
 function attShiftMonth(delta) {
   const [y, m] = attState.month.split("-").map(Number);
@@ -15026,43 +14951,194 @@ function attShiftMonth(delta) {
   attState.month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; attState.empId = null; renderHRModal();
 }
 function attPick(id) { attState.empId = attState.empId === String(id) ? null : String(id); renderHRModal(); }
+function monthBounds(month) { const [y, m] = month.split("-").map(Number); const last = new Date(y, m, 0).getDate(); return [`${month}-01`, `${month}-${String(last).padStart(2, "0")}`]; }
+const ATT_KIND_STYLE = { present: ["Present", "var(--green)"], late: ["Late", "var(--yellow)"], absent: ["Absent", "var(--red, #ef4444)"], leave: ["Leave", "var(--accent)"], sick: ["Sick", "#b197fc"], holiday: ["Holiday", "var(--text2)"], rest: ["Rest day", "var(--text3)"] };
 function renderAttendance(box) {
   box.style.width = "min(980px, 96vw)";
-  const kindStyle = { present: ["Present", "var(--green)"], late: ["Late", "var(--yellow)"], absent: ["Absent", "var(--red, #ef4444)"], leave: ["Leave", "var(--accent)"], sick: ["Sick", "#b197fc"], holiday: ["Holiday", "var(--text2)"], rest: ["Rest", "var(--text3)"], pending: ["Pending", "var(--text3)"] };
-  const rows = employees.filter(e => e.status !== "Resigned" && !isCeoRec(e)).map(e => {
-    const r = tsAtt.get(`${e.id}|${attState.month}`);
-    return r ? { e, r, t: attTotals(r.days) } : null;
-  }).filter(Boolean).sort((a, b) => a.e.name.localeCompare(b.e.name));
+  const [from, to] = monthBounds(attState.month), today = toLocalYMD(new Date());
+  const closed = attClosed.get(attState.month);
+  const rows = activeStaff().map(e => { const days = attMonthDays(e.id, from, to, today); return Object.keys(days).length ? { e, days, t: attTotals(days) } : null; })
+    .filter(Boolean).sort((a, b) => a.e.name.localeCompare(b.e.name));
   const num = (n, color) => `<td style="text-align:right; padding:6px 8px; ${n ? `color:${color}; font-weight:700;` : "color:var(--text3);"}">${n}</td>`;
   const sel = attState.empId ? rows.find(x => String(x.e.id) === attState.empId) : null;
+  const schedInfo = sel ? schedMap.get(String(sel.e.id)) : null;
+  const shiftOf = (ymd, d) => d.ss ? `${d.ss}–${d.se}` : ((w) => w ? `${w.s}–${w.e}` : "")(schedWindow(schedInfo, ymd));
   box.innerHTML = `
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px;">
-      <div><h3 style="margin-bottom:2px;">Attendance (from Teams Shifts)</h3>
-        <div style="font-size:12px; color:var(--text2);">Late minutes = clock-in minus shift start${TS_GRACE_MIN ? ` (after ${TS_GRACE_MIN} min grace)` : ""}. Leave / sick filed later are picked up automatically when the last ${TS_HISTORY_DAYS} days are recalculated.</div></div>
+      <div><h3 style="margin-bottom:2px;">Attendance</h3>
+        <div style="font-size:12px; color:var(--text2);">Entered by HR: late and absent in the Attendance Log; leave, sick, holiday and rest days in Time Off (counted only on days the person was due to work). A scheduled day with no record counts as Present. Entries can be added any time, including after the fact.</div></div>
       <button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">✕</button>
     </div>
     <div style="display:flex; align-items:center; gap:10px; margin:10px 0; flex-wrap:wrap;">
       <button class="btn btn-secondary btn-sm" onclick="attShiftMonth(-1)">&#9664;</button>
       <b style="font-size:14px;">${escapeHtml(attState.month)}</b>
       <button class="btn btn-secondary btn-sm" onclick="attShiftMonth(1)">&#9654;</button>
-      ${tsCanSync() ? `<button class="btn btn-primary btn-sm" ${attState.busy ? "disabled" : ""} onclick="runAttendanceHistory(true)">${attState.busy ? "Recalculating…" : "&#8635; Recalculate last " + TS_HISTORY_DAYS + " days"}</button>` : ""}
-      <span style="font-size:11px; color:var(--text3);">${attState.msg ? escapeHtml(attState.msg) : ""}</span>
+      <span style="font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:999px; ${closed ? "color:var(--green); border:1px solid var(--green);" : "color:var(--yellow); border:1px solid var(--yellow);"}">${closed ? "✓ Closed" + (closed.by ? " by " + escapeHtml(closed.by) : "") : "Open"}</span>
+      <button class="btn btn-primary btn-sm" onclick="openAttRecord('${sel ? escapeAttr(sel.e.id) : ""}')">+ Record attendance</button>
+      ${attListId ? (closed ? `<button class="btn btn-secondary btn-sm" ${attState.busy ? "disabled" : ""} onclick="attReopenMonth()">Reopen month</button>` : `<button class="btn btn-secondary btn-sm" ${attState.busy ? "disabled" : ""} onclick="attCloseMonth()" title="Save this month's Present days and lock in the result">Close month</button>`) : ""}
+      <span style="font-size:11px; color:var(--text3);">${attState.msg ? escapeHtml(attState.msg) : (closed ? "" : "Open: scheduled days without a record are projected as Present until you close the month.")}</span>
     </div>
-    <div style="overflow-x:auto; max-height:56vh; overflow-y:auto;">
+    <div style="overflow-x:auto; max-height:52vh; overflow-y:auto;">
     <table style="width:100%; border-collapse:collapse; font-size:12px;">
       <thead><tr style="color:var(--text3); text-align:right; position:sticky; top:0; background:var(--surface);"><th style="text-align:left; padding:6px 8px;">Employee</th><th style="text-align:left;">Team</th><th>Worked</th><th>Late</th><th>Late min</th><th>Absent</th><th>Leave</th><th>Sick</th><th>Holiday</th></tr></thead>
-      <tbody>${rows.length ? rows.map(({ e, t }) => `<tr onclick="attPick('${e.id}')" style="cursor:pointer; border-top:1px solid var(--border); ${String(e.id) === attState.empId ? "background:var(--surface2);" : ""}">
+      <tbody>${rows.length ? rows.map(({ e, t }) => `<tr onclick="attPick('${escapeAttr(e.id)}')" style="cursor:pointer; border-top:1px solid var(--border); ${String(e.id) === attState.empId ? "background:var(--surface2);" : ""}">
         <td style="padding:6px 8px; font-weight:600;">${escapeHtml(e.name)}</td><td style="color:var(--text2);">${escapeHtml(displayTeam(e))}</td>
         ${num(t.worked, "var(--green)")}${num(t.late, "var(--yellow)")}${num(t.lateMin, "var(--yellow)")}${num(t.absent, "var(--red, #ef4444)")}${num(t.leave, "var(--accent)")}${num(t.sick, "#b197fc")}${num(t.holiday, "var(--text2)")}</tr>`).join("")
-        : `<tr><td colspan="9" style="padding:14px 8px; color:var(--text3);">No attendance data for this month yet.${tsCanSync() ? " Click “Recalculate”." : ""}</td></tr>`}</tbody>
+        : `<tr><td colspan="9" style="padding:14px 8px; color:var(--text3);">Nothing for this month yet. People appear once they have a schedule or a record.</td></tr>`}</tbody>
     </table></div>
     ${sel ? `<div style="margin-top:12px; border:1px solid var(--border); border-radius:10px; padding:10px 12px;">
-      <div style="font-size:13px; font-weight:700; margin-bottom:6px;">${escapeHtml(sel.e.name)} — daily</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <div style="font-size:13px; font-weight:700;">${escapeHtml(sel.e.name)} — daily</div>
+        <button class="btn btn-secondary btn-sm" style="font-size:11px;" onclick="openMySchedule('${escapeAttr(sel.e.id)}')" title="${schedInfo ? "View or edit this person's schedule" : "No schedule set yet"}" ${schedInfo ? "" : "disabled"}>Schedule</button></div>
       <div style="display:flex; flex-direction:column; gap:4px; max-height:30vh; overflow-y:auto;">
-      ${Object.keys(sel.r.days).sort().map(dd => { const d = sel.r.days[dd], [lab, col] = kindStyle[d.k] || [d.k, "var(--text2)"];
-        return `<div style="display:grid; grid-template-columns:60px 80px 1fr 1fr; gap:8px; font-size:12px; align-items:center;"><span>${attState.month}-${dd}</span><b style="color:${col};">${lab}${d.k === "late" ? ` ${d.m}m` : ""}</b>
-          <span style="color:var(--text2);">shift ${escapeHtml(d.ss || "")}–${escapeHtml(d.se || "")}</span><span style="color:var(--text3);">${d.in ? `in ${escapeHtml(d.in)}${d.out ? ` · out ${escapeHtml(d.out)}` : ""}` : escapeHtml(d.r || "")}</span></div>`; }).join("")}
+      ${Object.keys(sel.days).sort().map(ymd => { const d = sel.days[ymd], [lab, col] = ATT_KIND_STYLE[d.k] || [d.k, "var(--text2)"];
+        const extra = d.k === "late" ? `${Number(d.m) || 0} min late${d.r ? " · " + d.r : ""}${d.in ? " · in " + d.in : ""}` : d.in ? `in ${d.in}${d.out ? " · out " + d.out : ""}` : (d.r || "");
+        const del = d.src === "off" ? `attDeleteTimeOff('${escapeAttr(d.itemId)}')` : d.src === "auto" ? "" : `attDeleteLogDay('${escapeAttr(sel.e.id)}', '${escapeAttr(ymd)}')`;
+        return `<div style="display:grid; grid-template-columns:100px 90px 140px 1fr 32px; gap:8px; font-size:12px; align-items:center;"><span>${escapeHtml(ymd)}</span><b style="color:${col}; ${d.src === "auto" ? "opacity:.7;" : ""}">${escapeHtml(lab)}</b>
+          <span style="color:var(--text2);">${shiftOf(ymd, d) ? "shift " + escapeHtml(shiftOf(ymd, d)) : ""}</span><span style="color:var(--text3);">${escapeHtml(extra)}</span>${del ? `<button class="btn btn-secondary btn-sm" style="padding:1px 6px;" title="Remove" onclick="${del}">✕</button>` : "<span></span>"}</div>`; }).join("")}
       </div></div>` : ""}`;
+}
+function openAttRecord(empId) {
+  if (!(canAccessHR || isPermissionAdmin)) return;
+  const today = toLocalYMD(new Date());
+  attForm = { empId: empId ? String(empId) : "", type: "sick", from: today, to: today, minutes: "", label: "Vacation Leave", note: "", busy: false };
+  hrView = { mode: "attRecord" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+}
+function attFormSet(key, val) {
+  if (!attForm) return; attForm[key] = val;
+  if (key === "type") renderHRModal();
+  if (key === "from" && (!attForm.to || attForm.to < val)) { attForm.to = val; renderHRModal(); }
+}
+function renderAttRecord(box) {
+  box.style.width = "min(520px, 94vw)";
+  const f = attForm; if (!f) return;
+  const isOff = ["sick", "leave", "holiday", "rest"].includes(f.type);
+  const fld = "padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; width:100%; box-sizing:border-box;";
+  const lab = t => `<div style="font-size:12px; font-weight:600; color:var(--text2); margin:10px 0 4px;">${t}</div>`;
+  const types = [["sick", "Sick leave"], ["leave", "Leave"], ["late", "Late"], ["absent", "Absent"], ["holiday", "Holiday"], ["rest", "Rest day"]];
+  const emps = activeStaff().slice().sort((a, b) => a.name.localeCompare(b.name));
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <h3 style="margin-bottom:2px;">Record attendance</h3>
+      <button class="btn btn-secondary" onclick="attBack()" style="padding:4px 10px;">✕</button>
+    </div>
+    ${lab("Employee")}
+    <select onchange="attFormSet('empId', this.value)" style="${fld}"><option value="">Select…</option>
+      ${emps.map(e => `<option value="${escapeAttr(e.id)}" ${String(e.id) === f.empId ? "selected" : ""}>${escapeHtml(e.name)} — ${escapeHtml(displayTeam(e))}</option>`).join("")}</select>
+    ${lab("Type")}
+    <div style="display:flex; gap:6px; flex-wrap:wrap;">${types.map(([k, l]) => `<button type="button" class="btn ${f.type === k ? "btn-primary" : "btn-secondary"} btn-sm" onclick="attFormSet('type', '${k}')">${l}</button>`).join("")}</div>
+    <div style="display:grid; grid-template-columns:1fr ${isOff ? "1fr" : ""}; gap:10px;">
+      <div>${lab(isOff ? "From" : "Date")}<input type="date" value="${escapeAttr(f.from)}" onchange="attFormSet('from', this.value)" style="${fld}" /></div>
+      ${isOff ? `<div>${lab("To (inclusive)")}<input type="date" value="${escapeAttr(f.to)}" min="${escapeAttr(f.from)}" onchange="attFormSet('to', this.value)" style="${fld}" /></div>` : ""}
+    </div>
+    ${f.type === "late" ? `${lab("Minutes late")}<input type="number" min="1" max="600" value="${escapeAttr(f.minutes)}" oninput="attFormSet('minutes', this.value)" style="${fld}" />` : ""}
+    ${f.type === "leave" ? `${lab("Leave type")}<select onchange="attFormSet('label', this.value)" style="${fld}">${LEAVE_LABELS.map(l => `<option ${f.label === l ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select>` : ""}
+    ${(f.type === "late" || f.type === "absent") ? `${lab("Note (HR only)")}<input type="text" maxlength="120" value="${escapeAttr(f.note)}" oninput="attFormSet('note', this.value)" style="${fld}" />` : ""}
+    ${isOff ? `<div style="font-size:11px; color:var(--text3); margin-top:8px;">Time off is visible to everyone as a status (e.g. “Sick Leave”). Do not enter medical details.${f.type === "holiday" || f.type === "rest" ? " Counted only on days the person was due to work." : ""}</div>` : ""}
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+      <button class="btn btn-secondary" onclick="attBack()">Cancel</button>
+      <button class="btn btn-primary" ${f.busy ? "disabled" : ""} onclick="saveAttRecord()">${f.busy ? "Saving…" : "Save"}</button>
+    </div>`;
+}
+function attBack() { attForm = null; hrView = { mode: "attendance" }; renderHRModal(); }
+async function attWriteDays(empId, month, changes) { // changes = { dd: rec | null } — one read + one write for the whole month row
+  const key = `${empId}|${month}`;
+  let old = attLog.get(key);
+  if (old) { // re-read first so two HR people editing the same month never overwrite each other
+    try {
+      const fresh = await graphFetch(`/sites/${siteId}/lists/${attListId}/items/${old.itemId}?$expand=fields`);
+      let days = {}; try { days = JSON.parse((fresh.fields || {})["Days"] || "{}") || {}; } catch (e) {}
+      old = { ...old, days };
+    } catch (e) { /* fall back to the cached copy */ }
+  }
+  const days = { ...(old ? old.days : {}) };
+  Object.entries(changes).forEach(([dd, rec]) => { if (rec) days[dd] = rec; else delete days[dd]; });
+  const t = attTotals(days), emp = employees.find(e => String(e.id) === String(empId));
+  const fields = { Title: key, EmployeeId: String(empId), EmployeeName: emp ? emp.name : "", Month: month, LateCount: String(t.late), LateMin: String(t.lateMin), AbsentDays: String(t.absent), Days: JSON.stringify(days), UpdatedAt: new Date().toISOString() };
+  const base = `/sites/${siteId}/lists/${attListId}/items`;
+  let id;
+  if (old) { await graphFetch(`${base}/${old.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }); id = old.itemId; }
+  else { id = (await graphFetch(base, { method: "POST", body: JSON.stringify({ fields }) })).id; }
+  attLog.set(key, { itemId: id, month, empId: String(empId), days, upd: fields.UpdatedAt });
+}
+async function attWriteDay(empId, ymd, rec) { return attWriteDays(empId, ymd.slice(0, 7), { [ymd.slice(8)]: rec }); } // rec = null removes the day
+// Close / reopen a month. Closing saves every projected Present day, then drops a marker row.
+async function attCloseMonth() {
+  if (!(canAccessHR || isPermissionAdmin) || !attListId || attState.busy) return;
+  const month = attState.month, [from, to] = monthBounds(month), today = toLocalYMD(new Date());
+  if (month > today.slice(0, 7)) { toast("That month hasn't started yet.", "error"); return; }
+  const open = month === today.slice(0, 7) ? "\n\nThis month is not over yet: days from today onward will NOT be included." : "";
+  if (!confirm(`Close ${month}?\n\nEvery scheduled day without a late / absent / leave record is saved as Present, so later schedule changes won't alter this month. You can reopen it later.${open}`)) return;
+  attState.busy = true; attState.msg = "Closing…"; renderHRModal();
+  try {
+    const staff = activeStaff().filter(e => schedMap.has(String(e.id)));
+    let n = 0;
+    for (const e of staff) {
+      const changes = {};
+      Object.entries(attMonthDays(e.id, from, to, today)).forEach(([ymd, rec]) => { if (rec.src === "auto") changes[ymd.slice(8)] = { k: "present", ss: rec.ss, se: rec.se }; });
+      if (Object.keys(changes).length) await attWriteDays(e.id, month, changes);
+      attState.msg = `Closing ${month}… ${++n}/${staff.length}`; if (hrView && hrView.mode === "attendance") renderHRModal();
+    }
+    const me = myEmployeeRecord(), at = new Date().toISOString();
+    const fields = { Title: `_closed|${month}`, EmployeeId: "_CLOSED", EmployeeName: "Month closed", Month: month, Days: JSON.stringify({ by: me ? me.name : "", at }), UpdatedAt: at };
+    const created = await graphFetch(`/sites/${siteId}/lists/${attListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    attClosed.set(month, { itemId: created.id, by: me ? me.name : "", at });
+    attState.msg = `✓ ${month} closed`;
+  } catch (err) { attState.msg = "✗ " + err.message; toast("Could not close the month: " + err.message, "error"); }
+  attState.busy = false; if (hrView && hrView.mode === "attendance") renderHRModal();
+}
+async function attReopenMonth() {
+  const c = attClosed.get(attState.month); if (!c || attState.busy) return;
+  if (!confirm(`Reopen ${attState.month}? Present days already saved stay as they are.`)) return;
+  setSyncing(true);
+  try { await graphFetch(`/sites/${siteId}/lists/${attListId}/items/${c.itemId}`, { method: "DELETE" }); attClosed.delete(attState.month); setSyncing(false, true); }
+  catch (err) { setSyncing(false, false); toast("Could not reopen: " + err.message, "error"); }
+  if (hrView && hrView.mode === "attendance") renderHRModal();
+}
+async function saveAttRecord() {
+  const f = attForm; if (!f || f.busy) return;
+  const emp = employees.find(e => String(e.id) === f.empId);
+  if (!emp) { toast("Select an employee.", "error"); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f.from)) { toast("Pick a date.", "error"); return; }
+  const isOff = ["sick", "leave", "holiday", "rest"].includes(f.type);
+  if (isOff && (!/^\d{4}-\d{2}-\d{2}$/.test(f.to) || f.to < f.from)) { toast("The end date must be on or after the start date.", "error"); return; }
+  if (isOff && (new Date(f.to) - new Date(f.from)) / 86400000 > 120) { toast("That range is longer than 120 days — please check the dates.", "error"); return; }
+  if (f.type === "late" && !(Number(f.minutes) >= 1)) { toast("Enter how many minutes late.", "error"); return; }
+  if (isOff && !timeOffListId) { toast("The “HR Time Off” list was not found (see SETUP_ATTENDANCE.md).", "error"); return; }
+  if (!isOff && !attListId) { toast("The “HR Attendance Log” list was not found (see SETUP_ATTENDANCE.md).", "error"); return; }
+  f.busy = true; renderHRModal(); setSyncing(true);
+  try {
+    if (isOff) {
+      const label = f.type === "sick" ? "Sick Leave" : f.type === "leave" ? f.label : TIMEOFF_KINDS[f.type];
+      const fields = { Title: emp.name, EmployeeId: String(emp.id), Kind: f.type, Label: label, StartDate: f.from, EndDate: f.to };
+      const created = await graphFetch(`/sites/${siteId}/lists/${timeOffListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+      timeOffRows.push({ itemId: created.id, empId: String(emp.id), empName: emp.name, kind: f.type, label, start: f.from, end: f.to });
+    } else {
+      const rec = f.type === "late" ? { k: "late", m: Number(f.minutes) } : { k: "absent" };
+      if (f.note.trim()) rec.r = f.note.trim();
+      await attWriteDay(emp.id, f.from, rec);
+    }
+    setSyncing(false, true); toast("Recorded.", "success");
+    attState.month = f.from.slice(0, 7); attState.empId = String(emp.id);
+    attForm = null; hrView = { mode: "attendance" }; renderHRModal(); refreshHomeStatus();
+  } catch (err) { setSyncing(false, false); f.busy = false; renderHRModal(); toast("Could not save: " + err.message, "error"); }
+}
+async function attDeleteTimeOff(itemId) {
+  const r = timeOffRows.find(x => x.itemId === itemId); if (!r) return;
+  if (!confirm(`Remove ${r.label || TIMEOFF_KINDS[r.kind]} for ${r.empName} (${r.start}${r.end !== r.start ? " to " + r.end : ""})? This removes the whole range.`)) return;
+  setSyncing(true);
+  try { await graphFetch(`/sites/${siteId}/lists/${timeOffListId}/items/${itemId}`, { method: "DELETE" }); timeOffRows = timeOffRows.filter(x => x.itemId !== itemId); setSyncing(false, true); refreshHomeStatus(); }
+  catch (err) { setSyncing(false, false); toast("Could not remove: " + err.message, "error"); }
+  if (hrView && hrView.mode === "attendance") renderHRModal();
+}
+async function attDeleteLogDay(empId, ymd) {
+  if (!confirm(`Remove the attendance entry for ${ymd}?`)) return;
+  setSyncing(true);
+  try { await attWriteDay(empId, ymd, null); setSyncing(false, true); }
+  catch (err) { setSyncing(false, false); toast("Could not remove: " + err.message, "error"); }
+  if (hrView && hrView.mode === "attendance") renderHRModal();
 }
 
 function scheduleStatusLabel(status) {
@@ -15078,13 +15154,14 @@ function isHomeLeadership() {
   return [ORG_CHART.ceo, ORG_CHART.md].some(p => p && p.name && String(p.name).trim().toLowerCase() === name);
 }
 function homeStatusPillHtml(text, color, soon, statusKey) {
-  const click = statusKey ? ` onclick="openTsStatusList('${statusKey}')" title="Click to see who" ` : "";
+  const click = statusKey ? ` onclick="openStatusList('${statusKey}')" title="Click to see who" ` : "";
   return `<span ${click} style="${statusKey ? "cursor:pointer; " : ""}display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:${color}; border:1px solid ${color}; ${soon ? "opacity:.75; font-style:italic;" : ""}">${escapeHtml(text)}</span>`;
 }
 function homeStatusLineHtml() {
-  const tsBtn = tsCanSync() ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openTsSettings()" title="${tsNeedsConsent ? "Teams permission needed — click to authorize" : "Teams Shifts sync settings"}">&#8635; Teams sync${tsNeedsConsent ? " ⚠" : ""}</button>` : "";
-  const attBtn = attListId && (canAccessHR || isPermissionAdmin) ? ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="openAttendance()" title="Late / absent / leave / sick summary from Teams Shifts">&#128202; Attendance</button>` : "";
-  return homeStatusLineCore() + tsBtn + attBtn;
+  const btn = (label, fn, tip) => ` <button class="btn btn-secondary btn-sm" style="font-size:11px; padding:2px 8px;" onclick="${fn}" title="${escapeAttr(tip)}">${label}</button>`;
+  const mine = schedListId && myEmployeeRecord() ? btn("&#128339; My schedule", "openMySchedule()", "Set your working days and hours") : "";
+  const att = (attListId || timeOffListId) && (canAccessHR || isPermissionAdmin) ? btn("&#128202; Attendance", "openAttendance()", "Record and review late / absent / leave / sick") : "";
+  return homeStatusLineCore() + mine + att;
 }
 function homeStatusLineCore() {
   if (isHomeLeadership()) {
@@ -15094,10 +15171,17 @@ function homeStatusLineCore() {
     return `<span style="font-size:13.5px; color:var(--text2);">Right now,</span> ${order.map(k => {
       const n = counts && counts[k] != null ? counts[k] : "—";
       return homeStatusPillHtml(`${n} ${HOME_TEXT.countLabels[k]}`, colors[k], !counts, counts ? k : "");
-    }).join(" ")}${counts ? "" : ` <span style="font-size:11.5px; color:var(--text3);">${escapeHtml(HOME_TEXT.countsSoon)}</span>`}`;
+    }).join(" ")}${counts && counts.none ? " " + homeStatusPillHtml(`${counts.none} no schedule`, "var(--text3)", false, "none") : ""}${counts ? "" : ` <span style="font-size:11.5px; color:var(--text3);">${escapeHtml(HOME_TEXT.countsSoon)}</span>`}`;
   }
-  const st = scheduleStatusLabel(myCurrentScheduleStatus());
-  return `<span style="font-size:13.5px; color:var(--text2);">${escapeHtml(HOME_TEXT.currently)}</span> ${st ? homeStatusPillHtml(st.text, st.color, false) : homeStatusPillHtml(HOME_TEXT.statusSoon, "var(--text3)", true)}`;
+  const r = myCurrentScheduleStatus();
+  if (!r) {
+    return schedListId && myEmployeeRecord()
+      ? `<span onclick="openMySchedule()" style="cursor:pointer; display:inline-block; font-size:12.5px; font-weight:700; padding:3px 11px; border-radius:999px; color:var(--accent); border:1px dashed var(--accent);">${escapeHtml(HOME_TEXT.setSchedule)}</span>`
+      : `<span style="font-size:13.5px; color:var(--text2);">${escapeHtml(HOME_TEXT.currently)}</span> ${homeStatusPillHtml(HOME_TEXT.statusSoon, "var(--text3)", true)}`;
+  }
+  const st = scheduleStatusLabel(r.status);
+  const msg = (HOME_TEXT.workMessages[r.phase] || "").replace("{time}", r.at ? fmt12(r.at) : "");
+  return `<span style="font-size:13.5px; color:var(--text2);">${escapeHtml(HOME_TEXT.currently)}</span> ${st ? homeStatusPillHtml(st.text, st.color, false) : ""}${msg ? ` <span style="font-size:13px; color:var(--text2);">${escapeHtml(msg)}</span>` : ""}`;
 }
 
 // Situational lines appended after "Good Morning/Afternoon/Evening", highest priority first.
@@ -15140,7 +15224,7 @@ function renderGreeting() {
   const tail = msgs.length ? msgs.join(" ") : HOME_TEXT.defaultByPart[greetingPart()];
   return `<div style="display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; margin-bottom:6px;">
       <span style="font-size:22px; font-weight:700;">${HOME_TEXT.hello}${firstName ? ", " + escapeHtml(firstName) : ""} &#128075;</span>
-      ${homeStatusLineHtml()}
+      <span id="homeStatusLine" style="display:contents;">${homeStatusLineHtml()}</span>
     </div>
     <div style="font-size:14px; color:var(--text2); margin-bottom:20px;"><strong style="color:var(--text);">${greetingTimeOfDay()}.</strong> ${escapeHtml(tail)}</div>`;
 }
