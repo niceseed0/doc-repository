@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-15";
+const BUILD_ID = "2026-11-03-17";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13389,6 +13389,7 @@ function evalCanSign(r, stage) {
   const me = myEmployeeRecord(); if (!me || !stage) return false;
   const list = evalSignerEmps(r, stage);
   if (stage === "emp") return list.length === 1 && String(list[0].id) === String(me.id);
+  if (typeof testModeActive !== "undefined" && testModeActive && me.team === TEST_TEAM && (stage === "adm" || stage === "hoc")) return true; // Test Mode: the tester stands in for Admin Manager / HOC
   return list.length ? list.some(e => String(e.id) === String(me.id)) : !!isPermissionAdmin; // nobody found → a permission admin may sign
 }
 function evalStatusBadge(r) {
@@ -13458,7 +13459,7 @@ function evalSignPanelHtml(r, emp) {
       h += miss.length ? `<div style="font-size:12px; color:var(--yellow); margin-top:10px;">To send this evaluation, first complete ${miss.join(" and ")}.</div>`
         : `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:12px;"><div style="font-size:12px; color:var(--text2);">Sending locks the form and notifies ${escapeHtml(emp.name)}. The signatures then follow the order above.</div><button class="btn btn-primary" id="evSendBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSend()">Send for signature</button></div>`;
     } else h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">This evaluation has not been sent yet.</div>`;
-    return h + `</div>`;
+    return h + (evalIsHr() ? `<div style="display:flex; justify-content:flex-end; margin-top:12px;"><button class="btn btn-danger btn-sm" onclick="evalDelete()">Delete evaluation</button></div>` : "") + `</div>`;
   }
   h += evalSigStripHtml(r);
   if (nx && evalCanSign(r, nx)) {
@@ -13468,7 +13469,7 @@ function evalSignPanelHtml(r, emp) {
       <div style="display:flex; justify-content:flex-end; margin-top:10px;"><button class="btn btn-primary" id="evSignBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSign()">Sign &amp; submit</button></div></div>`;
   } else if (status === "Sent") h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">Waiting for the ${escapeHtml(evalStageLabel(r, nx))}'s signature.</div>`;
   else h += `<div style="font-size:12px; color:var(--green); margin-top:10px; font-weight:600;">All signatures collected${r.flow && r.flow.doneAt ? " on " + escapeHtml(dateOnly(r.flow.doneAt)) : ""}. This evaluation is kept in the employee's HR profile.</div>`;
-  h += `<div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">${hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalRecall()">${status === "Completed" ? "Reopen as draft" : "Recall (back to draft)"}</button>` : ""}${status === "Completed" || hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalDownloadPdf()">&#11015; Save as PDF</button>` : ""}</div>`;
+  h += `<div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">${hrUser ? `<button class="btn btn-danger btn-sm" onclick="evalDelete()">Delete</button>` : ""}${hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalRecall()">${status === "Completed" ? "Reopen as draft" : "Recall (back to draft)"}</button>` : ""}${status === "Completed" || hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalDownloadPdf()">&#11015; Save as PDF</button>` : ""}</div>`;
   return h + `</div>`;
 }
 async function evalPatchFlow(r, extra) { // writes Status / Flow (+ extra fields) and keeps the in-memory row in sync
@@ -13487,6 +13488,21 @@ async function evalSend() {
   evalState.busy = true; renderHRModal();
   try { await evalPatchFlow(r); toast(`Sent to ${emp.name} ✓`, "success"); }
   catch (err) { console.warn(err); r.status = prev.status; r.flow = prev.flow; toast("Could not send (are the Status / Flow / Sig columns added to the list? See SETUP_EVALUATION.md).", "error"); }
+  evalState.busy = false; renderHRModal();
+}
+async function evalDelete(itemId) { // HR only — removes the evaluation (and its signatures) for good
+  const r = evalRows.find(x => x.itemId === (itemId || (evalState.cur && evalState.cur.itemId)));
+  if (!r || !evalIsHr() || evalState.busy) return;
+  const e = employees.find(x => String(x.id) === r.empId), label = r.track === "Probation" ? "probationary evaluation" : evalPeriodLabel(r.start);
+  if (!confirm(`Delete ${e ? e.name + "'s " : ""}${label}${evalStatus(r) !== "Draft" ? " (" + evalStatus(r) + ")" : ""}?\n\nIt will be removed permanently, together with any signatures. This can't be undone.`)) return;
+  evalState.busy = true;
+  try {
+    await evalSaveChain.catch(() => {});
+    await graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}`, { method: "DELETE" });
+    evalRows = evalRows.filter(x => x.itemId !== r.itemId);
+    if (evalState.cur && evalState.cur.itemId === r.itemId) { evalState.cur = null; evalState.view = "home"; evalState.viewer = false; evalState.back = null; }
+    toast("Evaluation deleted.", "success"); try { renderTabs(); } catch (e2) {}
+  } catch (err) { console.warn(err); toast("Could not delete the evaluation.", "error"); }
   evalState.busy = false; renderHRModal();
 }
 async function evalRecall() {
@@ -13597,7 +13613,7 @@ function evalDownloadPdf() {
   win.document.open(); win.document.write(doc); win.document.close();
 }
 function evalHomeRowHtml(r) {
-  return `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:10px; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Probation" ? "From the hire date to the 5th month" : (r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track) + " evaluation"}</div></div><span style="display:flex; gap:10px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent); font-size:12px;">Open &#9654;</span></span></div>`;
+  return `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:10px; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Probation" ? "From the hire date to the 5th month" : (r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track) + " evaluation"}</div></div><span style="display:flex; gap:10px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent); font-size:12px;">Open &#9654;</span>${evalIsHr() ? `<span onclick="event.stopPropagation(); evalDelete('${escapeAttr(r.itemId)}')" title="Delete this evaluation" style="color:var(--text3); cursor:pointer; padding:2px 4px;">&#10005;</span>` : ""}</span></div>`;
 }
 function evalHomeList(mine) { // current evaluations first, finished years under "Past evaluations"
   const cur = mine.filter(r => !evalIsPast(r)), past = mine.filter(evalIsPast);
