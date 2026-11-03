@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-12";
+const BUILD_ID = "2026-11-03-13";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12910,13 +12910,13 @@ async function loadEvaluations(opts) { // light = just who/when/status (for the 
   } catch (e) { console.warn("Could not load HR Evaluations:", e); }
 }
 async function openEvaluation() {
-  if (!(canAccessHR || isPermissionAdmin)) return;
+  if (!evalCanOpen()) return;
   if (!evalListId) { toast("The “HR Evaluations” list was not found (see SETUP_EVALUATION.md).", "error"); return; }
   evalState = { empId: evalState.empId || "", view: "home", setup: null, cur: null, cfg: null, busy: false, save: "" };
   hrView = { mode: "evaluation" };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
-  await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules(), loadAllIncidents()]);
+  await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules(), loadAllIncidents()].map(p => Promise.resolve(p).catch(() => {})));
   await evalAutoRollover();
   if (hrView && hrView.mode === "evaluation") renderHRModal();
 }
@@ -13263,7 +13263,7 @@ function evalProbBodyHtml(emp, r, today) {
 }
 function renderEvaluation(box) {
   box.style.width = "min(1120px, 97vw)";
-  const sorted = activeStaff().slice().sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = evalPickable().sort((a, b) => a.name.localeCompare(b.name));
   const emp = employees.find(x => String(x.id) === evalState.empId) || null;
   const fld = "padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; box-sizing:border-box;";
   const head = (t, sub, back) => `<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
@@ -13339,6 +13339,21 @@ function renderEvaluation(box) {
   box.innerHTML = head("Performance Evaluation", "Yearly evaluation form. Pick an employee, then choose the start month of the 12-month period.", false) + `<div style="margin-top:8px;">${picker}</div>${body}`;
 }
 // ── Signature workflow (send → employee → superior → Admin Manager → head of cluster; probation: employee → manager) ──
+function evalIsHr() { return !!(canAccessHR || isPermissionAdmin); }
+function evalReports(e, me) { // is `me` the immediate superior (automatic name) of e on either form?
+  return ["Agent", "Manager"].some(t => evalNameList(evalAutoSuperior(e, t)).some(n => n.toLowerCase() === me.name.toLowerCase()));
+}
+function evalPickable() { // HR: everybody · managers: the people they are the immediate superior of
+  if (evalIsHr()) return activeStaff().slice();
+  const me = myEmployeeRecord(); if (!me) return [];
+  return activeStaff().filter(e => String(e.id) !== String(me.id) && evalReports(e, me));
+}
+function evalCanOpen() { return evalIsHr() || evalPickable().length > 0; }
+function evalCanEdit(r) { // HR, or the person's immediate superior (never one's own evaluation)
+  if (evalIsHr()) return true;
+  const me = myEmployeeRecord(), e = employees.find(x => String(x.id) === r.empId);
+  return !!(me && e && String(e.id) !== String(me.id) && evalNameList(r.superior || evalAutoSuperior(e, r.track)).some(n => n.toLowerCase() === me.name.toLowerCase()));
+}
 const EVAL_STAGES_YEAR = [["emp", "Employee"], ["sup", "Immediate Superior"], ["adm", "Admin Manager"], ["hoc", "Head of Cluster"]];
 const EVAL_STAGES_PROB = [["emp", "Employee"], ["sup", "Manager"]];
 const EVAL_SIG_COL = { emp: "SigEmp", sup: "SigSup", adm: "SigAdm", hoc: "SigHoc" };
@@ -13401,7 +13416,7 @@ function evalEnsureFull(r) { // fetches Data + signatures of one evaluation when
   return r._p;
 }
 function evalLockMode(r) { // edit = HR drafting · ef = the employee may still write feedback · lock = read only
-  if (evalStatus(r) === "Draft") return evalState.viewer || !(canAccessHR || isPermissionAdmin) ? "lock" : "edit";
+  if (evalStatus(r) === "Draft") return evalState.viewer || !evalCanEdit(r) ? "lock" : "edit";
   return evalNextStage(r) === "emp" && evalCanSign(r, "emp") ? "ef" : "lock";
 }
 function evalApplyLock(box, r) {
@@ -13431,7 +13446,7 @@ function evalSignPanelHtml(r, emp) {
     if (!evalMfDone(r.data)) miss.push("the manager's feedback");
     if (r.track === "Agent" && !(r.data && r.data.sub)) miss.push("the agent type / KPI items");
     h += `<div style="display:grid; grid-template-columns:repeat(${evalStages(r).length}, 1fr); gap:10px;">${evalStages(r).map(([k, label]) => `<div style="border:1px dashed var(--border); border-radius:8px; padding:10px;"><div style="font-size:10.5px; color:var(--text3); text-transform:uppercase;">${escapeHtml(label)}</div><div style="font-size:12.5px; font-weight:600;">${escapeHtml(evalSignerEmps(r, k).map(e => e.name).join(" / ") || "— (nobody found: a permission admin will sign)")}</div></div>`).join("")}</div>`;
-    if (hrUser && !evalState.viewer) {
+    if (evalCanEdit(r) && !evalState.viewer) {
       h += miss.length ? `<div style="font-size:12px; color:var(--yellow); margin-top:10px;">To send this evaluation, first complete ${miss.join(" and ")}.</div>`
         : `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:12px;"><div style="font-size:12px; color:var(--text2);">Sending locks the form and notifies ${escapeHtml(emp.name)}. The signatures then follow the order above.</div><button class="btn btn-primary" id="evSendBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSend()">Send for signature</button></div>`;
     } else h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">This evaluation has not been sent yet.</div>`;
@@ -13455,7 +13470,7 @@ async function evalPatchFlow(r, extra) { // writes Status / Flow (+ extra fields
 }
 async function evalSend() {
   const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId);
-  if (!r || !emp || evalState.busy || !(canAccessHR || isPermissionAdmin) || evalStatus(r) !== "Draft") return;
+  if (!r || !emp || evalState.busy || !evalCanEdit(r) || evalStatus(r) !== "Draft") return;
   if (!evalMfDone(r.data)) { toast("Enter the manager's feedback first.", "error"); return; }
   const names = evalStages(r).map(([k, l]) => `${l}: ${evalSignerEmps(r, k).map(e => e.name).join(" / ") || "(nobody found — permission admin)"}`).join("\n");
   if (!confirm(`Send this evaluation to ${emp.name} for signature?\n\nThe form will be locked.\n\n${names}`)) return;
@@ -15017,7 +15032,7 @@ function renderRequests() {
     mpMgmtCard(),
     { icon: "&#128203;", title: "General Task Request", desc: "Assign a one-off task with a deadline and track it to submission.",
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
-    { icon: "&#127919;", title: "Performance Management", desc: "" },
+    { icon: "&#128221;", title: "Performance Evaluation", desc: "Yearly & probationary evaluations for the people you manage — fill in, send for signature.", onclick: evalListId && employeesListId && evalCanOpen() ? "openEvaluation()" : "" },
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Write a session for anyone eligible on your team — recognition requests are separate.",
       actions: quarterlyFeedbackListId ? [{ label: "Team Board", onclick: "openQfBoard()", badge: qfBoardBadge() }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }, ...(qfCanOverview() ? [{ label: "Overview", onclick: "openQfOverview()" }] : [])] : undefined },
     qrMgmtCard()
@@ -15027,7 +15042,6 @@ function renderRequests() {
     ...mpHrCard(),
     ...qrReviewCards(),
     ...itCards(),
-    ...((canAccessHR || isPermissionAdmin) && employeesListId ? [{ icon: "&#128221;", title: "Performance Evaluation", desc: "Yearly evaluation form — employee info and attendance KPIs.", onclick: "openEvaluation()" }] : []),
     ...(canAccessHR && employeesListId ? [{ icon: "&#128101;", title: "Employee Directory", desc: "All employees in one sortable, filterable table — team, position, hire date, salary.", onclick: "openDirectory()" }] : []),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     mpsCard(),
