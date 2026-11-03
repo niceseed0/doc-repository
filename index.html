@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-11";
+const BUILD_ID = "2026-11-03-12";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1092,6 +1092,7 @@ async function startApp() {
     await loadEmployees(); // loadNteCases() below needs the employees array already populated to resolve permissions
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadAttendanceLog(), checkEditPermission()]);
     refreshAccessFlags();
+    evalInit().catch(() => {});
     startScheduleData();
     autoEmploymentStatus().then(n => { if (n) { toast(`${n} employee status${n === 1 ? "" : "es"} updated automatically (probation rule)`, "success"); renderContent(); } }).catch(() => {});
     ensureRecurringTasks().then(() => { if (activeTab === "__MYTASKS__") renderContent(); renderTabs(); }); // best-effort, runs quietly in the background
@@ -6222,7 +6223,7 @@ function unifiedTaskAlerts() {
   }));
   const qa = qfAlert();
   const quarterly = qa ? [qa] : [];
-  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts(), ...mrUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
+  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts(), ...mrUnifiedAlerts(), ...evalUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
 }
 function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -12890,12 +12891,21 @@ function evalSuggestTrack(e) {
   const lv = evalLevel(e && e.position);
   return lv === "PM" || lv === "SPM" ? "Manager" : lv === "GM" ? "Agent" : "";
 }
-async function loadEvaluations() {
+async function loadEvaluations(opts) { // light = just who/when/status (for the alerts); otherwise the form data too (no signatures — those load per evaluation)
   if (!evalListId) { evalRows = []; return; }
+  const light = !!(opts && opts.light);
+  const sel = light ? "EmployeeId,StartMonth,Track,Superior,Status,Flow" : "EmployeeId,EmployeeName,StartMonth,Track,Superior,ValidatedBy,Data,Status,Flow";
   try {
-    evalRows = (await pageAll(`/sites/${siteId}/lists/${evalListId}/items?$expand=fields&$top=2000`)).map(it => {
-      const f = it.fields || {}; let data = {}; try { data = JSON.parse(f["Data"] || "{}") || {}; } catch (e) {}
-      return { itemId: it.id, empId: String(f["EmployeeId"] || ""), start: f["StartMonth"] || "", track: f["Track"] || "Agent", superior: f["Superior"] || "", validated: f["ValidatedBy"] || "", data };
+    let items;
+    try { items = await pageAll(`/sites/${siteId}/lists/${evalListId}/items?$expand=fields($select=${sel})&$top=2000`); }
+    catch (e) { items = await pageAll(`/sites/${siteId}/lists/${evalListId}/items?$expand=fields&$top=2000`); } // columns not added yet
+    const prior = new Map(evalRows.map(r => [r.itemId, r]));
+    evalRows = items.map(it => {
+      const f = it.fields || {}, old = prior.get(it.id);
+      if (light && old && old.hasData) { const keepD = old.data, keepV = old.validated; evalApplyFields(old, f, false, false); old.data = keepD; old.validated = keepV; return old; }
+      const r = old || { itemId: it.id, data: {}, validated: "", sig: null, hasData: false, hasSig: false };
+      evalApplyFields(r, f, !light, false);
+      return r;
     }).filter(r => r.empId && /^\d{4}-\d{2}$/.test(r.start));
   } catch (e) { console.warn("Could not load HR Evaluations:", e); }
 }
@@ -12907,6 +12917,7 @@ async function openEvaluation() {
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
   await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules(), loadAllIncidents()]);
+  await evalAutoRollover();
   if (hrView && hrView.mode === "evaluation") renderHRModal();
 }
 function evalPick(id) { evalState.empId = id; evalState.view = "home"; evalState.setup = null; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
@@ -12941,7 +12952,7 @@ async function evalSaveSetup() {
   try {
     const fields = { Title: `${e.id}|${s.start}`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: s.start, Track: s.track, Superior: "", ValidatedBy: "", Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() };
     const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
-    const row = { itemId: created.id, empId: String(e.id), start: s.start, track: s.track, superior: "", validated: "", data };
+    const row = { itemId: created.id, empId: String(e.id), start: s.start, track: s.track, superior: "", validated: "", data, status: "Draft", flow: {}, sig: { emp: "", sup: "", adm: "", hoc: "" }, hasData: true, hasSig: true };
     evalRows.push(row); evalState.setup = null; evalState.cur = row; evalState.view = "form";
   } catch (err) { console.warn(err); toast("Could not save the evaluation (is the “Data” column added to the list?).", "error"); }
   evalState.busy = false; renderHRModal();
@@ -12954,13 +12965,16 @@ async function evalNewProb() { // the probationary evaluation always runs from t
   try {
     const data = { chk: {} }, fields = { Title: `${e.id}|prob`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: hire.slice(0, 7), Track: "Probation", Superior: "", ValidatedBy: "", Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() };
     const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
-    const row = { itemId: created.id, empId: String(e.id), start: hire.slice(0, 7), track: "Probation", superior: "", validated: "", data };
+    const row = { itemId: created.id, empId: String(e.id), start: hire.slice(0, 7), track: "Probation", superior: "", validated: "", data, status: "Draft", flow: {}, sig: { emp: "", sup: "", adm: "", hoc: "" }, hasData: true, hasSig: true };
     evalRows.push(row); evalState.cur = row; evalState.view = "form";
   } catch (err) { console.warn(err); toast("Could not save the evaluation (is the “Data” column added to the list?).", "error"); }
   evalState.busy = false; renderHRModal();
 }
 function evalOpenForm(itemId) { evalState.cur = evalRows.find(r => r.itemId === itemId) || null; evalState.view = evalState.cur ? "form" : "home"; evalState.cfg = null; renderHRModal(); }
-function evalBackHome() { evalState.view = "home"; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
+function evalBackHome() {
+  if (evalState.viewer) { const b = evalState.back; evalState.viewer = false; evalState.back = null; if (b) { hrView = b; renderHRModal(); } else closeHRModal(); return; }
+  evalState.view = "home"; evalState.cur = null; evalState.cfg = null; renderHRModal();
+}
 function evalEditCfg() { const r = evalState.cur; if (!r) return; const d = r.data || {}; evalState.cfg = { sub: d.sub || "agent", items: (d.items && d.items.length ? d.items : EVAL_SETS[d.sub || "agent"].items.map(i => i.k)).slice() }; renderHRModal(); }
 function evalApplyCfg() {
   const r = evalState.cur, c = evalState.cfg; if (!r || !c) return;
@@ -12969,7 +12983,8 @@ function evalApplyCfg() {
   evalState.cfg = null; evalPersist(); renderHRModal();
 }
 function evalPersist() { // saves Superior / ValidatedBy / Data of the open evaluation; calls are queued so they never overtake each other
-  const r = evalState.cur; if (!r) return;
+  const r = evalState.cur; if (!r || !r.hasData) return;
+  if (evalLockMode(r) === "lock") return; // sent / signed evaluations are read-only (the employee may still add feedback)
   const fields = { Superior: r.superior, ValidatedBy: r.validated, Data: JSON.stringify(r.data || {}), UpdatedAt: new Date().toISOString() };
   evalState.save = "Saving…"; evalShowSave();
   evalSaveChain = evalSaveChain.then(() => graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }))
@@ -13257,6 +13272,11 @@ function renderEvaluation(box) {
   const picker = `<select onchange="evalPick(this.value)" style="${fld} min-width:260px;"><option value="">Select an employee…</option>${sorted.map(e => `<option value="${escapeAttr(e.id)}" ${String(e.id) === evalState.empId ? "selected" : ""}>${escapeHtml(e.name)} — ${escapeHtml(e.position || displayTeam(e))}</option>`).join("")}</select>`;
   if (evalState.view === "form" && evalState.cur && emp) {
     const r = evalState.cur, today = toLocalYMD(new Date());
+    if (!r.hasData || (evalStatus(r) !== "Draft" && !r.hasSig)) {
+      if (!r.loadFailed) evalEnsureFull(r).then(() => { if (hrView && hrView.mode === "evaluation" && evalState.cur === r) renderHRModal(); });
+      box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, "", true) + `<div style="padding:30px 0; text-align:center; color:var(--text3);">${r.loadFailed ? "Could not load this evaluation." : "Loading…"}</div>`;
+      return;
+    }
     const lab = "font-size:11.5px; font-weight:700; color:var(--text); margin:8px 0 3px;";
     const ro = v => `<div style="background:var(--surface2); border-radius:4px; padding:7px 10px; text-align:center; min-height:32px;">${v ? escapeHtml(v) : "&nbsp;"}</div>`;
     const auto = evalAutoSuperior(emp, r.track);
@@ -13278,17 +13298,20 @@ function renderEvaluation(box) {
         ${r.track === "Agent" ? `<div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Type the monthly figures (blank = not counted). Percentages as 97.3, times as 0:09:02. ${r.data.sub === "qa" ? "Rates are calculated for you; Total Working Days can be left blank to use the scheduled days." : ""} Attendance fills in automatically.</div>${evalMonthlyHtml(emp, r, cp)}` : `<div style="font-size:12px; color:var(--text3);">Manager KPIs will be added next.</div>`}
         ${evalAdminHtml(emp, r)}${r.track === "Agent" && cp.items.some(i => i.k === "bf") ? evalBehavioralHtml(r) : ""}${evalFeedbackHtml(r)}`;
     }
-    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Probation" ? "Probationary" : r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${r.track === "Probation" ? escapeHtml(evalHireText(evalProbHire(emp))) + " – " + escapeHtml(evalHireText(evalProbPoints(evalProbHire(emp)).m5)) : escapeHtml(evalPeriodLabel(r.start))}`, true) + `
-      <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
+    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Probation" ? "Probationary" : r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${r.track === "Probation" ? escapeHtml(evalHireText(evalProbHire(emp))) + " – " + escapeHtml(evalHireText(evalProbPoints(evalProbHire(emp)).m5)) : escapeHtml(evalPeriodLabel(r.start))} · ${evalStatusBadge(r)}`, true) + `
+      ${(() => { const nx = evalNextStage(r); return nx && evalCanSign(r, nx) ? `<div style="margin:6px 0; padding:8px 12px; border:1px solid var(--accent); border-radius:8px; font-size:12.5px;">&#9998; Your signature is needed (${escapeHtml(evalStageLabel(r, nx))}) — review the evaluation and sign at the bottom of the page.</div>` : ""; })()}
+      <div id="evBody"><div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 18px;">
         <div><div style="${lab}">Employee Name:</div>${ro(emp.name)}</div><div><div style="${lab}">Position:</div>${ro(emp.position)}</div>
         <div><div style="${lab}">Department:</div>${ro(displayTeam(emp))}</div><div><div style="${lab}">Immediate Superior:</div>${supInp}</div>
         <div><div style="${lab}">Hired Date:</div>${ro(evalHireText(emp.hireDate))}</div><div><div style="${lab}">Validated By:</div>${valInp}</div>
-      </div>` + body + `
+      </div>` + body + `</div>
       <details style="margin-top:16px;"><summary style="cursor:pointer; font-size:12.5px; font-weight:700;">Attendance detail (due days, absences, late minutes)</summary>
       <div style="font-size:11.5px; color:var(--text3); margin:6px 0;">Tardiness % = (${EVAL_TARDY_BASE} − late min) ÷ ${EVAL_TARDY_BASE} × 100 · Absence % = (due days − absent days) ÷ due days × 100. Due days = scheduled working days (rest days and holidays excluded, approved leave and sick days included).${nSched ? " <b style=\"color:var(--yellow);\">No work schedule is set for this person — Mon–Fri is assumed.</b>" : ""}</div>
       <table style="width:100%; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">Month</th><th style="${EVAL_TH}">Due days</th><th style="${EVAL_TH}">Absent</th><th style="${EVAL_TH}">Late min</th><th style="${EVAL_TH}">Absence %</th><th style="${EVAL_TH}">Tardiness %</th><th style="${EVAL_TH}">Month</th></tr></thead>
-      <tbody>${a.months.length ? a.months.map(m => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(evalMonthLabel(m.month))}</td><td style="${EVAL_TD}">${m.due}</td><td style="${EVAL_TD}">${m.absent}</td><td style="${EVAL_TD}">${m.lateMin}</td><td style="${EVAL_TD}">${m.abs == null ? "—" : m.abs.toFixed(1)}</td><td style="${EVAL_TD}">${m.tardy.toFixed(1)}</td><td style="${EVAL_TD} color:${m.closed ? "var(--green)" : "var(--yellow)"};">${m.closed ? "Closed" : m.running ? "In progress" : "Open"}</td></tr>`).join("") : `<tr><td colspan="7" style="${EVAL_TD} color:var(--text3);">This period has not started yet.</td></tr>`}</tbody></table></details>`;
+      <tbody>${a.months.length ? a.months.map(m => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(evalMonthLabel(m.month))}</td><td style="${EVAL_TD}">${m.due}</td><td style="${EVAL_TD}">${m.absent}</td><td style="${EVAL_TD}">${m.lateMin}</td><td style="${EVAL_TD}">${m.abs == null ? "—" : m.abs.toFixed(1)}</td><td style="${EVAL_TD}">${m.tardy.toFixed(1)}</td><td style="${EVAL_TD} color:${m.closed ? "var(--green)" : "var(--yellow)"};">${m.closed ? "Closed" : m.running ? "In progress" : "Open"}</td></tr>`).join("") : `<tr><td colspan="7" style="${EVAL_TD} color:var(--text3);">This period has not started yet.</td></tr>`}</tbody></table></details>${evalSignPanelHtml(r, emp)}`;
+    evalApplyLock(box, r);
+    if (document.getElementById("evSigPad")) initSignaturePad("evSigPad");
     return;
   }
   const mine = emp ? evalRows.filter(r => r.empId === String(emp.id)).sort((a, b) => b.start.localeCompare(a.start)) : [];
@@ -13307,13 +13330,256 @@ function renderEvaluation(box) {
       ${s.track === "Agent" ? evalCfgHtml(s, "setup") : ""}
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;"><button class="btn btn-secondary" onclick="evalCancelSetup()">Cancel</button><button class="btn btn-primary" ${evalState.busy ? "disabled" : ""} onclick="evalSaveSetup()">${evalState.busy ? "Saving…" : "Start evaluation"}</button></div></div>`;
   } else if (emp) {
-    body = `<div style="margin-top:12px;">${mine.length ? mine.map(r => `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Probation" ? "From the hire date to the 5th month" : (r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track) + " evaluation"}</div></div><span style="color:var(--accent); font-size:12px;">Open &#9654;</span></div>`).join("")
+    body = `<div style="margin-top:12px;">${mine.length ? evalHomeList(mine)
       : `<div style="color:var(--text3); font-size:13px; margin-bottom:10px;">No evaluation yet for ${escapeHtml(emp.name)}.</div>`}
       <div style="display:flex; gap:8px; flex-wrap:wrap;">${mine.some(r => r.track === "Probation") ? "" : `<button class="btn btn-primary btn-sm" onclick="evalNewProb()">+ Probationary evaluation</button>`}
       <button class="btn btn-primary btn-sm" onclick="evalNew()">+ ${mine.some(r => r.track !== "Probation") ? "New yearly evaluation" : "Yearly evaluation (Agent / Manager)"}</button></div>
       ${!mine.length && emp.hireDate && evalProbHire(emp) > evalMonthAdd(toLocalYMD(new Date()).slice(0, 7), -6) + "-01" ? `<div style="font-size:11.5px; color:var(--text3); margin-top:8px;">New hire: open <b>both</b> evaluations — the probationary one (first 5 months) and the yearly one (keeps running from the hire month). Attendance is shared between them.</div>` : ""}</div>`;
   }
   box.innerHTML = head("Performance Evaluation", "Yearly evaluation form. Pick an employee, then choose the start month of the 12-month period.", false) + `<div style="margin-top:8px;">${picker}</div>${body}`;
+}
+// ── Signature workflow (send → employee → superior → Admin Manager → head of cluster; probation: employee → manager) ──
+const EVAL_STAGES_YEAR = [["emp", "Employee"], ["sup", "Immediate Superior"], ["adm", "Admin Manager"], ["hoc", "Head of Cluster"]];
+const EVAL_STAGES_PROB = [["emp", "Employee"], ["sup", "Manager"]];
+const EVAL_SIG_COL = { emp: "SigEmp", sup: "SigSup", adm: "SigAdm", hoc: "SigHoc" };
+let evalRollBusy = false;
+function evalStages(r) { return r.track === "Probation" ? EVAL_STAGES_PROB : EVAL_STAGES_YEAR; }
+function evalStatus(r) { return r && (r.status === "Sent" || r.status === "Completed") ? r.status : "Draft"; }
+function evalNextStage(r) { // the stage waiting for a signature ("" when not sent / finished)
+  if (evalStatus(r) !== "Sent") return "";
+  const f = r.flow || {}, s = evalStages(r).find(x => !(f[x[0]] && f[x[0]].at));
+  return s ? s[0] : "";
+}
+function evalStageLabel(r, k) { const s = evalStages(r).find(x => x[0] === k); return s ? s[1] : k; }
+function evalNameList(s) { return String(s || "").split(/\s*(?:,|\/|&|\band\b)\s*/i).map(x => x.trim()).filter(Boolean); }
+function evalSignerEmps(r, stage) { // who may sign this stage
+  const emp = employees.find(x => String(x.id) === r.empId); if (!emp) return [];
+  const act = employees.filter(x => x.status !== "Resigned");
+  const byNames = str => { const out = []; evalNameList(str).forEach(n => { const h = act.find(x => x.name.toLowerCase() === n.toLowerCase()); if (h && !out.includes(h)) out.push(h); }); return out; };
+  if (stage === "emp") return [emp];
+  if (stage === "sup") return byNames(r.superior || evalAutoSuperior(emp, r.track));
+  if (stage === "adm") return act.filter(x => /admin\s*manager/i.test(x.position || ""));
+  if (stage === "hoc") return byNames(evalClusterHead(evalClusterOf(emp)));
+  return [];
+}
+function evalCanSign(r, stage) {
+  const me = myEmployeeRecord(); if (!me || !stage) return false;
+  const list = evalSignerEmps(r, stage);
+  if (stage === "emp") return list.length === 1 && String(list[0].id) === String(me.id);
+  return list.length ? list.some(e => String(e.id) === String(me.id)) : !!isPermissionAdmin; // nobody found → a permission admin may sign
+}
+function evalStatusBadge(r) {
+  const st = evalStatus(r), nx = evalNextStage(r);
+  const [txt, col] = st === "Completed" ? ["Completed", "var(--green)"] : st === "Sent" ? ["Waiting: " + evalStageLabel(r, nx), "var(--yellow)"] : ["Draft", "var(--text3)"];
+  return `<span style="font-size:10.5px; font-weight:700; color:${col}; border:1px solid ${col}; border-radius:10px; padding:1px 8px; white-space:nowrap;">${escapeHtml(txt)}</span>`;
+}
+function evalUnifiedAlerts() { // "My Tasks": evaluations waiting for MY signature
+  if (!evalListId) return [];
+  return evalRows.filter(r => { const s = evalNextStage(r); return s && evalCanSign(r, s); }).map(r => {
+    const e = employees.find(x => String(x.id) === r.empId), s = evalNextStage(r), mine = s === "emp";
+    return { level: "due", sortMs: Date.parse((r.flow && r.flow.sentAt) || "") || Date.now(),
+      onclick: `evalOpenSign('${escapeAttr(r.itemId)}')`,
+      title: mine ? "Performance evaluation — review & sign" : `Sign performance evaluation — ${e ? e.name : ""}`,
+      sub: "Performance Evaluation", dueLabel: `Awaiting your signature (${evalStageLabel(r, s)})`, badge: "Sign" };
+  });
+}
+function evalApplyFields(r, f, withData, withSig) {
+  r.empId = String(f["EmployeeId"] || r.empId || ""); r.start = f["StartMonth"] || r.start || ""; r.track = f["Track"] || r.track || "Agent";
+  r.superior = f["Superior"] || ""; if (withData || f["ValidatedBy"] !== undefined) r.validated = f["ValidatedBy"] || r.validated || "";
+  r.status = f["Status"] || "Draft"; r.flow = {}; try { r.flow = JSON.parse(f["Flow"] || "{}") || {}; } catch (e) {}
+  if (withData) { let d = {}; try { d = JSON.parse(f["Data"] || "{}") || {}; } catch (e) {} r.data = d; r.hasData = true; }
+  if (withSig) { r.sig = { emp: f["SigEmp"] || "", sup: f["SigSup"] || "", adm: f["SigAdm"] || "", hoc: f["SigHoc"] || "" }; r.hasSig = true; }
+  return r;
+}
+function evalEnsureFull(r) { // fetches Data + signatures of one evaluation when only the light copy is in memory
+  if (r.hasData && r.hasSig) return Promise.resolve();
+  if (r._p) return r._p;
+  r._p = graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}?$expand=fields`)
+    .then(it => { evalApplyFields(r, (it && it.fields) || {}, true, true); })
+    .catch(err => { console.warn(err); r.loadFailed = true; })
+    .then(() => { r._p = null; });
+  return r._p;
+}
+function evalLockMode(r) { // edit = HR drafting · ef = the employee may still write feedback · lock = read only
+  if (evalStatus(r) === "Draft") return evalState.viewer || !(canAccessHR || isPermissionAdmin) ? "lock" : "edit";
+  return evalNextStage(r) === "emp" && evalCanSign(r, "emp") ? "ef" : "lock";
+}
+function evalApplyLock(box, r) {
+  const mode = evalLockMode(r); if (mode === "edit") return;
+  const body = box.querySelector("#evBody"); if (!body) return;
+  body.querySelectorAll("input,select,textarea,button").forEach(el => { if (mode === "ef" && el.id === "evEf") return; el.disabled = true; });
+  body.querySelectorAll("[onclick]").forEach(el => { if (!/^(INPUT|BUTTON|SELECT|TEXTAREA)$/.test(el.tagName)) el.style.pointerEvents = "none"; });
+}
+function evalSigStripHtml(r) {
+  const f = r.flow || {}, nx = evalNextStage(r), st = evalStages(r);
+  return `<div style="display:grid; grid-template-columns:repeat(${st.length}, 1fr); gap:10px;">${st.map(([k, label]) => {
+    const meta = r.sig && parseSignatureField(r.sig[k]), done = f[k] && f[k].at;
+    const who = evalSignerEmps(r, k).map(e => e.name).join(" / ") || "—";
+    return `<div style="border:1px solid var(--border); border-radius:8px; padding:10px; min-height:96px;">
+      <div style="font-size:10.5px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em;">${escapeHtml(label)}</div>
+      <div style="font-size:12.5px; font-weight:600;">${escapeHtml(done && f[k].name ? f[k].name : who)}</div>
+      ${done ? `${meta && meta.dataUrl ? `<img src="${meta.dataUrl}" style="height:46px; max-width:100%; background:#fff; border-radius:4px; margin-top:4px;" />` : ""}<div style="font-size:10.5px; color:var(--green);">Signed ${escapeHtml(dateOnly(f[k].at))}</div>`
+        : `<div style="font-size:11.5px; margin-top:6px; color:${k === nx ? "var(--yellow)" : "var(--text3)"};">${k === nx ? "Waiting for signature" : "Not yet"}</div>`}
+    </div>`;
+  }).join("")}</div>`;
+}
+function evalSignPanelHtml(r, emp) {
+  const status = evalStatus(r), nx = evalNextStage(r), hrUser = canAccessHR || isPermissionAdmin;
+  let h = `<div id="evSignPanel" style="margin-top:26px; border-top:2px solid var(--border); padding-top:6px;"><div style="${EVAL_H} margin-top:14px;">SIGNATURES</div>`;
+  if (status === "Draft") {
+    const miss = [];
+    if (!evalMfDone(r.data)) miss.push("the manager's feedback");
+    if (r.track === "Agent" && !(r.data && r.data.sub)) miss.push("the agent type / KPI items");
+    h += `<div style="display:grid; grid-template-columns:repeat(${evalStages(r).length}, 1fr); gap:10px;">${evalStages(r).map(([k, label]) => `<div style="border:1px dashed var(--border); border-radius:8px; padding:10px;"><div style="font-size:10.5px; color:var(--text3); text-transform:uppercase;">${escapeHtml(label)}</div><div style="font-size:12.5px; font-weight:600;">${escapeHtml(evalSignerEmps(r, k).map(e => e.name).join(" / ") || "— (nobody found: a permission admin will sign)")}</div></div>`).join("")}</div>`;
+    if (hrUser && !evalState.viewer) {
+      h += miss.length ? `<div style="font-size:12px; color:var(--yellow); margin-top:10px;">To send this evaluation, first complete ${miss.join(" and ")}.</div>`
+        : `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:12px;"><div style="font-size:12px; color:var(--text2);">Sending locks the form and notifies ${escapeHtml(emp.name)}. The signatures then follow the order above.</div><button class="btn btn-primary" id="evSendBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSend()">Send for signature</button></div>`;
+    } else h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">This evaluation has not been sent yet.</div>`;
+    return h + `</div>`;
+  }
+  h += evalSigStripHtml(r);
+  if (nx && evalCanSign(r, nx)) {
+    h += `<div style="margin-top:14px; border:1px solid var(--accent); border-radius:10px; padding:12px 14px;"><div style="font-weight:700; margin-bottom:4px;">Your signature — ${escapeHtml(evalStageLabel(r, nx))}</div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">${nx === "emp" ? "Write your feedback above (optional), then sign. Your signature does not necessarily imply agreement." : "By signing you confirm that you have reviewed this evaluation."}</div>
+      ${signaturePadHtml("evSigPad")}
+      <div style="display:flex; justify-content:flex-end; margin-top:10px;"><button class="btn btn-primary" id="evSignBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSign()">Sign &amp; submit</button></div></div>`;
+  } else if (status === "Sent") h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">Waiting for the ${escapeHtml(evalStageLabel(r, nx))}'s signature.</div>`;
+  else h += `<div style="font-size:12px; color:var(--green); margin-top:10px; font-weight:600;">All signatures collected${r.flow && r.flow.doneAt ? " on " + escapeHtml(dateOnly(r.flow.doneAt)) : ""}. This evaluation is kept in the employee's HR profile.</div>`;
+  h += `<div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">${hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalRecall()">${status === "Completed" ? "Reopen as draft" : "Recall (back to draft)"}</button>` : ""}${status === "Completed" || hrUser ? `<button class="btn btn-secondary btn-sm" onclick="evalDownloadPdf()">&#11015; Save as PDF</button>` : ""}</div>`;
+  return h + `</div>`;
+}
+async function evalPatchFlow(r, extra) { // writes Status / Flow (+ extra fields) and keeps the in-memory row in sync
+  const fields = Object.assign({ Status: r.status, Flow: JSON.stringify(r.flow || {}), UpdatedAt: new Date().toISOString() }, extra || {});
+  await evalSaveChain.catch(() => {});
+  await graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) });
+}
+async function evalSend() {
+  const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId);
+  if (!r || !emp || evalState.busy || !(canAccessHR || isPermissionAdmin) || evalStatus(r) !== "Draft") return;
+  if (!evalMfDone(r.data)) { toast("Enter the manager's feedback first.", "error"); return; }
+  const names = evalStages(r).map(([k, l]) => `${l}: ${evalSignerEmps(r, k).map(e => e.name).join(" / ") || "(nobody found — permission admin)"}`).join("\n");
+  if (!confirm(`Send this evaluation to ${emp.name} for signature?\n\nThe form will be locked.\n\n${names}`)) return;
+  const me = myEmployeeRecord(), prev = { status: r.status, flow: r.flow };
+  r.status = "Sent"; r.flow = { sentAt: new Date().toISOString(), sentBy: me ? me.name : "" };
+  evalState.busy = true; renderHRModal();
+  try { await evalPatchFlow(r); toast(`Sent to ${emp.name} ✓`, "success"); }
+  catch (err) { console.warn(err); r.status = prev.status; r.flow = prev.flow; toast("Could not send (are the Status / Flow / Sig columns added to the list? See SETUP_EVALUATION.md).", "error"); }
+  evalState.busy = false; renderHRModal();
+}
+async function evalRecall() {
+  const r = evalState.cur; if (!r || evalState.busy || !(canAccessHR || isPermissionAdmin) || evalStatus(r) === "Draft") return;
+  if (!confirm(evalStatus(r) === "Completed" ? "Reopen this signed evaluation as a draft? ALL signatures will be erased." : "Recall this evaluation to draft? Any signatures collected so far will be erased.")) return;
+  const prev = { status: r.status, flow: r.flow, sig: r.sig };
+  r.status = "Draft"; r.flow = {}; r.sig = { emp: "", sup: "", adm: "", hoc: "" };
+  evalState.busy = true; renderHRModal();
+  try { await evalPatchFlow(r, { SigEmp: "", SigSup: "", SigAdm: "", SigHoc: "" }); toast("Back to draft.", "success"); }
+  catch (err) { console.warn(err); r.status = prev.status; r.flow = prev.flow; r.sig = prev.sig; toast("Could not recall the evaluation.", "error"); }
+  evalState.busy = false; renderHRModal();
+}
+async function evalSign() {
+  const r = evalState.cur; if (!r || evalState.busy) return;
+  const stage = evalNextStage(r); if (!stage || !evalCanSign(r, stage)) { toast("It is not your turn to sign this evaluation.", "error"); return; }
+  const url = signatureDataUrl("evSigPad"); if (!url) { toast("Please draw your signature first.", "error"); return; }
+  const me = myEmployeeRecord(), now = new Date().toISOString();
+  const payload = buildSignaturePayload(url, me ? me.name : "", me ? me.position : "", now);
+  const prev = { status: r.status, flow: JSON.parse(JSON.stringify(r.flow || {})), sig: Object.assign({}, r.sig) };
+  r.flow = Object.assign({}, r.flow); r.flow[stage] = { by: me ? String(me.id) : "", name: me ? me.name : "", at: now };
+  r.sig = Object.assign({}, r.sig); r.sig[stage] = payload;
+  const last = evalStages(r)[evalStages(r).length - 1][0] === stage;
+  if (last) { r.status = "Completed"; r.flow.doneAt = now; }
+  evalState.busy = true; renderHRModal();
+  try {
+    await evalSaveChain.catch(() => {});
+    await evalPatchFlow(r, Object.assign({ [EVAL_SIG_COL[stage]]: payload }, stage === "emp" ? { Data: JSON.stringify(r.data || {}) } : {}));
+    toast(last ? "Signed — the evaluation is complete ✓" : "Signed ✓ — the next person has been notified.", "success");
+  } catch (err) {
+    console.warn(err); r.status = prev.status; r.flow = prev.flow; r.sig = prev.sig;
+    toast("Could not save your signature (is the signature column added to the list?).", "error");
+  }
+  evalState.busy = false; renderHRModal(); try { renderTabs(); } catch (e) {}
+}
+async function evalOpenSign(itemId, fromProfile) { // open one evaluation read-only (signer / profile view)
+  const r = evalRows.find(x => x.itemId === itemId); if (!r || !evalListId) return;
+  const back = fromProfile && hrView && hrView.mode === "detail" ? hrView : null;
+  evalState = { empId: r.empId, view: "form", setup: null, cur: r, cfg: null, busy: false, save: "", viewer: true, back };
+  hrView = { mode: "evaluation" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  const pend = [loadAttendanceLog(), loadTimeOff(), loadWorkSchedules(), loadAllIncidents()];
+  if (r.track === "Manager") pend.unshift(loadEvaluations()); // the team grids read the members' own evaluations
+  await Promise.all(pend.map(p => Promise.resolve(p).catch(() => {})));
+  if (hrView && hrView.mode === "evaluation" && evalState.viewer) { evalState.cur = evalRows.find(x => x.itemId === itemId) || r; renderHRModal(); }
+}
+function evalIsPast(r) { return r.track === "Probation" ? evalStatus(r) === "Completed" : evalMonthAdd(r.start, 12) <= toLocalYMD(new Date()).slice(0, 7); }
+async function evalAutoRollover() { // a yearly evaluation whose 12 months are over is followed by a fresh one — signatures or not
+  if (!(canAccessHR || isPermissionAdmin) || !evalListId || evalRollBusy) return 0;
+  evalRollBusy = true; let made = 0;
+  try {
+    const now = toLocalYMD(new Date()).slice(0, 7), by = {};
+    evalRows.filter(r => r.track !== "Probation" && r.hasData).forEach(r => { (by[r.empId + "|" + r.track] = by[r.empId + "|" + r.track] || []).push(r); });
+    for (const k of Object.keys(by)) {
+      let last = by[k].sort((a, b) => b.start.localeCompare(a.start))[0], guard = 0;
+      const e = employees.find(x => String(x.id) === last.empId); if (!e || e.status === "Resigned") continue;
+      while (evalMonthAdd(last.start, 12) <= now && guard++ < 4) {
+        const start = evalMonthAdd(last.start, 12), have = evalRows.find(r => r.empId === last.empId && r.track !== "Probation" && r.start === start);
+        if (have) { last = have; continue; }
+        const data = last.track === "Agent" ? { sub: (last.data && last.data.sub) || "", items: ((last.data && last.data.items) || []).slice(), m: {}, bf: "" } : {};
+        if (last.track === "Agent" && !data.sub) break;
+        const fields = { Title: `${e.id}|${start}`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: start, Track: last.track, Superior: "", ValidatedBy: "", Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() };
+        const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+        const row = { itemId: created.id, empId: String(e.id), start, track: last.track, superior: "", validated: "", data, status: "Draft", flow: {}, sig: { emp: "", sup: "", adm: "", hoc: "" }, hasData: true, hasSig: true };
+        evalRows.push(row); last = row; made++;
+      }
+    }
+  } catch (err) { console.warn("Evaluation rollover:", err); }
+  evalRollBusy = false; return made;
+}
+async function evalInit() { // after sign-in: everybody gets the light copy (for the alerts), HR gets everything and the yearly rollover runs
+  if (!evalListId) return;
+  const hr = canAccessHR || isPermissionAdmin;
+  await loadEvaluations({ light: !hr });
+  if (hr) { const n = await evalAutoRollover(); if (n) toast(`${n} new yearly evaluation${n === 1 ? "" : "s"} opened automatically.`, "success"); }
+  try { renderTabs(); if (activeTab === "__MYTASKS__") renderContent(); } catch (e) {}
+}
+function evalProfileHtml(emp, selfView) { // evaluations kept in the HR profile
+  if (!evalListId) return "";
+  const hrUser = canAccessHR || isPermissionAdmin;
+  const rows = evalRows.filter(r => r.empId === String(emp.id) && (hrUser || (selfView && evalStatus(r) !== "Draft"))).sort((a, b) => b.start.localeCompare(a.start));
+  if (!rows.length) return "";
+  return `<div style="margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;"><div style="font-size:12px; font-weight:600; margin-bottom:6px;">Yearly &amp; probationary evaluations</div>
+    ${rows.map(r => `<div onclick="evalOpenSign('${escapeAttr(r.itemId)}', true)" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--border); border-radius:8px; padding:7px 10px; margin-bottom:6px; font-size:12.5px;"><span>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))} <span style="color:var(--text3);">· ${r.track === "Probation" ? "Probation" : r.track}</span></span><span style="display:flex; gap:8px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent);">View &#9654;</span></span></div>`).join("")}</div>`;
+}
+function evalDownloadPdf() {
+  const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId), body = document.getElementById("evBody");
+  if (!r || !emp || !body) return;
+  const f = r.flow || {};
+  const sigs = evalStages(r).map(([k, label]) => { const m = r.sig && parseSignatureField(r.sig[k]), d = f[k] && f[k].at;
+    return `<div style="flex:1; border:1px solid #d5d9e3; border-radius:6px; padding:8px 10px; min-height:84px;"><div style="font-size:10px; color:#6b7280; text-transform:uppercase;">${escapeHtml(label)}</div>${d && m && m.dataUrl ? `<img src="${m.dataUrl}" style="height:44px; display:block; margin:4px 0;" />` : `<div style="height:52px;"></div>`}<div style="font-size:11.5px; font-weight:600;">${escapeHtml(d ? (f[k].name || "") : "")}</div><div style="font-size:10px; color:#6b7280;">${d ? "Signed " + escapeHtml(dateOnly(f[k].at)) : "Not signed"}</div></div>`; }).join("");
+  const title = `${emp.name} — ${r.track === "Probation" ? "Probationary" : "Yearly"} Performance Evaluation`;
+  const doc = `<!DOCTYPE html><html><head><meta charset="UTF-8" /><title>${escapeHtml(title)}</title><style>
+    :root { --text:#1a1f2b; --text2:#333a48; --text3:#6b7280; --surface:#ffffff; --surface2:#f1f3f9; --border:#d5d9e3; --accent:#4f7cff; --green:#15803d; --yellow:#a16207; --red:#b91c1c; --bg:#ffffff; }
+    body { font-family:-apple-system,"Segoe UI",Arial,sans-serif; color:#1a1f2b; margin:0; font-size:13px; zoom:.82; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    input,select,textarea { border:1px solid #d5d9e3 !important; background:#fff !important; color:#1a1f2b !important; font:inherit; opacity:1 !important; -webkit-text-fill-color:#1a1f2b; }
+    textarea { resize:none; } button { display:none !important; } .sigs { display:flex; gap:10px; margin-top:22px; page-break-inside:avoid; }
+    @page { size:A4 landscape; margin:9mm; }
+  </style></head><body>
+    <img src="${COMPANY_LOGO_DATA_URL}" alt="Elite Global Sourcing" style="height:34px; width:auto; display:block; margin-bottom:8px;" />
+    <div style="font-size:18px; font-weight:800;">Performance Evaluation</div>
+    <div style="color:#6b7280; font-size:12px; margin-bottom:6px;">${escapeHtml(emp.name)} · ${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))} · ${escapeHtml(evalStatus(r))}</div>
+    ${body.outerHTML}
+    <div style="${EVAL_H}">SIGNATURES</div><div class="sigs">${sigs}</div>
+    <script>window.onload = () => setTimeout(() => window.print(), 300);<\/script></body></html>`;
+  const win = window.open("", "_blank");
+  if (!win) { toast("Please allow pop-ups to save the PDF.", "error"); return; }
+  win.document.open(); win.document.write(doc); win.document.close();
+}
+function evalHomeRowHtml(r) {
+  return `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:10px; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Probation" ? "From the hire date to the 5th month" : (r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track) + " evaluation"}</div></div><span style="display:flex; gap:10px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent); font-size:12px;">Open &#9654;</span></span></div>`;
+}
+function evalHomeList(mine) { // current evaluations first, finished years under "Past evaluations"
+  const cur = mine.filter(r => !evalIsPast(r)), past = mine.filter(evalIsPast);
+  return (cur.length ? `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin:2px 0 6px;">Current</div>${cur.map(evalHomeRowHtml).join("")}` : "")
+    + (past.length ? `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin:12px 0 6px;">Past evaluations</div>${past.map(evalHomeRowHtml).join("")}` : "");
 }
 async function openDirectory() {
   if (!canAccessHR || !employeesListId) return;
@@ -14191,6 +14457,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${canAccessHR ? delBtn("evaluation", ev.itemId) : ""}</td></tr>`).join("")}
         </table>
       ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
+      ${evalProfileHtml(emp, selfView)}
     </div>
 
     ${canViewIncidents ? `
@@ -14357,6 +14624,7 @@ async function reloadData() {
     await Promise.all([loadItems(), loadGuide(), loadPermissions(), loadRevisions(), loadDeletionLog(), loadHRTeams(), loadLeaveUsage(), loadAllIncidents(), loadAllPositionHistory(), loadAllSalaryChanges(), loadReports(), loadNteCases(), loadCoachingCases(), loadRecognitionCases(), loadRecurringTaskSettings(), loadRecurringTasks(), loadGeneralTasks(), loadHolidayOverrides(), loadQuarterlyFeedback(), loadAnnouncementPosts(), loadPipCases(), loadServiceRequests(), loadManpowerRequests(), loadManpowerPlan(), loadQuarterlyRecommendations(), loadPersonalEvents(), loadMeetingRooms(), loadItInventory(), loadHubState(), loadEmergencyContacts(), loadCompanyEvents(), loadAttendanceLog(), checkEditPermission()]);
     checkHRAccess();
     refreshAccessFlags();
+    evalInit().catch(() => {});
     autoEmploymentStatus().catch(() => {});
     renderTabs();
     renderContent();
