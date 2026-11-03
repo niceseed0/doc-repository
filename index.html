@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-06";
+const BUILD_ID = "2026-11-03-08";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12681,9 +12681,9 @@ const EVAL_BF = [
 ];
 const EVAL_BF_MGR = [
   ["lead", "1. Leadership and Delegation", "A manager's ability to guide, support, and inspire their team while effectively distributing tasks. Strong leadership fosters a productive work environment, while effective delegation ensures efficiency and professional growth among team members."],
-  ["plan", "2. Planning, Organization, and Administration", "A manager's ability to set clear priorities, plan and organize the team's work, and handle administrative responsibilities. Strong planning and organization keep operations running smoothly and deadlines met."],
+  ["plan", "2. Planning, Organization, and Administration", "A manager's ability to guide, support, and inspire their team while effectively distributing tasks. Strong leadership fosters a productive work environment, while effective delegation ensures efficiency and professional growth among team members."],
   ["pers", "3. Personnel Management and Development", "Focuses on nurturing team members through training, feedback, and performance management. A great manager builds a supportive culture that encourages continuous learning, skill development, and career progression."],
-  ["mrel", "4. Reliability, Accountability, and Problem Solving", "A manager's ability to take responsibility for decisions, uphold commitments, and address challenges proactively. This includes demonstrating integrity, resolving issues efficiently, and maintaining high operational standards."],
+  ["mrel", "4. Reliability, Accountability, and Problem-Solving", "A manager's ability to take responsibility for decisions, uphold commitments, and address challenges proactively. This includes demonstrating integrity, resolving issues efficiently, and maintaining high operational standards."],
   ["mknow", "5. Job Knowledge and Continuous Improvement", "The commitment to staying updated on industry trends, best practices, and company policies. A strong manager applies their expertise while continuously refining strategies to improve team performance and business outcomes."]
 ];
 const EVAL_MGR_TARGET = { abs: 98, tardy: 98, prod: 92, cxqa: 90, csat: 90, bf: 3.5 };
@@ -13068,7 +13068,7 @@ function evalAdminHtml(emp, r) {
     <div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">DOCUMENT</th>${months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}</th>`).join("")}<th style="${EVAL_TH}">TOTAL</th></tr></thead>
     <tbody>${EVAL_ADMIN_TYPES.map(t => `<tr><td style="${td} text-align:left; font-weight:700;">${t}</td>${months.map(mo => { const n = cnt(t, mo); return `<td style="${td} ${n ? "font-weight:700;" : "color:var(--text3);"}">${n || ""}</td>`; }).join("")}<td style="${td} font-weight:700;">${recs.filter(i => i.type === t).length}</td></tr>`).join("")}</tbody></table></div>
     <table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-top:12px;"><thead><tr><th style="${EVAL_TH} text-align:left; width:100px;">Date</th><th style="${EVAL_TH} text-align:left; width:110px;">Type</th><th style="${EVAL_TH} text-align:left;">Reason</th><th style="${EVAL_TH} width:130px;">Details</th></tr></thead>
-    <tbody>${recs.length ? recs.map(i => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(String(i.date).slice(0, 10))}</td><td style="${EVAL_TD} text-align:left; font-weight:700;">${escapeHtml(i.type)}</td><td style="${EVAL_TD} text-align:left; color:var(--text2);">${escapeHtml(reason(i))}</td><td style="${EVAL_TD}">${evalAdminLink(i)}</td></tr>`).join("") : `<tr><td colspan="4" style="${EVAL_TD} color:var(--text3);">No records in this period.</td></tr>`}</tbody></table>`;
+    <tbody>${recs.length ? recs.map(i => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(String(i.date).slice(0, 10))}</td><td style="${EVAL_TD} text-align:left; font-weight:700;">${escapeHtml(i.type)}</td><td style="${EVAL_TD} text-align:left; color:var(--text2);">${escapeHtml(reason(i))}</td><td style="${EVAL_TD} white-space:nowrap;">${evalAdminLink(i)}</td></tr>`).join("") : `<tr><td colspan="4" style="${EVAL_TD} color:var(--text3);">No records in this period.</td></tr>`}</tbody></table>`;
 }
 function evalBehavioralHtml(r) {
   const BF = r.track === "Manager" ? EVAL_BF_MGR : EVAL_BF;
