@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-02";
+const BUILD_ID = "2026-11-03-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -562,6 +562,8 @@ const CONFIG = {
   // Org chart boxes for these two teams contain sub-teams rather than members directly —
   // clicking their box opens a sub-team list first instead of a member roster.
   clusterTeams: ["John's Cluster", "Gary's Cluster"],
+  // Head of Operations in charge of each cluster (the automatic Immediate Superior of that cluster's SPMs on the evaluation form).
+  clusterHeads: { "John's Cluster": "Jungho Kim", "Gary's Cluster": "Gary Berba" },
   // Seniority order (most senior first) for the team org-chart view, shown only for teams
   // inside clusterTeams above. Positions not in this list are grouped at the bottom
   // (alphabetically). Edit this list as new titles come into use.
@@ -12639,25 +12641,46 @@ async function dirLoadSalaries() {
 //   Due days = scheduled working days of the month (rest days / holidays excluded; approved leave and sick days INCLUDED).
 //   The yearly figure is the plain average of the monthly percentages, from the start month until the current month.
 // ═══════════════════════════════════════════════════════════════════════════
-const EVAL_TARGET = 98, EVAL_TARDY_BASE = 480;
+const EVAL_TARDY_BASE = 480;
+const EVAL_TARGET_ABS = 90, EVAL_TARGET_TARDY = 99;
 const EVAL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// KPI catalogue. type: pct (typed %), int (typed count, info only), time (typed h:mm:ss, lower is better),
+// ratio (computed % = num ÷ den), ratioN (computed number = num ÷ den; den blank → the month's due days), score (one yearly number).
+const EVAL_SETS = {
+  agent: { label: "Agent", items: [
+    { k: "prod", label: "Productivity", type: "pct", target: 92 },
+    { k: "t1", label: "Total Tickets Tier 1", type: "int" },
+    { k: "t2", label: "Total Tickets Tier 2", type: "int" },
+    { k: "apt1", label: "Tier 1 APT", type: "time", target: 300 },
+    { k: "apt2", label: "Tier 2 APT", type: "time", target: 900 },
+    { k: "cxqa", label: "CXQA Score", type: "pct", target: 90 },
+    { k: "lcqa", label: "LCQA Score", type: "pct", target: 90 },
+    { k: "csat", label: "CSAT Score", type: "pct", target: 85 },
+    { k: "bf", label: "Behavioral Factor", type: "score", target: 3.0 }] },
+  qa: { label: "QA Agent", items: [
+    { k: "ter", label: "Test Execution Rate", type: "ratio", num: ["exe", "# of TCs executed"], den: ["plan", "Total TCs planned"], target: 90 },
+    { k: "cov", label: "Test Coverage", type: "ratio", num: ["fc", "# of features TC covered"], den: ["ft", "# of total features"], target: 98 },
+    { k: "dtc", label: "Daily TC Creation", type: "ratioN", num: ["tcc", "# of TCs created"], den: ["wd", "Total Working Days"], target: 5 },
+    { k: "ddr", label: "Defect Detection Rate", type: "ratio", num: ["dfq", "Defects Found by QA"], den: ["td", "Total Defects"], target: 95 },
+    { k: "bf", label: "Behavioral Factor", type: "score", target: 3.5 }] }
+};
 let evalListId = null;
-let evalRows = [];                 // [{ itemId, empId, start, track, superior, validated }]
-let evalState = { empId: "", view: "home", setup: null, cur: null, busy: false };
+let evalRows = [];                 // [{ itemId, empId, start, track, superior, validated, data }]  data = { sub, items:[k], m:{ "YYYY-MM": {k: value} }, bf }
+let evalState = { empId: "", view: "home", setup: null, cur: null, cfg: null, busy: false, save: "" };
+let evalSaveChain = Promise.resolve();
 function evalRound1(n) { return Math.round((n + Number.EPSILON) * 10) / 10; }
 function evalMonthAdd(month, n) { const [y, m] = month.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
 function evalMonthLabel(month) { const [y, m] = month.split("-").map(Number); return `${EVAL_MONTHS[m - 1]} ${y}`; }
 function evalPeriodLabel(start) { return `${evalMonthLabel(start)} – ${evalMonthLabel(evalMonthAdd(start, 11))}`; }
 function evalHireText(d) { const s = String(d || "").slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "—"; return `${EVAL_MONTHS[Number(s.slice(5, 7)) - 1]} ${s.slice(8)}, ${s.slice(0, 4)}`; }
-// Pure: the two percentages for one month. lateMin = total late minutes, due = days due to work, absent = absent days.
+// Pure: the two attendance percentages for one month.
 function evalCalc(lateMin, due, absent) {
   return {
     tardy: evalRound1(Math.max(0, (EVAL_TARDY_BASE - (Number(lateMin) || 0)) / EVAL_TARDY_BASE * 100)),
     abs: due > 0 ? evalRound1(Math.max(0, (due - (Number(absent) || 0)) / due * 100)) : null
   };
 }
-function evalAvg(list) { const v = list.filter(x => x != null); return v.length ? evalRound1(v.reduce((a, b) => a + b, 0) / v.length) : null; }
-// One month for one person: null when the month has not started yet. The running month only counts days up to yesterday.
+function evalAvg(list) { const v = list.filter(x => x != null && !isNaN(x)); return v.length ? evalRound1(v.reduce((a, b) => a + b, 0) / v.length) : null; }
 function evalMonthStats(empId, month, todayYMD) {
   const [from0, to0] = monthBounds(month); if (from0 > todayYMD) return null;
   const emp = employees.find(x => String(x.id) === String(empId)), hire = emp && emp.hireDate ? String(emp.hireDate).slice(0, 10) : "";
@@ -12675,134 +12698,301 @@ function evalMonthStats(empId, month, todayYMD) {
   const t = attTotals(days), c = evalCalc(t.lateMin, due, t.absent);
   return { month, due, absent: t.absent, lateMin: t.lateMin, tardy: c.tardy, abs: c.abs, closed: attClosed.has(month), running: cur, noSched: !sched };
 }
-// A 12-month cycle: monthly rows (only months that have started) + averages.
 function evalPeriod(empId, start, todayYMD) {
   const months = []; for (let i = 0; i < 12; i++) { const s = evalMonthStats(empId, evalMonthAdd(start, i), todayYMD); if (s) months.push(s); }
   return { months, tardy: evalAvg(months.map(m => m.tardy)), abs: evalAvg(months.map(m => m.abs)) };
 }
+// ── typed values ──
+function evalNum(v) { const x = parseFloat(String(v == null ? "" : v).replace(/[%,\s]/g, "")); return isNaN(x) ? null : x; }
+function evalParseTime(v) { // "9:02" = 9 min 2 s · "0:09:02" = 9 min 2 s · plain number = seconds
+  const t = String(v == null ? "" : v).trim(); if (!t) return null;
+  const p = t.split(":").map(x => x.trim()); if (p.some(x => x === "" || isNaN(Number(x)))) return null;
+  if (p.length === 1) return Math.round(Number(p[0]));
+  if (p.length === 2) return Math.round(Number(p[0]) * 60 + Number(p[1]));
+  if (p.length === 3) return Math.round(Number(p[0]) * 3600 + Number(p[1]) * 60 + Number(p[2]));
+  return null;
+}
+function evalFmtTime(sec) { if (sec == null) return "—"; const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60; return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`; }
+function evalFmt(it, v) {
+  if (v == null) return "—";
+  if (it.type === "time") return evalFmtTime(v);
+  if (it.type === "pct" || it.type === "ratio") return v.toFixed(1) + "%";
+  if (it.type === "int") return String(v);
+  return v.toFixed(1);
+}
+// One month's value of one KPI from the typed numbers. due = that month's due days (for blank "Total Working Days").
+function evalItemMonth(it, d, due) {
+  d = d || {};
+  if (it.type === "pct") { const x = evalNum(d[it.k]); return x == null ? null : evalRound1(x); }
+  if (it.type === "int") return evalNum(d[it.k]);
+  if (it.type === "time") return evalParseTime(d[it.k]);
+  if (it.type === "ratio" || it.type === "ratioN") {
+    const n = evalNum(d[it.num[0]]); let m = evalNum(d[it.den[0]]);
+    if (m == null && it.type === "ratioN" && n != null && due) m = due;
+    if (n == null || m == null || m <= 0) return null;
+    return evalRound1(it.type === "ratio" ? n / m * 100 : n / m);
+  }
+  return null;
+}
+function evalItems(data) { const set = EVAL_SETS[data && data.sub]; if (!set) return []; const on = (data.items && data.items.length) ? data.items : set.items.map(i => i.k); return set.items.filter(i => on.includes(i.k)); }
+// Everything a form shows, for one evaluation row. months[i] = attendance stats or null; vals[k][i] = KPI value; avg[k] = yearly figure.
+function evalCompute(emp, r, today) {
+  const data = r.data || {}, items = evalItems(data), months = [], att = [];
+  for (let i = 0; i < 12; i++) { const mo = evalMonthAdd(r.start, i); months.push(mo); att.push(evalMonthStats(emp.id, mo, today)); }
+  const vals = {}, avg = {};
+  items.forEach(it => {
+    if (it.type === "score") { const x = evalNum(data.bf); avg[it.k] = x == null ? null : x; return; }
+    vals[it.k] = months.map((mo, i) => evalItemMonth(it, (data.m || {})[mo], att[i] ? att[i].due : 0));
+    const v = vals[it.k].filter(x => x != null);
+    avg[it.k] = it.type === "int" ? (v.length ? v.reduce((a, b) => a + b, 0) : null) : (v.length ? (it.type === "time" ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : evalRound1(v.reduce((a, b) => a + b, 0) / v.length)) : null);
+  });
+  const a = att.filter(Boolean);
+  return { months, att, items, vals, avg, abs: evalAvg(a.map(x => x.abs)), tardy: evalAvg(a.map(x => x.tardy)) };
+}
+function evalPrevRow(r) { return evalRows.find(x => x.empId === r.empId && x.start === evalMonthAdd(r.start, -12)) || null; }
 function evalDelta(cur, ref) { return cur == null || ref == null ? null : evalRound1(cur - ref); }
-function evalDeltaHtml(d) {
+function evalDeltaHtml(d, suffix) {
   if (d == null) return `<span style="color:var(--text3);">—</span>`;
-  const up = d >= 0; return `<b style="color:${up ? "var(--green)" : "var(--red, #ef4444)"};">${Math.abs(d).toFixed(1)}${up ? "&#8593;" : "&#8595;"}</b>`;
+  const up = d >= 0; return `<b style="color:${up ? "var(--green)" : "var(--red, #ef4444)"};">${Math.abs(d).toFixed(1)}${suffix || ""}${up ? "&#8593;" : "&#8595;"}</b>`;
+}
+function evalPassHtml(cur, ref) { // lower is better (APT)
+  if (cur == null || ref == null) return `<span style="color:var(--text3);">—</span>`;
+  return cur <= ref ? `<b style="color:var(--green);">Pass</b>` : `<b style="color:var(--red, #ef4444);">Fail</b>`;
+}
+// ── immediate superior (auto) ──
+function evalLevel(p) {
+  p = String(p || "");
+  if (/senior product manager|\bSPM\b/i.test(p)) return "SPM";
+  if (/assistant product manager|\bAPM\b/i.test(p)) return "APM";
+  if (/product manager|\bPM\b/i.test(p)) return "PM";
+  if (/game master|\bGM\b|\bSGM\b/i.test(p)) return "GM";
+  return "";
+}
+function evalClusterOf(e) { return e.cluster || (CONFIG.clusterTeams.includes(e.team) ? e.team : ""); }
+function evalClusterHead(cluster) {
+  const want = (CONFIG.clusterHeads || {})[cluster];
+  const heads = employees.filter(x => x.status !== "Resigned" && mgmtRank(x) === 2);
+  const hit = want && employees.find(x => x.status !== "Resigned" && x.name.toLowerCase() === String(want).toLowerCase());
+  return hit ? hit.name : (heads.length === 1 ? heads[0].name : "");
+}
+// GM/SGM → their team's PM (APM if the team has no PM) · APM on the Agent form → same · APM on the Manager form and PM → SPM of the cluster · SPM → head of the cluster.
+function evalAutoSuperior(emp, track) {
+  const staff = employees.filter(x => x.status !== "Resigned" && !isCeoRec(x) && String(x.id) !== String(emp.id)), lv = evalLevel(emp.position);
+  const names = a => a.map(x => x.name).join(", ");
+  const team = (l) => staff.filter(x => x.team === emp.team && evalLevel(x.position) === l);
+  const cl = evalClusterOf(emp);
+  const viaSpm = () => {
+    const inCl = cl ? staff.filter(x => evalLevel(x.position) === "SPM" && evalClusterOf(x) === cl) : [];
+    if (inCl.length) return names(inCl);
+    const inTeam = team("SPM"); if (inTeam.length) return names(inTeam);
+    return cl ? evalClusterHead(cl) : "";
+  };
+  if (lv === "GM" || (lv === "APM" && track !== "Manager")) { const pm = team("PM"); if (pm.length) return names(pm); const apm = lv === "GM" ? team("APM") : []; return apm.length ? names(apm) : viaSpm(); }
+  if (lv === "APM" || lv === "PM") return viaSpm();
+  if (lv === "SPM") return cl ? evalClusterHead(cl) : "";
+  return "";
 }
 function evalSuggestTrack(e) {
-  const p = (e && e.position) || "";
-  if (/assistant product manager|\bAPM\b/i.test(p)) return "";
-  if (/product manager|\bPM\b|\bSPM\b|cluster lead/i.test(p)) return "Manager";
-  if (/game master|\bGM\b|\bSGM\b/i.test(p)) return "Agent";
-  return "";
+  const lv = evalLevel(e && e.position);
+  return lv === "PM" || lv === "SPM" ? "Manager" : lv === "GM" ? "Agent" : "";
 }
 async function loadEvaluations() {
   if (!evalListId) { evalRows = []; return; }
   try {
     evalRows = (await pageAll(`/sites/${siteId}/lists/${evalListId}/items?$expand=fields&$top=2000`)).map(it => {
-      const f = it.fields || {};
-      return { itemId: it.id, empId: String(f["EmployeeId"] || ""), start: f["StartMonth"] || "", track: f["Track"] || "Agent", superior: f["Superior"] || "", validated: f["ValidatedBy"] || "" };
+      const f = it.fields || {}; let data = {}; try { data = JSON.parse(f["Data"] || "{}") || {}; } catch (e) {}
+      return { itemId: it.id, empId: String(f["EmployeeId"] || ""), start: f["StartMonth"] || "", track: f["Track"] || "Agent", superior: f["Superior"] || "", validated: f["ValidatedBy"] || "", data };
     }).filter(r => r.empId && /^\d{4}-\d{2}$/.test(r.start));
   } catch (e) { console.warn("Could not load HR Evaluations:", e); }
 }
 async function openEvaluation() {
   if (!(canAccessHR || isPermissionAdmin)) return;
   if (!evalListId) { toast("The “HR Evaluations” list was not found (see SETUP_EVALUATION.md).", "error"); return; }
-  evalState = { empId: evalState.empId || "", view: "home", setup: null, cur: null, busy: false };
+  evalState = { empId: evalState.empId || "", view: "home", setup: null, cur: null, cfg: null, busy: false, save: "" };
   hrView = { mode: "evaluation" };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
   await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules()]);
   if (hrView && hrView.mode === "evaluation") renderHRModal();
 }
-function evalPick(id) { evalState.empId = id; evalState.view = "home"; evalState.setup = null; evalState.cur = null; renderHRModal(); }
+function evalPick(id) { evalState.empId = id; evalState.view = "home"; evalState.setup = null; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
 function evalNew() {
   const e = employees.find(x => String(x.id) === evalState.empId); if (!e) return;
-  const now = toLocalYMD(new Date()).slice(0, 7);
-  evalState.setup = { start: now, track: evalSuggestTrack(e) }; renderHRModal();
+  evalState.setup = { start: toLocalYMD(new Date()).slice(0, 7), track: evalSuggestTrack(e), sub: "agent", items: EVAL_SETS.agent.items.map(i => i.k) }; renderHRModal();
 }
-function evalSetupSet(k, v) { if (evalState.setup) { evalState.setup[k] = v; if (k === "track") renderHRModal(); } }
-function evalCancelSetup() { evalState.setup = null; renderHRModal(); }
+function evalSetupSet(k, v) {
+  const s = evalState.setup; if (!s) return; s[k] = v;
+  if (k === "sub") s.items = EVAL_SETS[v].items.map(i => i.k);
+  if (k === "track" || k === "sub") renderHRModal();
+}
+function evalToggleItem(box, k, on) { const c = evalState[box]; if (!c) return; c.items = c.items.filter(x => x !== k); if (on) c.items.push(k); }
+function evalCancelSetup() { evalState.setup = null; evalState.cfg = null; renderHRModal(); }
+function evalCfgHtml(c, who) { // sub-type + item checkboxes; who = "setup" | "cfg"
+  const set = EVAL_SETS[c.sub];
+  return `<div style="font-size:12px; font-weight:600; color:var(--text2); margin:12px 0 4px;">Agent type</div>
+    <div style="display:flex; gap:8px;">${Object.entries(EVAL_SETS).map(([k, v]) => `<button type="button" class="btn ${c.sub === k ? "btn-primary" : "btn-secondary"} btn-sm" onclick="evalSetupSet('sub', '${k}')">${v.label}</button>`).join("")}</div>
+    <div style="font-size:12px; font-weight:600; color:var(--text2); margin:12px 0 2px;">KPI items counted for this person</div>
+    <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Uncheck anything that does not apply — it will not appear in the evaluation.</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px 16px;">${set.items.map(i => `<label style="font-size:13px; display:flex; gap:7px; align-items:center;"><input type="checkbox" ${c.items.includes(i.k) ? "checked" : ""} onchange="evalToggleItem('${who}', '${i.k}', this.checked)" /> ${escapeHtml(i.label)}</label>`).join("")}</div>`;
+}
 async function evalSaveSetup() {
   const s = evalState.setup, e = employees.find(x => String(x.id) === evalState.empId);
   if (!s || !e || evalState.busy) return;
   if (!/^\d{4}-\d{2}$/.test(s.start)) { toast("Pick the start month first.", "error"); return; }
   if (!s.track) { toast("Choose Agent or Manager evaluation.", "error"); return; }
   if (evalRows.some(r => r.empId === evalState.empId && r.start === s.start)) { toast("An evaluation starting that month already exists.", "error"); return; }
+  const data = s.track === "Agent" ? { sub: s.sub, items: s.items.slice(), m: {}, bf: "" } : {};
   evalState.busy = true; renderHRModal();
   try {
-    const fields = { Title: `${e.id}|${s.start}`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: s.start, Track: s.track, Superior: "", ValidatedBy: "", UpdatedAt: new Date().toISOString() };
+    const fields = { Title: `${e.id}|${s.start}`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: s.start, Track: s.track, Superior: "", ValidatedBy: "", Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() };
     const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
-    const row = { itemId: created.id, empId: String(e.id), start: s.start, track: s.track, superior: "", validated: "" };
+    const row = { itemId: created.id, empId: String(e.id), start: s.start, track: s.track, superior: "", validated: "", data };
     evalRows.push(row); evalState.setup = null; evalState.cur = row; evalState.view = "form";
-  } catch (err) { console.warn(err); toast("Could not save the evaluation.", "error"); }
+  } catch (err) { console.warn(err); toast("Could not save the evaluation (is the “Data” column added to the list?).", "error"); }
   evalState.busy = false; renderHRModal();
 }
-function evalOpenForm(itemId) { evalState.cur = evalRows.find(r => r.itemId === itemId) || null; evalState.view = evalState.cur ? "form" : "home"; renderHRModal(); }
-function evalBackHome() { evalState.view = "home"; evalState.cur = null; renderHRModal(); }
-async function evalSetField(key, val) { // key: superior | validated — saved as soon as the box loses focus
-  const r = evalState.cur; if (!r || r[key] === val) return; r[key] = val;
-  try { await graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify({ [key === "superior" ? "Superior" : "ValidatedBy"]: val, UpdatedAt: new Date().toISOString() }) }); }
-  catch (err) { console.warn(err); toast("Could not save that change.", "error"); }
+function evalOpenForm(itemId) { evalState.cur = evalRows.find(r => r.itemId === itemId) || null; evalState.view = evalState.cur ? "form" : "home"; evalState.cfg = null; renderHRModal(); }
+function evalBackHome() { evalState.view = "home"; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
+function evalEditCfg() { const r = evalState.cur; if (!r) return; const d = r.data || {}; evalState.cfg = { sub: d.sub || "agent", items: (d.items && d.items.length ? d.items : EVAL_SETS[d.sub || "agent"].items.map(i => i.k)).slice() }; renderHRModal(); }
+function evalApplyCfg() {
+  const r = evalState.cur, c = evalState.cfg; if (!r || !c) return;
+  const keep = r.data && r.data.sub === c.sub;
+  r.data = { sub: c.sub, items: c.items.slice(), m: keep ? (r.data.m || {}) : {}, bf: keep ? (r.data.bf || "") : "" };
+  evalState.cfg = null; evalPersist(); renderHRModal();
+}
+function evalPersist() { // saves Superior / ValidatedBy / Data of the open evaluation; calls are queued so they never overtake each other
+  const r = evalState.cur; if (!r) return;
+  const fields = { Superior: r.superior, ValidatedBy: r.validated, Data: JSON.stringify(r.data || {}), UpdatedAt: new Date().toISOString() };
+  evalState.save = "Saving…"; evalShowSave();
+  evalSaveChain = evalSaveChain.then(() => graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }))
+    .then(() => { evalState.save = "Saved"; evalShowSave(); })
+    .catch(err => { console.warn(err); evalState.save = "Not saved"; evalShowSave(); toast("Could not save that change.", "error"); });
+}
+function evalShowSave() { const el = document.getElementById("evSave"); if (el) el.textContent = evalState.save; }
+function evalSetField(key, val) { // key: superior | validated
+  const r = evalState.cur; if (!r || r[key] === val) return; r[key] = val; evalPersist();
+  if (key === "superior") renderHRModal(); // blank → the automatic name comes back
+}
+function evalSetSuper(v) { const r = evalState.cur, e = r && employees.find(x => String(x.id) === r.empId); if (!e) return; v = v.trim(); evalSetField("superior", v === evalAutoSuperior(e, r.track) ? "" : v); }
+function evalSetCell(month, key, val) {
+  const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.m = r.data.m || {};
+  const row = r.data.m[month] = r.data.m[month] || {}; val = String(val).trim();
+  if (val === "") delete row[key]; else row[key] = val;
+  evalPersist(); evalRefreshCalc();
+}
+function evalSetBf(val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.bf = String(val).trim(); evalPersist(); evalRefreshCalc(); }
+// ── rendering ──
+const EVAL_TH = "padding:7px 10px; border-bottom:1px solid var(--border); text-align:center; color:var(--text2); font-size:12px;";
+const EVAL_TD = "padding:7px 10px; border-bottom:1px solid var(--border); text-align:center;";
+function evalSummaryRows(emp, r, cp, prev) {
+  const pcp = prev ? evalCompute(emp, prev, toLocalYMD(new Date())) : null, pa = evalPeriod(emp.id, evalMonthAdd(r.start, -12), toLocalYMD(new Date()));
+  const pct = v => v == null ? `<span style="color:var(--text3);">—</span>` : v.toFixed(1) + "%";
+  let h = "";
+  const line = (label, target, prevV, curV, vsP, vsT, sub) => `<tr><td style="${EVAL_TD} text-align:left; font-weight:700; ${sub ? "padding-left:24px;" : ""}">${label}</td><td style="${EVAL_TD}">${target}</td><td style="${EVAL_TD}">${prevV}</td><td style="${EVAL_TD} font-weight:700;">${curV}</td><td style="${EVAL_TD}">${vsP}</td><td style="${EVAL_TD}">${vsT}</td></tr>`;
+  h += line("Attendance (Absences)", EVAL_TARGET_ABS.toFixed(1) + "%", pct(pa.abs), pct(cp.abs), evalDeltaHtml(evalDelta(cp.abs, pa.abs), "%"), evalDeltaHtml(evalDelta(cp.abs, EVAL_TARGET_ABS), "%"));
+  h += line("Attendance (Tardiness)", EVAL_TARGET_TARDY.toFixed(1) + "%", pct(pa.tardy), pct(cp.tardy), evalDeltaHtml(evalDelta(cp.tardy, pa.tardy), "%"), evalDeltaHtml(evalDelta(cp.tardy, EVAL_TARGET_TARDY), "%"));
+  cp.items.filter(it => it.target != null).forEach(it => {
+    const c = cp.avg[it.k], p = pcp && prev.data && prev.data.sub === r.data.sub ? pcp.avg[it.k] : null;
+    if (it.type === "score") {
+      h += line(it.label + ` <span style="font-weight:400; color:var(--text3);">(score)</span>`, it.target.toFixed(1), p == null ? "—" : p.toFixed(1),
+        `<input type="text" value="${escapeAttr((r.data && r.data.bf) || "")}" onchange="evalSetBf(this.value)" placeholder="0.0" style="width:60px; text-align:center; padding:3px 4px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text);" />`,
+        evalDeltaHtml(evalDelta(c, p)), evalDeltaHtml(evalDelta(c, it.target)), true);
+    } else if (it.type === "time") {
+      h += line(it.label, evalFmtTime(it.target), evalFmtTime(p), evalFmtTime(c), evalPassHtml(c, p), evalPassHtml(c, it.target), true);
+    } else {
+      const suf = it.type === "ratioN" ? "" : "%";
+      h += line(it.label, it.type === "ratioN" ? it.target.toFixed(1) : it.target.toFixed(1) + "%", p == null ? "—" : evalFmt(it, p), c == null ? "—" : evalFmt(it, c), evalDeltaHtml(evalDelta(c, p), suf), evalDeltaHtml(evalDelta(c, it.target), suf), true);
+    }
+  });
+  return h;
+}
+function evalRefreshCalc() {
+  const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId); if (!r || !emp) return;
+  const cp = evalCompute(emp, r, toLocalYMD(new Date())), sb = document.getElementById("evSumBody");
+  if (sb) sb.innerHTML = evalSummaryRows(emp, r, cp, evalPrevRow(r));
+  cp.items.forEach(it => { if (!cp.vals[it.k]) return; cp.vals[it.k].forEach((v, i) => { const el = document.getElementById(`evc_${it.k}_${i}`); if (el) el.textContent = evalFmt(it, v); }); });
+}
+function evalMonthlyHtml(emp, r, cp) {
+  const inp = (mo, key, ph) => `<input type="text" value="${escapeAttr(((r.data.m || {})[mo] || {})[key] || "")}" placeholder="${ph || ""}" onchange="evalSetCell('${mo}', '${key}', this.value)" style="width:100%; min-width:58px; text-align:center; padding:4px 3px; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; box-sizing:border-box;" />`;
+  const td = EVAL_TD.replace("padding:7px 10px;", "padding:4px 5px;");
+  const row = (label, cells, bold) => `<tr><td style="${td} text-align:left; ${bold ? "font-weight:700;" : "padding-left:22px; color:var(--text2);"} white-space:nowrap;">${label}</td>${cells.map(c => `<td style="${td}">${c}</td>`).join("")}</tr>`;
+  let h = row("Attendance (Absences)", cp.att.map(a => a && a.abs != null ? a.abs.toFixed(1) + "%" : "—"), true) + row("Attendance (Tardiness)", cp.att.map(a => a ? a.tardy.toFixed(1) + "%" : "—"), true);
+  cp.items.forEach(it => {
+    if (it.type === "score") return;
+    if (it.type === "ratio" || it.type === "ratioN") {
+      h += row(it.label, cp.months.map((mo, i) => `<span id="evc_${it.k}_${i}">${evalFmt(it, cp.vals[it.k][i])}</span>`), true);
+      h += row(it.num[1], cp.months.map(mo => inp(mo, it.num[0]))) + row(it.den[1], cp.months.map((mo, i) => inp(mo, it.den[0], it.type === "ratioN" && cp.att[i] ? String(cp.att[i].due) : "")));
+    } else if (it.type === "int") h += row(it.label, cp.months.map(mo => inp(mo, it.k)), true);
+    else h += row(it.label, cp.months.map(mo => inp(mo, it.k, it.type === "time" ? "0:00:00" : "%")), true);
+  });
+  return `<div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th>${cp.months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}<div style="font-weight:400; font-size:10.5px; color:var(--text3);">${mo.slice(0, 4)}</div></th>`).join("")}</tr></thead><tbody>${h}</tbody></table></div>`;
 }
 function renderEvaluation(box) {
-  box.style.width = "min(1000px, 96vw)";
+  box.style.width = "min(1120px, 97vw)";
   const sorted = activeStaff().slice().sort((a, b) => a.name.localeCompare(b.name));
   const emp = employees.find(x => String(x.id) === evalState.empId) || null;
   const fld = "padding:7px 9px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font-size:13px; box-sizing:border-box;";
   const head = (t, sub, back) => `<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
       <div><h3 style="margin-bottom:2px;">${t}</h3><div style="font-size:12px; color:var(--text2);">${sub}</div></div>
-      <div style="display:flex; gap:6px;">${back ? `<button class="btn btn-secondary btn-sm" onclick="evalBackHome()">&#9664; Back</button>` : ""}<button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">&#10005;</button></div></div>`;
+      <div style="display:flex; gap:6px; align-items:center;">${back ? `<span id="evSave" style="font-size:11.5px; color:var(--text3);">${escapeHtml(evalState.save || "")}</span><button class="btn btn-secondary btn-sm" onclick="evalBackHome()">&#9664; Back</button>` : ""}<button class="btn btn-secondary" onclick="closeHRModal()" style="padding:4px 10px;">&#10005;</button></div></div>`;
   const picker = `<select onchange="evalPick(this.value)" style="${fld} min-width:260px;"><option value="">Select an employee…</option>${sorted.map(e => `<option value="${escapeAttr(e.id)}" ${String(e.id) === evalState.empId ? "selected" : ""}>${escapeHtml(e.name)} — ${escapeHtml(e.position || displayTeam(e))}</option>`).join("")}</select>`;
-  // ── form ──
   if (evalState.view === "form" && evalState.cur && emp) {
     const r = evalState.cur, today = toLocalYMD(new Date());
-    const cur = evalPeriod(emp.id, r.start, today), prev = evalPeriod(emp.id, evalMonthAdd(r.start, -12), today);
     const lab = "font-size:11.5px; font-weight:700; color:var(--text); margin:8px 0 3px;";
     const ro = v => `<div style="background:var(--surface2); border-radius:4px; padding:7px 10px; text-align:center; min-height:32px;">${v ? escapeHtml(v) : "&nbsp;"}</div>`;
-    const inp = (k, v) => `<input type="text" value="${escapeAttr(v)}" maxlength="80" onchange="evalSetField('${k}', this.value.trim())" style="${fld} width:100%; text-align:center;" />`;
-    const th = "padding:7px 10px; border-bottom:1px solid var(--border); text-align:center; color:var(--text2); font-size:12px;";
-    const td = "padding:7px 10px; border-bottom:1px solid var(--border); text-align:center;";
-    const pct = v => v == null ? `<span style="color:var(--text3);">—</span>` : v.toFixed(1);
-    const row = (label, curV, prevV) => `<tr><td style="${td} text-align:left; font-weight:700;">${label}</td><td style="${td}">${EVAL_TARGET.toFixed(1)}</td><td style="${td}">${pct(prevV)}</td><td style="${td} font-weight:700;">${pct(curV)}</td><td style="${td}">${evalDeltaHtml(evalDelta(curV, prevV))}</td><td style="${td}">${evalDeltaHtml(evalDelta(curV, EVAL_TARGET))}</td></tr>`;
-    const nSched = !schedMap.has(String(emp.id));
-    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track} evaluation · ${escapeHtml(evalPeriodLabel(r.start))}`, true) + `
+    const auto = evalAutoSuperior(emp, r.track);
+    const supInp = `<input type="text" value="${escapeAttr(r.superior || auto)}" maxlength="80" onchange="evalSetSuper(this.value)" style="${fld} width:100%; text-align:center;" /><div style="font-size:10.5px; color:var(--text3); margin-top:2px;">${r.superior ? "Typed in manually — clear the box to go back to the automatic name." : (auto ? "Automatic — type to override." : "No superior could be worked out automatically — type one.")}</div>`;
+    const valInp = `<input type="text" value="${escapeAttr(r.validated)}" maxlength="80" onchange="evalSetField('validated', this.value.trim())" style="${fld} width:100%; text-align:center;" />`;
+    let body = "";
+    const a = emp && evalPeriod(emp.id, r.start, today), nSched = !schedMap.has(String(emp.id));
+    if (r.track === "Agent" && evalState.cfg) {
+      body = `<div style="border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-top:14px;"><div style="font-weight:700;">KPI items</div>${evalCfgHtml(evalState.cfg, "cfg")}
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;"><button class="btn btn-secondary" onclick="evalCancelSetup()">Cancel</button><button class="btn btn-primary" onclick="evalApplyCfg()">Apply</button></div></div>`;
+    } else if (r.track === "Agent" && !(r.data && r.data.sub)) {
+      body = `<div style="border:1px dashed var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; font-size:13px;">This evaluation has no KPI items yet. <button class="btn btn-primary btn-sm" onclick="evalEditCfg()">Choose agent type &amp; KPI items</button></div>`;
+    } else {
+      const cp = evalCompute(emp, r, today);
+      body = `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
+        <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now. Previous = the 12 months before the start month (KPIs: the earlier evaluation, if one exists).</div>
+        <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>
+        <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:22px 0 4px; display:flex; justify-content:space-between; align-items:center;"><span>KEY PERFORMANCE INDICATORS [KPI]</span>${r.track === "Agent" ? `<button class="btn btn-secondary btn-sm" onclick="evalEditCfg()">&#9881; KPI items</button>` : ""}</div>
+        ${r.track === "Agent" ? `<div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Type the monthly figures (blank = not counted). Percentages as 97.3, times as 0:09:02. ${r.data.sub === "qa" ? "Rates are calculated for you; Total Working Days can be left blank to use the scheduled days." : ""} Attendance fills in automatically.</div>${evalMonthlyHtml(emp, r, cp)}` : `<div style="font-size:12px; color:var(--text3);">Manager KPIs will be added next.</div>`}`;
+    }
+    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${escapeHtml(evalPeriodLabel(r.start))}`, true) + `
       <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 18px;">
         <div><div style="${lab}">Employee Name:</div>${ro(emp.name)}</div><div><div style="${lab}">Position:</div>${ro(emp.position)}</div>
-        <div><div style="${lab}">Department:</div>${ro(displayTeam(emp))}</div><div><div style="${lab}">Immediate Superior:</div>${inp("superior", r.superior)}</div>
-        <div><div style="${lab}">Hired Date:</div>${ro(evalHireText(emp.hireDate))}</div><div><div style="${lab}">Validated By:</div>${inp("validated", r.validated)}</div>
-      </div>
-      <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
-      <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now (${cur.months.length} month${cur.months.length === 1 ? "" : "s"}). Previous = the 12 months before the start month.</div>
-      <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${th} text-align:left;">CRITERIA</th><th style="${th}">Target</th><th style="${th}">Previous</th><th style="${th}">Current</th><th style="${th}">vs Previous</th><th style="${th}">vs. Target</th></tr></thead>
-      <tbody>${row("Attendance (Absences)", cur.abs, prev.abs)}${row("Attendance (Tardiness)", cur.tardy, prev.tardy)}</tbody></table>
-      <div style="font-size:11.5px; color:var(--text3); margin-top:8px;">${r.track === "Agent" ? "Team-specific KPIs (productivity, APT, CXQA, behavioral…) will be added next." : "Manager KPIs will be added next."}</div>
-      <details style="margin-top:14px;" open><summary style="cursor:pointer; font-size:12.5px; font-weight:700;">Monthly breakdown</summary>
+        <div><div style="${lab}">Department:</div>${ro(displayTeam(emp))}</div><div><div style="${lab}">Immediate Superior:</div>${supInp}</div>
+        <div><div style="${lab}">Hired Date:</div>${ro(evalHireText(emp.hireDate))}</div><div><div style="${lab}">Validated By:</div>${valInp}</div>
+      </div>` + body + `
+      <details style="margin-top:16px;"><summary style="cursor:pointer; font-size:12.5px; font-weight:700;">Attendance detail (due days, absences, late minutes)</summary>
       <div style="font-size:11.5px; color:var(--text3); margin:6px 0;">Tardiness % = (${EVAL_TARDY_BASE} − late min) ÷ ${EVAL_TARDY_BASE} × 100 · Absence % = (due days − absent days) ÷ due days × 100. Due days = scheduled working days (rest days and holidays excluded, approved leave and sick days included).${nSched ? " <b style=\"color:var(--yellow);\">No work schedule is set for this person — Mon–Fri is assumed.</b>" : ""}</div>
-      <table style="width:100%; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${th} text-align:left;">Month</th><th style="${th}">Due days</th><th style="${th}">Absent</th><th style="${th}">Late min</th><th style="${th}">Absence %</th><th style="${th}">Tardiness %</th><th style="${th}">Month</th></tr></thead>
-      <tbody>${cur.months.length ? cur.months.map(m => `<tr><td style="${td} text-align:left;">${escapeHtml(evalMonthLabel(m.month))}</td><td style="${td}">${m.due}</td><td style="${td}">${m.absent}</td><td style="${td}">${m.lateMin}</td><td style="${td}">${pct(m.abs)}</td><td style="${td}">${pct(m.tardy)}</td><td style="${td} color:${m.closed ? "var(--green)" : "var(--yellow)"};">${m.closed ? "Closed" : m.running ? "In progress" : "Open"}</td></tr>`).join("") : `<tr><td colspan="7" style="${td} color:var(--text3);">This period has not started yet.</td></tr>`}</tbody></table></details>`;
+      <table style="width:100%; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">Month</th><th style="${EVAL_TH}">Due days</th><th style="${EVAL_TH}">Absent</th><th style="${EVAL_TH}">Late min</th><th style="${EVAL_TH}">Absence %</th><th style="${EVAL_TH}">Tardiness %</th><th style="${EVAL_TH}">Month</th></tr></thead>
+      <tbody>${a.months.length ? a.months.map(m => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(evalMonthLabel(m.month))}</td><td style="${EVAL_TD}">${m.due}</td><td style="${EVAL_TD}">${m.absent}</td><td style="${EVAL_TD}">${m.lateMin}</td><td style="${EVAL_TD}">${m.abs == null ? "—" : m.abs.toFixed(1)}</td><td style="${EVAL_TD}">${m.tardy.toFixed(1)}</td><td style="${EVAL_TD} color:${m.closed ? "var(--green)" : "var(--yellow)"};">${m.closed ? "Closed" : m.running ? "In progress" : "Open"}</td></tr>`).join("") : `<tr><td colspan="7" style="${EVAL_TD} color:var(--text3);">This period has not started yet.</td></tr>`}</tbody></table></details>`;
     return;
   }
-  // ── home ──
   const mine = emp ? evalRows.filter(r => r.empId === String(emp.id)).sort((a, b) => b.start.localeCompare(a.start)) : [];
   const s = evalState.setup;
   let body = "";
   if (emp && s) {
-    const sug = evalSuggestTrack(emp);
+    const sug = evalSuggestTrack(emp), isApm = evalLevel(emp.position) === "APM";
     body = `<div style="border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-top:12px;">
       <div style="font-weight:700; margin-bottom:4px;">New yearly evaluation — ${escapeHtml(emp.name)}</div>
       <div style="font-size:12px; color:var(--text2); margin-bottom:10px;">The 12 months starting from the month you pick are added up into one yearly evaluation.</div>
-      <div style="${"font-size:12px; font-weight:600; color:var(--text2); margin:6px 0 4px;"}">Start month</div>
+      <div style="font-size:12px; font-weight:600; color:var(--text2); margin:6px 0 4px;">Start month</div>
       <input type="month" value="${escapeAttr(s.start)}" onchange="evalSetupSet('start', this.value)" style="${fld}" />
       <div style="font-size:12px; font-weight:600; color:var(--text2); margin:12px 0 4px;">Evaluation form</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">${["Agent", "Manager"].map(t => `<button type="button" class="btn ${s.track === t ? "btn-primary" : "btn-secondary"}" onclick="evalSetupSet('track', '${t}')">${t}${t === "Agent" ? " (GM · SGM · APM)" : " (APM · PM · SPM)"}</button>`).join("")}</div>
-      <div style="font-size:11.5px; color:var(--text3); margin-top:6px;">${sug ? `Suggested for ${escapeHtml(emp.position)}: ${sug}.` : (/assistant product manager|\bAPM\b/i.test(emp.position || "") ? "APM can use either form — pick the one that fits this person." : "Pick the form that fits this position.")}</div>
+      <div style="font-size:11.5px; color:var(--text3); margin-top:6px;">${sug ? `Suggested for ${escapeHtml(emp.position)}: ${sug}.` : (isApm ? "APM can use either form — pick the one that fits this person." : "Pick the form that fits this position.")}</div>
+      ${s.track === "Agent" ? evalCfgHtml(s, "setup") : ""}
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;"><button class="btn btn-secondary" onclick="evalCancelSetup()">Cancel</button><button class="btn btn-primary" ${evalState.busy ? "disabled" : ""} onclick="evalSaveSetup()">${evalState.busy ? "Saving…" : "Start evaluation"}</button></div></div>`;
   } else if (emp) {
-    body = `<div style="margin-top:12px;">${mine.length ? mine.map(r => `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track} evaluation</div></div><span style="color:var(--accent); font-size:12px;">Open &#9654;</span></div>`).join("")
+    body = `<div style="margin-top:12px;">${mine.length ? mine.map(r => `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track} evaluation</div></div><span style="color:var(--accent); font-size:12px;">Open &#9654;</span></div>`).join("")
       : `<div style="color:var(--text3); font-size:13px; margin-bottom:10px;">No evaluation yet for ${escapeHtml(emp.name)}.</div>`}
       <button class="btn btn-primary btn-sm" onclick="evalNew()">+ ${mine.length ? "New yearly evaluation" : "Start the first evaluation"}</button></div>`;
   }
   box.innerHTML = head("Performance Evaluation", "Yearly evaluation form. Pick an employee, then choose the start month of the 12-month period.", false) + `<div style="margin-top:8px;">${picker}</div>${body}`;
 }
-
 async function openDirectory() {
   if (!canAccessHR || !employeesListId) return;
   hrView = { mode: "directory" };
