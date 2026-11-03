@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-17";
+const BUILD_ID = "2026-11-03-19";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13016,7 +13016,7 @@ function evalSetBfr(k, field, val) { // field: r (rating) | c (comment)
   const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.bfr = r.data.bfr || {};
   const row = r.data.bfr[k] = r.data.bfr[k] || {}; val = String(val).trim();
   if (val === "") delete row[field]; else row[field] = val;
-  evalPersist(); if (field === "r") { evalRefreshCalc(); const el = document.getElementById("evBfAvg"); if (el) el.textContent = evalBfAvg(r.data) == null ? "—" : evalBfAvg(r.data).toFixed(1); }
+  evalPersist(); if (field === "r") { evalRefreshCalc(); if (r.track === "Probation") evalProbRefresh(); const el = document.getElementById("evBfAvg"); if (el) el.textContent = evalBfAvg(r.data) == null ? "—" : evalBfAvg(r.data).toFixed(1); }
 }
 function evalSetMf(k, val) {
   const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.mf = r.data.mf || {}; r.data.mf[k] = String(val).trim();
@@ -13196,9 +13196,10 @@ function evalProbProgress(data, cp, sectionKey) {
   evalProbItems(sectionKey).forEach(it => { const v = (chk[it.id] || {})[cp]; if (v === "N/A") return; tot++; if (v === "Completed") done++; });
   return tot ? evalRound1(done / tot * 100) : null;
 }
-function evalProbBf(data, cp) { // typed score for the checkpoint; the 5th month falls back to the average of the five category ratings
-  const typed = evalNum(((data && data.bfc) || {})[cp]); if (typed != null) return typed;
-  return cp === "m5" ? evalBfAvg(data) : null;
+function evalProbBf(data, cp) { // entered once (the Behavioral Factors section) → the same average at every checkpoint; old rows that typed a score per checkpoint still show it
+  const avg = evalBfAvg(data), typed = evalNum(((data && data.bfc) || {})[cp]);
+  const hasRatings = EVAL_BF.concat(EVAL_BF_MGR).some(b => evalNum(((data && data.bfr) || {})[b[0]] && data.bfr[b[0]].r) != null);
+  return hasRatings ? avg : (typed != null ? typed : avg);
 }
 function evalProbHire(emp) { return emp && emp.hireDate ? String(emp.hireDate).slice(0, 10) : ""; }
 function evalTestNA(d, c) { return d && (d.testNA === true || !!(d.testNA && d.testNA[c])); } // per checkpoint (old rows stored one flag for all four)
@@ -13217,8 +13218,18 @@ function evalSetChk(id, cp, val) {
   const row = r.data.chk[id] = r.data.chk[id] || {};
   if (val === "N/A") EVAL_CHK.forEach(([c]) => { row[c] = "N/A"; }); // N/A applies to the whole item
   else if (val === "") delete row[cp]; else row[cp] = val;
+  let fill = false;
+  if (val === "Completed") { const i = EVAL_CHK.findIndex(x => x[0] === cp); EVAL_CHK.slice(i + 1).forEach(([c]) => { if (row[c] !== "Completed") { row[c] = "Completed"; fill = true; } }); } // done once → done for the later checkpoints too
   evalPersist();
-  if (val === "N/A") renderHRModal(); else evalProbRefresh();
+  if (val === "N/A" || fill) evalRerenderKeepScroll(); else evalProbRefresh();
+}
+function evalRerenderKeepScroll() { // redraw the form without jumping back to the top
+  const root = document.getElementById("hrModal"), keep = [];
+  if (root) root.querySelectorAll("*").forEach(el => { if (el.scrollTop > 0) keep.push([el, el.scrollTop]); });
+  const w = window.scrollY; renderHRModal();
+  const r2 = document.getElementById("hrModal");
+  if (r2) { const els = Array.from(r2.querySelectorAll("*")); keep.forEach(([el, t]) => { const same = el.isConnected ? el : els.find(x => x.className === el.className && x.tagName === el.tagName && x.scrollHeight > x.clientHeight); if (same) same.scrollTop = t; }); }
+  window.scrollTo(0, w);
 }
 function evalSetProbNote(group, val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.notes = r.data.notes || {}; r.data.notes[group] = String(val).trim(); if (!r.data.notes[group]) delete r.data.notes[group]; evalPersist(); }
 function evalSetProbSn(val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.sn = String(val).trim(); evalPersist(); }
@@ -13233,7 +13244,7 @@ function evalSetMfType(k, on) { const r = evalState.cur; if (!r) return; r.data 
 function evalProbRefresh() {
   const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId); if (!emp) return;
   const c = evalProbCompute(emp, r, toLocalYMD(new Date())), set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  EVAL_CHK.forEach(([k]) => { set(`evp_tp_${k}`, c[k].prog == null ? "—" : c[k].prog.toFixed(1) + "%"); set(`evp_tr_${k}`, c[k].team == null ? "—" : c[k].team.toFixed(1) + "%"); });
+  EVAL_CHK.forEach(([k]) => { set(`evp_tp_${k}`, c[k].prog == null ? "—" : c[k].prog.toFixed(1) + "%"); set(`evp_bf_${k}`, c[k].bf == null ? "—" : c[k].bf.toFixed(1)); set(`evp_tr_${k}`, c[k].team == null ? "—" : c[k].team.toFixed(1) + "%"); });
 }
 function evalProbBodyHtml(emp, r, today) {
   const c = evalProbCompute(emp, r, today), d = r.data || {}, chk = d.chk || {}, hire = evalProbHire(emp);
@@ -13250,7 +13261,7 @@ function evalProbBodyHtml(emp, r, today) {
     <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${th} text-align:left;">CRITERIA</th><th style="${th}">Target</th>${EVAL_CHK.map(([k, l]) => `<th style="${th}">${l}</th>`).join("")}</tr></thead><tbody>
     ${sumRow("Attendance (Absences)", EVAL_PROB_TARGET.abs.toFixed(1) + "%", EVAL_CHK.map(([k]) => c[k].reached ? pc(c[k].abs) : pending))}
     ${sumRow("Attendance (Tardiness)", EVAL_PROB_TARGET.tardy.toFixed(1) + "%", EVAL_CHK.map(([k]) => c[k].reached ? pc(c[k].tardy) : pending))}
-    ${sumRow("Behavioral Factor", EVAL_PROB_TARGET.bf.toFixed(1), EVAL_CHK.map(([k]) => sel(bfOpts, ((d.bfc || {})[k]) || (k === "m5" && c[k].bf != null ? c[k].bf.toFixed(1) : ""), `evalSetProbBf('${k}', this.value)`, "width:64px;")))}
+    ${sumRow("Behavioral Factor", EVAL_PROB_TARGET.bf.toFixed(1), EVAL_CHK.map(([k]) => `<span id="evp_bf_${k}">${c[k].bf == null ? "—" : c[k].bf.toFixed(1)}</span>`))}
     ${sumRow("Test Score", EVAL_PROB_TARGET.test + "%", EVAL_CHK.map(([k]) => { const na = evalTestNA(d, k); return `<div style="display:flex; gap:6px; align-items:center; justify-content:center;"><input type="text" ${na ? "disabled" : ""} value="${na ? "" : escapeAttr((d.test || {})[k] || "")}" placeholder="${na ? "N/A" : "%"}" onchange="evalSetProbTest('${k}', this.value)" style="width:58px; text-align:center; padding:3px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); font-size:12px;" /><label style="font-size:11px; color:var(--text3); white-space:nowrap;"><input type="checkbox" ${na ? "checked" : ""} onchange="evalSetTestNA('${k}', this.checked)" /> N/A</label></div>`; }))}
     ${sumRow("Training Progress", EVAL_PROB_TARGET.prog + "%", EVAL_CHK.map(([k]) => `<span id="evp_tp_${k}">${c[k].prog == null ? "—" : c[k].prog.toFixed(1) + "%"}</span>`))}
     </tbody></table>
