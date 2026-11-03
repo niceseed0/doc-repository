@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-05";
+const BUILD_ID = "2026-11-03-06";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12656,6 +12656,7 @@ const EVAL_SETS = {
     { k: "cxqa", label: "CXQA Score", type: "pct", target: 90 },
     { k: "lcqa", label: "LCQA Score", type: "pct", target: 90 },
     { k: "csat", label: "CSAT Score", type: "pct", target: 85 },
+    { k: "epms", label: "EPMS Completion Rate", type: "pct", summary: true },
     { k: "bf", label: "Behavioral Factor", type: "score", target: 3.0 }] },
   qa: { label: "QA Agent", items: [
     { k: "ter", label: "Test Execution Rate", type: "ratio", num: ["exe", "# of TCs executed"], den: ["plan", "Total TCs planned"], target: 90 },
@@ -12796,7 +12797,7 @@ function evalMemberKpi(empId, month, key) {
   const v = row && row.data.m && row.data.m[month] ? evalNum(row.data.m[month][key]) : null;
   return v == null ? null : evalRound1(v);
 }
-const EVAL_TEAM_METRICS = [["abs", "Attendance (Absences)"], ["tardy", "Attendance (Tardiness)"], ["prod", "Productivity"], ["cxqa", "CXQA Score"], ["csat", "CSAT Score"]];
+const EVAL_TEAM_METRICS = [["abs", "Attendance (Absences)"], ["tardy", "Attendance (Tardiness)"], ["prod", "Productivity"], ["cxqa", "CXQA Score"], ["csat", "CSAT Score"], ["epms", "EPMS Completion Rate"]];
 function evalTeamCompute(emp, start, today, members) {
   members = members || evalTeamMembers(emp);
   const build = st => {
@@ -12811,12 +12812,6 @@ function evalTeamCompute(emp, start, today, members) {
     return { months, memb, team, avg };
   };
   return { members, cur: build(start), prev: build(evalMonthAdd(start, -12)) };
-}
-function evalSetEpms(empId, month, val) {
-  const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.epms = r.data.epms || {};
-  const row = r.data.epms[empId] = r.data.epms[empId] || {}; val = String(val).trim();
-  if (val === "") delete row[month]; else row[month] = val;
-  evalPersist();
 }
 function evalMgrSummaryRows(emp, r, cp, prev) {
   const today = toLocalYMD(new Date()), T = evalTeamCompute(emp, r.start, today), pa = evalPeriod(emp.id, evalMonthAdd(r.start, -12), today);
@@ -12838,16 +12833,15 @@ function evalManagerBodyHtml(emp, r, cp, today) {
   const mHead = `<tr><th style="${EVAL_TH} text-align:left;">Agent Name</th>${c.months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}</th>`).join("")}</tr>`;
   const bar = t => `<div style="${EVAL_BAR} margin-top:14px;"><span>${t}</span></div>`;
   const memberGrid = (k, label) => bar(label.toUpperCase()) + `<div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead>${mHead}</thead><tbody>${T.members.map(m => `<tr><td style="${td} text-align:left; white-space:nowrap;">${escapeHtml(m.name)}</td>${c.memb[k][m.id].map(v => `<td style="${td}">${f(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
-  const epms = bar("EPMS COMPLETION RATE") + `<div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead>${mHead}</thead><tbody>${T.members.map(m => `<tr><td style="${td} text-align:left; white-space:nowrap;">${escapeHtml(m.name)}</td>${c.months.map(mo => `<td style="${td}"><input type="text" value="${escapeAttr((((r.data || {}).epms || {})[m.id] || {})[mo] || "")}" placeholder="%" onchange="evalSetEpms('${escapeAttr(m.id)}', '${mo}', this.value)" style="width:100%; min-width:50px; text-align:center; padding:3px 2px; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; box-sizing:border-box;" /></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
   const indiv = grid("INDIVIDUAL PERFORMANCE", simple("Attendance (Absences)", cp.att.map(a => a ? a.abs : null)) + simple("Attendance (Tardiness)", cp.att.map(a => a ? a.tardy : null)));
-  const teamAll = grid("TEAM OVERALL PERFORMANCE SUMMARY", EVAL_TEAM_METRICS.map(([k, l]) => simple(l, c.team[k])).join(""));
-  const note = T.members.length ? `<div style="font-size:11.5px; color:var(--text3); margin-top:6px;">Team members counted (${T.members.length}): ${escapeHtml(T.members.map(m => m.name).join(", "))}. Team figures are the average of these people's monthly results — attendance from the Attendance data, Productivity / CXQA / CSAT from each person's own Agent evaluation.</div>` : `<div style="font-size:12px; color:var(--yellow); margin-top:6px;">No team members were found for ${escapeHtml(emp.name)} (agents — GM, SGM, APM — in the same team${evalLevel(emp.position) === "SPM" ? " / cluster" : ""}).</div>`;
+  const teamAll = grid("TEAM OVERALL PERFORMANCE SUMMARY", EVAL_TEAM_METRICS.filter(([k]) => k !== "epms").map(([k, l]) => simple(l, c.team[k])).join(""));
+  const note = T.members.length ? `<div style="font-size:11.5px; color:var(--text3); margin-top:6px;">Team members counted (${T.members.length}): ${escapeHtml(T.members.map(m => m.name).join(", "))}. Team figures are the average of these people's monthly results — attendance from the Attendance data, Productivity / CXQA / CSAT / EPMS from each person's own Agent evaluation.</div>` : `<div style="font-size:12px; color:var(--yellow); margin-top:6px;">No team members were found for ${escapeHtml(emp.name)} (agents — GM, SGM, APM — in the same team${evalLevel(emp.position) === "SPM" ? " / cluster" : ""}).</div>`;
   return `<div style="${EVAL_H}">PERFORMANCE SUMMARY</div>
     <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Evaluated on: personal attendance, team attendance, team KPIs and behavioral factors. Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now; Previous = the 12 months before.</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalMgrSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>${note}
     <div style="${EVAL_H}">KEY PERFORMANCE INDICATORS [KPI]</div>${indiv}${teamAll}
     <div style="font-size:13px; font-weight:800; margin:22px 0 0;">TEAM MEMBER PERFORMANCE SUMMARY</div>
-    ${T.members.length ? EVAL_TEAM_METRICS.map(([k, l]) => memberGrid(k, l)).join("") + epms : ""}`;
+    ${T.members.length ? EVAL_TEAM_METRICS.map(([k, l]) => memberGrid(k, l)).join("") : ""}`;
 }
 function evalPrevRow(r) { return evalRows.find(x => x.empId === r.empId && x.start === evalMonthAdd(r.start, -12)) || null; }
 function evalDelta(cur, ref) { return cur == null || ref == null ? null : evalRound1(cur - ref); }
@@ -12912,7 +12906,7 @@ async function openEvaluation() {
   hrView = { mode: "evaluation" };
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
-  await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules()]);
+  await Promise.all([loadEvaluations(), loadAttendanceLog(), loadTimeOff(), loadWorkSchedules(), loadAllIncidents()]);
   if (hrView && hrView.mode === "evaluation") renderHRModal();
 }
 function evalPick(id) { evalState.empId = id; evalState.view = "home"; evalState.setup = null; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
@@ -13009,7 +13003,7 @@ function evalSummaryRows(emp, r, cp, prev) {
   const line = (label, target, prevV, curV, vsP, vsT, sub) => `<tr><td style="${EVAL_TD} text-align:left; font-weight:700; ${sub ? "padding-left:24px;" : ""}">${label}</td><td style="${EVAL_TD}">${target}</td><td style="${EVAL_TD}">${prevV}</td><td style="${EVAL_TD} font-weight:700;">${curV}</td><td style="${EVAL_TD}">${vsP}</td><td style="${EVAL_TD}">${vsT}</td></tr>`;
   h += line("Attendance (Absences)", EVAL_TARGET_ABS.toFixed(1) + "%", pct(pa.abs), pct(cp.abs), evalDeltaHtml(evalDelta(cp.abs, pa.abs), "%"), evalDeltaHtml(evalDelta(cp.abs, EVAL_TARGET_ABS), "%"));
   h += line("Attendance (Tardiness)", EVAL_TARGET_TARDY.toFixed(1) + "%", pct(pa.tardy), pct(cp.tardy), evalDeltaHtml(evalDelta(cp.tardy, pa.tardy), "%"), evalDeltaHtml(evalDelta(cp.tardy, EVAL_TARGET_TARDY), "%"));
-  cp.items.filter(it => it.target != null).forEach(it => {
+  cp.items.filter(it => it.target != null || it.summary).forEach(it => {
     const c = cp.avg[it.k], p = pcp && prev.data && prev.data.sub === r.data.sub ? pcp.avg[it.k] : null;
     if (it.type === "score") {
       h += line(it.label, it.target.toFixed(1), p == null ? "—" : p.toFixed(1),
@@ -13019,7 +13013,7 @@ function evalSummaryRows(emp, r, cp, prev) {
       h += line(it.label, evalFmtTime(it.target), evalFmtTime(p), evalFmtTime(c), evalPassHtml(c, p), evalPassHtml(c, it.target), true);
     } else {
       const suf = it.type === "ratioN" ? "" : "%";
-      h += line(it.label, it.type === "ratioN" ? it.target.toFixed(1) : it.target.toFixed(1) + "%", p == null ? "—" : evalFmt(it, p), c == null ? "—" : evalFmt(it, c), evalDeltaHtml(evalDelta(c, p), suf), evalDeltaHtml(evalDelta(c, it.target), suf), true);
+      h += line(it.label, it.target == null ? "—" : it.type === "ratioN" ? it.target.toFixed(1) : it.target.toFixed(1) + "%", p == null ? "—" : evalFmt(it, p), c == null ? "—" : evalFmt(it, c), evalDeltaHtml(evalDelta(c, p), suf), evalDeltaHtml(evalDelta(c, it.target), suf), true);
     }
   });
   return h;
@@ -13051,6 +13045,31 @@ function evalTextArea(id, val, onch, ph, disabled) {
 }
 const EVAL_BAR = "background:#7f7f7f; color:#fff; font-weight:700; font-size:12.5px; padding:5px 12px; display:flex; justify-content:space-between; align-items:center; margin-top:14px;";
 const EVAL_H = "font-size:15px; font-weight:800; color:#f08a4b; margin:24px 0 6px;";
+// ── Administrative records: counted straight from HR Records (allIncidents), so nothing is typed twice ──
+const EVAL_ADMIN_TYPES = ["Recognition", "Coaching", "PIP", "NTE"];
+function evalAdminRecords(empId, start) {
+  const last = evalMonthAdd(start, 11);
+  return allIncidents.filter(i => i.employeeId === String(empId) && EVAL_ADMIN_TYPES.includes(i.type) && i.date && String(i.date).slice(0, 7) >= start && String(i.date).slice(0, 7) <= last)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+function evalAdminLink(i) {
+  if (i.nteCaseId) return `<a style="color:var(--accent); cursor:pointer;" onclick="openNteFromIncident('${escapeAttr(i.nteCaseId)}')">View NTE &#9654;</a>`;
+  if (i.coachingCaseId) return `<a style="color:var(--accent); cursor:pointer;" onclick="openCoachingFromIncident('${escapeAttr(i.coachingCaseId)}')">View Coaching &#9654;</a>`;
+  if (i.recognitionCaseId && recognitionCases.some(x => x.itemId === i.recognitionCaseId)) return `<a style="color:var(--accent); cursor:pointer;" onclick="openRecognitionFromIncident('${escapeAttr(i.recognitionCaseId)}')">View Recognition &#9654;</a>`;
+  if (i.pipCaseId && pipCases.some(x => x.itemId === i.pipCaseId)) return `<a style="color:var(--accent); cursor:pointer;" onclick="openPipFromIncident('${escapeAttr(i.pipCaseId)}')">View PIP &#9654;</a>`;
+  return `<span style="color:var(--text3);">—</span>`;
+}
+function evalAdminHtml(emp, r) {
+  const months = Array.from({ length: 12 }, (_, i) => evalMonthAdd(r.start, i)), recs = evalAdminRecords(emp.id, r.start), td = EVAL_TD.replace("padding:7px 10px;", "padding:4px 6px;");
+  const cnt = (t, mo) => recs.filter(i => i.type === t && String(i.date).slice(0, 7) === mo).length;
+  const reason = i => { const t = String(i.notes || "").replace(/\s+/g, " ").trim(); return t.length > 160 ? t.slice(0, 157) + "…" : t; };
+  return `<div style="${EVAL_H}">ADMINISTRATIVE RECORDS</div>
+    <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Filled in automatically from HR Records (Recognition, Coaching, PIP, NTE) dated within this evaluation period.</div>
+    <div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">DOCUMENT</th>${months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}</th>`).join("")}<th style="${EVAL_TH}">TOTAL</th></tr></thead>
+    <tbody>${EVAL_ADMIN_TYPES.map(t => `<tr><td style="${td} text-align:left; font-weight:700;">${t}</td>${months.map(mo => { const n = cnt(t, mo); return `<td style="${td} ${n ? "font-weight:700;" : "color:var(--text3);"}">${n || ""}</td>`; }).join("")}<td style="${td} font-weight:700;">${recs.filter(i => i.type === t).length}</td></tr>`).join("")}</tbody></table></div>
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-top:12px;"><thead><tr><th style="${EVAL_TH} text-align:left; width:100px;">Date</th><th style="${EVAL_TH} text-align:left; width:110px;">Type</th><th style="${EVAL_TH} text-align:left;">Reason</th><th style="${EVAL_TH} width:130px;">Details</th></tr></thead>
+    <tbody>${recs.length ? recs.map(i => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(String(i.date).slice(0, 10))}</td><td style="${EVAL_TD} text-align:left; font-weight:700;">${escapeHtml(i.type)}</td><td style="${EVAL_TD} text-align:left; color:var(--text2);">${escapeHtml(reason(i))}</td><td style="${EVAL_TD}">${evalAdminLink(i)}</td></tr>`).join("") : `<tr><td colspan="4" style="${EVAL_TD} color:var(--text3);">No records in this period.</td></tr>`}</tbody></table>`;
+}
 function evalBehavioralHtml(r) {
   const BF = r.track === "Manager" ? EVAL_BF_MGR : EVAL_BF;
   const d = (r.data && r.data.bfr) || {}, avg = evalBfAvg(r.data);
@@ -13099,12 +13118,12 @@ function renderEvaluation(box) {
       body = `<div style="border:1px dashed var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; font-size:13px;">This evaluation has no KPI items yet. <button class="btn btn-primary btn-sm" onclick="evalEditCfg()">Choose agent type &amp; KPI items</button></div>`;
     } else {
       const cp = evalCompute(emp, r, today);
-      body = r.track === "Manager" ? evalManagerBodyHtml(emp, r, cp, today) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
+      body = r.track === "Manager" ? evalManagerBodyHtml(emp, r, cp, today) + evalAdminHtml(emp, r) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
         <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now. Previous = the 12 months before the start month (KPIs: the earlier evaluation, if one exists).</div>
         <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>
         <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:22px 0 4px; display:flex; justify-content:space-between; align-items:center;"><span>KEY PERFORMANCE INDICATORS [KPI]</span>${r.track === "Agent" ? `<button class="btn btn-secondary btn-sm" onclick="evalEditCfg()">&#9881; KPI items</button>` : ""}</div>
         ${r.track === "Agent" ? `<div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Type the monthly figures (blank = not counted). Percentages as 97.3, times as 0:09:02. ${r.data.sub === "qa" ? "Rates are calculated for you; Total Working Days can be left blank to use the scheduled days." : ""} Attendance fills in automatically.</div>${evalMonthlyHtml(emp, r, cp)}` : `<div style="font-size:12px; color:var(--text3);">Manager KPIs will be added next.</div>`}
-        ${r.track === "Agent" && cp.items.some(i => i.k === "bf") ? evalBehavioralHtml(r) : ""}${evalFeedbackHtml(r)}`;
+        ${evalAdminHtml(emp, r)}${r.track === "Agent" && cp.items.some(i => i.k === "bf") ? evalBehavioralHtml(r) : ""}${evalFeedbackHtml(r)}`;
     }
     box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${escapeHtml(evalPeriodLabel(r.start))}`, true) + `
       <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
