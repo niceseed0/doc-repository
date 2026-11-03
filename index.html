@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-13";
+const BUILD_ID = "2026-11-03-15";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -1882,7 +1882,7 @@ function canSeeNteTab() {
 function mgmtRank(e) {
   const p = (e && e.position) || "";
   if (/\bceo\b|chief executive/i.test(p)) return 0;
-  if (/managing director/i.test(p)) return 1;
+  if (/managing\s*director|\bMD\b/i.test(p)) return 1;
   if (/^head\s*of\s*operations?\b/i.test(p)) return 2;
   return -1;
 }
@@ -2194,6 +2194,14 @@ function renderPastYearsUsage(emp) {
   `;
 }
 
+// CEO / Managing Director / Head of Operations / Admin Manager are listed by their position instead of a department.
+function birthdayGroupLabel(e) {
+  const rk = mgmtRank(e), p = e.position || "";
+  if (rk === 0) return /chief/i.test(p) ? p : "Chief Executive Officer";
+  if (rk === 1) return "Managing Director";
+  if (rk === 2) return p;
+  return /admin\s*manager/i.test(p) ? p : (e.team || "");
+}
 // This month's AND next month's birthdays (someone born on the 1st would otherwise only be noticed on the day).
 function thisMonthBirthdays() {
   const now = new Date();
@@ -2205,7 +2213,7 @@ function thisMonthBirthdays() {
       const s = dateOnly(e.birthday);
       const m = s ? Number(s.slice(5, 7)) : null;
       const d = s ? Number(s.slice(8, 10)) : null;
-      return { name: e.name, team: e.team, day: d, month: m, nextMonth: m === next && m !== month };
+      return { name: e.name, team: birthdayGroupLabel(e), day: d, month: m, nextMonth: m === next && m !== month };
     })
     .filter(e => e.month === month || e.nextMonth)
     .sort((a, b) => (a.nextMonth - b.nextMonth) || a.day - b.day);
