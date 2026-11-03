@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-21";
+const BUILD_ID = "2026-11-03-22";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13609,13 +13609,47 @@ async function evalInit() { // after sign-in: everybody gets the light copy (for
   if (hr) { const n = await evalAutoRollover(); if (n) toast(`${n} new yearly evaluation${n === 1 ? "" : "s"} opened automatically.`, "success"); }
   try { renderTabs(); if (activeTab === "__MYTASKS__") renderContent(); } catch (e) {}
 }
+// ── HR profile: Current Evaluation + past evaluations with their summary scores ──
+function evalKpiScore(cp) { // average % of target reached over the KPI items that have a target (each capped at 100; APT: lower is better)
+  const v = [];
+  cp.items.forEach(it => { if (it.target == null || it.type === "score") return; const c = cp.avg[it.k]; if (c == null) return;
+    v.push(Math.min(100, it.type === "time" ? (c > 0 ? it.target / c * 100 : 100) : c / it.target * 100)); });
+  return evalAvg(v);
+}
+function evalTeamBf(emp, r) { // average Behavioral Factor of the team members' own evaluations covering the same start month
+  const v = evalTeamMembers(emp).map(m => { const row = evalRows.find(x => x.empId === String(m.id) && x.track === "Agent" && r.start >= x.start && r.start <= evalMonthAdd(x.start, 11) && x.hasData); return row ? evalBfAvg(row.data) : null; });
+  return evalAvg(v);
+}
+function evalSummaryTiles(emp, r) { // [[label, text]] — the figures the profile shows for one evaluation
+  if (!r.hasData || r.track === "Probation" || (r.track === "Agent" && !(r.data && r.data.sub))) return [];
+  const today = toLocalYMD(new Date()), cp = evalCompute(emp, r, today);
+  const pc = v => v == null ? "—" : v.toFixed(1) + "%", n1 = v => v == null ? "—" : v.toFixed(1);
+  const nr = v => v == null ? "Not recorded" : pc(v), att = [["Absences", nr(cp.abs)], ["Tardiness", nr(cp.tardy)]];
+  if (r.track === "Agent") return [["Attendance — Absences", att[0][1]], ["Attendance — Tardiness", att[1][1]], ["KPI average", pc(evalKpiScore(cp))], ["Behavioral Factor", n1(evalBfAvg(r.data))]];
+  const T = evalTeamCompute(emp, r.start, today), tg = EVAL_MGR_TARGET;
+  const tk = evalAvg(["prod", "cxqa", "csat"].map(k => T.cur.avg[k] == null ? null : Math.min(100, T.cur.avg[k] / tg[k] * 100)));
+  return [["Attendance — Absences", att[0][1]], ["Attendance — Tardiness", att[1][1]], ["Team Attendance — Absences", pc(T.cur.avg.abs)], ["Team Attendance — Tardiness", pc(T.cur.avg.tardy)], ["Team KPI average", pc(tk)], ["Behavioral Factor", n1(evalBfAvg(r.data))], ["Team Behavioral Factor", n1(evalTeamBf(emp, r))]];
+}
+let evalProfTried = 0;
 function evalProfileHtml(emp, selfView) { // evaluations kept in the HR profile
   if (!evalListId) return "";
   const hrUser = canAccessHR || isPermissionAdmin;
   const rows = evalRows.filter(r => r.empId === String(emp.id) && (hrUser || (selfView && evalStatus(r) !== "Draft"))).sort((a, b) => b.start.localeCompare(a.start));
   if (!rows.length) return "";
-  return `<div style="margin-top:12px; border-top:1px dashed var(--border); padding-top:10px;"><div style="font-size:12px; font-weight:600; margin-bottom:6px;">Yearly &amp; probationary evaluations</div>
-    ${rows.map(r => `<div onclick="evalOpenSign('${escapeAttr(r.itemId)}', true)" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px; border:1px solid var(--border); border-radius:8px; padding:7px 10px; margin-bottom:6px; font-size:12.5px;"><span>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))} <span style="color:var(--text3);">· ${r.track === "Probation" ? "Probation" : r.track}</span></span><span style="display:flex; gap:8px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent);">View &#9654;</span></span></div>`).join("")}</div>`;
+  if (rows.some(r => !r.hasData) && Date.now() - evalProfTried > 60000) { // the summary needs the full data once
+    evalProfTried = Date.now();
+    loadEvaluations().catch(() => {}).then(() => { if (hrView && hrView.mode === "detail") renderHRModal(); });
+  }
+  const lab = t => `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin:10px 0 5px;">${t}</div>`;
+  const openCard = (r, title, sub, tiles) => `<div onclick="evalOpenSign('${escapeAttr(r.itemId)}', true)" style="cursor:pointer; border:1px solid var(--border); border-radius:8px; padding:8px 11px; margin-bottom:6px; font-size:12.5px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><span><b>${title}</b>${sub ? ` <span style="color:var(--text3);">· ${sub}</span>` : ""}</span><span style="display:flex; gap:8px; align-items:center;">${evalStatusBadge(r)}<span style="color:var(--accent);">Open &#9654;</span></span></div>
+    ${tiles && tiles.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:6px;">${tiles.map(([l, v]) => `<span style="font-size:11.5px; color:var(--text2);">${escapeHtml(l)}: <b style="color:var(--text);">${escapeHtml(v)}</b></span>`).join("")}</div>` : ""}</div>`;
+  const prob = rows.filter(r => r.track === "Probation"), yearly = rows.filter(r => r.track !== "Probation");
+  const cur = yearly.filter(r => !evalIsPast(r)), past = yearly.filter(evalIsPast), probCur = prob.filter(r => !evalIsPast(r)), probPast = prob.filter(evalIsPast);
+  let h = `<div style="margin-top:12px; border-top:1px dashed var(--border); padding-top:6px;">`;
+  if (cur.length || probCur.length) h += lab("Current Evaluation") + cur.map(r => openCard(r, `Current Evaluation`, `${r.track} · started ${escapeHtml(evalMonthLabel(r.start))}`, null)).join("") + probCur.map(r => openCard(r, "Probationary Evaluation", `started ${escapeHtml(evalMonthLabel(r.start))}`, null)).join("");
+  if (past.length || probPast.length) h += lab("Past Evaluations") + past.map(r => openCard(r, escapeHtml(evalPeriodLabel(r.start)), r.track, evalSummaryTiles(emp, r))).join("") + probPast.map(r => openCard(r, "Probationary Evaluation", escapeHtml(evalMonthLabel(r.start)), null)).join("");
+  return h + `</div>`;
 }
 function evalDownloadPdf() {
   const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId), body = document.getElementById("evBody");
@@ -14383,6 +14417,7 @@ function rosterRow(e, clickable) {
 
 function renderEmployeeDetailHtml(emp, detail, selfView) {
   const isResigned = emp.status === "Resigned";
+  const evalHtml = evalProfileHtml(emp, selfView);
   // Read-only, team-scoped HR access: can open this employee's page only because they manage this
   // employee's HR team (not because of a real HR-Sensitive-Access/salary/incidents group grant).
   const isTeamManagerView = !canAccessHR && !canAccessSalary && !canAccessIncidents && !selfView && managedTeams.has(emp.team);
@@ -14524,8 +14559,8 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
           <tr style="color:var(--text2);"><td style="padding:3px 0;">Year</td><td style="text-align:right;">Attendance</td><td style="text-align:right;">Performance</td><td style="text-align:right;">Behavioral factor</td><td></td></tr>
           ${detail.evaluations.map(ev => `<tr style="border-top:1px solid var(--border);"><td style="padding:6px 0;">${escapeHtml(String(ev.year))}</td><td style="text-align:right;">${ev.attendance ?? "—"}</td><td style="text-align:right;">${ev.performance ?? "—"}</td><td style="text-align:right;">${ev.behavioral ?? "—"}</td><td style="text-align:right; width:18px;">${canAccessHR ? delBtn("evaluation", ev.itemId) : ""}</td></tr>`).join("")}
         </table>
-      ` : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`}
-      ${evalProfileHtml(emp, selfView)}
+      ` : (evalHtml ? "" : `<div style="font-size:12px; color:var(--text2);">No records yet.</div>`)}
+      ${evalHtml}
     </div>
 
     ${canViewIncidents ? `
