@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-04";
+const BUILD_ID = "2026-11-03-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12678,6 +12678,14 @@ const EVAL_BF = [
   ["init", "4. Initiative and Problem-Solving", "Proactively seeks ways to improve processes, address challenges, and contribute innovative ideas. Takes independent action when necessary, approaches problems with a solution-oriented mindset, and continuously looks for opportunities to enhance efficiency."],
   ["know", "5. Job Knowledge and Continuous Improvement", "Demonstrates a strong understanding of job roles, industry standards, and best practices. Actively seeks to expand skills and knowledge to improve performance. Open to feedback and committed to professional growth."]
 ];
+const EVAL_BF_MGR = [
+  ["lead", "1. Leadership and Delegation", "A manager's ability to guide, support, and inspire their team while effectively distributing tasks. Strong leadership fosters a productive work environment, while effective delegation ensures efficiency and professional growth among team members."],
+  ["plan", "2. Planning, Organization, and Administration", "A manager's ability to set clear priorities, plan and organize the team's work, and handle administrative responsibilities. Strong planning and organization keep operations running smoothly and deadlines met."],
+  ["pers", "3. Personnel Management and Development", "Focuses on nurturing team members through training, feedback, and performance management. A great manager builds a supportive culture that encourages continuous learning, skill development, and career progression."],
+  ["mrel", "4. Reliability, Accountability, and Problem Solving", "A manager's ability to take responsibility for decisions, uphold commitments, and address challenges proactively. This includes demonstrating integrity, resolving issues efficiently, and maintaining high operational standards."],
+  ["mknow", "5. Job Knowledge and Continuous Improvement", "The commitment to staying updated on industry trends, best practices, and company policies. A strong manager applies their expertise while continuously refining strategies to improve team performance and business outcomes."]
+];
+const EVAL_MGR_TARGET = { abs: 98, tardy: 98, prod: 92, cxqa: 90, csat: 90, bf: 3.5 };
 const EVAL_MF = [
   ["imp", "PERFORMANCE AREAS WHICH NEED IMPROVEMENTS", "The employee is encouraged to enhance performance in key areas by refining skills, increasing efficiency, and demonstrating greater initiative. Focus should be placed on improving [specific areas, e.g., communication, time management, technical expertise], ensuring alignment with job expectations and organizational goals."],
   ["ach", "REVIEW OF ACHIEVEMENTS/OBJECTIVES/SPECIAL ASSIGNMENTS SINCE LAST REVIEW", "Where goals, objectives, special assignments, etc. have been clearly established, progress of these tasks should be evaluated. List and evaluate progress made on major pre-determined goals, objectives, and special assignments by marking the appropriate box. The “Comment” space may be used for satisfactory progress but must be used for unsatisfactory progress. Attach additional sheets if necessary."]
@@ -12755,7 +12763,7 @@ function evalItemMonth(it, d, due) {
 }
 // Behavioral Factor = average of the five 1–5 ratings (0.5 steps). Old evaluations that only had a typed score fall back to it.
 function evalBfAvg(data) {
-  const v = EVAL_BF.map(b => evalNum(((data && data.bfr) || {})[b[0]] && data.bfr[b[0]].r)).filter(x => x != null);
+  const v = EVAL_BF.concat(EVAL_BF_MGR).map(b => evalNum(((data && data.bfr) || {})[b[0]] && data.bfr[b[0]].r)).filter(x => x != null);
   if (v.length) return evalRound1(v.reduce((a, b) => a + b, 0) / v.length);
   const x = evalNum(data && data.bf); return x == null ? null : x;
 }
@@ -12774,6 +12782,72 @@ function evalCompute(emp, r, today) {
   });
   const a = att.filter(Boolean);
   return { months, att, items, vals, avg, abs: evalAvg(a.map(x => x.abs)), tardy: evalAvg(a.map(x => x.tardy)) };
+}
+// ── Manager: team figures, synced from the team members' own data ──
+// Team = the agents a manager is responsible for: PM / APM → the agents (GM, SGM, APM) of their own team; SPM → all agents of their cluster.
+function evalTeamMembers(emp) {
+  const lv = evalLevel(emp.position), cl = evalClusterOf(emp);
+  return employees.filter(x => x.status !== "Resigned" && !isCeoRec(x) && String(x.id) !== String(emp.id) && ["GM", "APM"].includes(evalLevel(x.position)) &&
+    (lv === "SPM" ? (cl && evalClusterOf(x) === cl) : x.team === emp.team)).sort((a, b) => a.name.localeCompare(b.name));
+}
+// One member's typed KPI (prod | cxqa | csat) for a month, from whichever of their agent evaluations covers that month.
+function evalMemberKpi(empId, month, key) {
+  const row = evalRows.find(x => x.empId === String(empId) && month >= x.start && month <= evalMonthAdd(x.start, 11) && x.data && x.data.sub === "agent");
+  const v = row && row.data.m && row.data.m[month] ? evalNum(row.data.m[month][key]) : null;
+  return v == null ? null : evalRound1(v);
+}
+const EVAL_TEAM_METRICS = [["abs", "Attendance (Absences)"], ["tardy", "Attendance (Tardiness)"], ["prod", "Productivity"], ["cxqa", "CXQA Score"], ["csat", "CSAT Score"]];
+function evalTeamCompute(emp, start, today, members) {
+  members = members || evalTeamMembers(emp);
+  const build = st => {
+    const months = Array.from({ length: 12 }, (_, i) => evalMonthAdd(st, i)), memb = {}, team = {}, avg = {};
+    EVAL_TEAM_METRICS.forEach(([k]) => {
+      memb[k] = {}; members.forEach(m => { memb[k][m.id] = months.map(mo => {
+        if (k === "abs" || k === "tardy") { const t = evalMonthStats(m.id, mo, today); return t ? t[k] : null; }
+        return evalMemberKpi(m.id, mo, k); }); });
+      team[k] = months.map((mo, i) => evalAvg(members.map(m => memb[k][m.id][i])));
+      avg[k] = evalAvg(team[k]);
+    });
+    return { months, memb, team, avg };
+  };
+  return { members, cur: build(start), prev: build(evalMonthAdd(start, -12)) };
+}
+function evalSetEpms(empId, month, val) {
+  const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.epms = r.data.epms || {};
+  const row = r.data.epms[empId] = r.data.epms[empId] || {}; val = String(val).trim();
+  if (val === "") delete row[month]; else row[month] = val;
+  evalPersist();
+}
+function evalMgrSummaryRows(emp, r, cp, prev) {
+  const today = toLocalYMD(new Date()), T = evalTeamCompute(emp, r.start, today), pa = evalPeriod(emp.id, evalMonthAdd(r.start, -12), today);
+  const bfC = evalBfAvg(r.data), bfP = prev ? evalBfAvg(prev.data) : null, tg = EVAL_MGR_TARGET;
+  const pct = v => v == null ? "—" : v.toFixed(1) + "%";
+  const line = (label, target, pv, cv, vsP, vsT, sub) => `<tr><td style="${EVAL_TD} text-align:left; font-weight:700; ${sub ? "padding-left:24px;" : ""}">${label}</td><td style="${EVAL_TD}">${target}</td><td style="${EVAL_TD}">${pv}</td><td style="${EVAL_TD} font-weight:700;">${cv}</td><td style="${EVAL_TD}">${vsP}</td><td style="${EVAL_TD}">${vsT}</td></tr>`;
+  const pr = (label, target, p, c, sub) => line(label, target.toFixed(1) + "%", pct(p), pct(c), evalDeltaHtml(evalDelta(c, p), "%"), evalDeltaHtml(evalDelta(c, target), "%"), sub);
+  return pr("Attendance (Absences)", tg.abs, pa.abs, cp.abs) + pr("Attendance (Tardiness)", tg.tardy, pa.tardy, cp.tardy)
+    + pr("Team Attendance (Absences)", tg.abs, T.prev.avg.abs, T.cur.avg.abs) + pr("Team Attendance (Tardiness)", tg.tardy, T.prev.avg.tardy, T.cur.avg.tardy)
+    + pr("Team Productivity", tg.prod, T.prev.avg.prod, T.cur.avg.prod, true) + pr("Team CXQA Score", tg.cxqa, T.prev.avg.cxqa, T.cur.avg.cxqa, true) + pr("Team CSAT Score", tg.csat, T.prev.avg.csat, T.cur.avg.csat, true)
+    + line("Behavioral Factor", tg.bf.toFixed(1), bfP == null ? "—" : bfP.toFixed(1), bfC == null ? "—" : bfC.toFixed(1), evalDeltaHtml(evalDelta(bfC, bfP)), evalDeltaHtml(evalDelta(bfC, tg.bf)), true);
+}
+function evalManagerBodyHtml(emp, r, cp, today) {
+  const T = evalTeamCompute(emp, r.start, today), c = T.cur, td = EVAL_TD.replace("padding:7px 10px;", "padding:4px 6px;");
+  const head = `<tr><th style="${EVAL_TH} text-align:left;">${"CRITERIA"}</th>${c.months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}<div style="font-weight:400; font-size:10.5px; color:var(--text3);">${mo.slice(0, 4)}</div></th>`).join("")}</tr>`;
+  const f = v => v == null ? `<span style="color:var(--text3);">—</span>` : v.toFixed(1) + "%";
+  const grid = (title, rowsHtml, first) => `<div style="font-size:12.5px; font-weight:700; margin:16px 0 4px;">${title}</div><div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead>${first || head}</thead><tbody>${rowsHtml}</tbody></table></div>`;
+  const simple = (label, vals) => `<tr><td style="${td} text-align:left; font-weight:700; white-space:nowrap;">${label}</td>${vals.map(v => `<td style="${td}">${f(v)}</td>`).join("")}</tr>`;
+  const mHead = `<tr><th style="${EVAL_TH} text-align:left;">Agent Name</th>${c.months.map(mo => `<th style="${EVAL_TH}">${EVAL_MONTHS[Number(mo.slice(5)) - 1].toUpperCase()}</th>`).join("")}</tr>`;
+  const bar = t => `<div style="${EVAL_BAR} margin-top:14px;"><span>${t}</span></div>`;
+  const memberGrid = (k, label) => bar(label.toUpperCase()) + `<div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead>${mHead}</thead><tbody>${T.members.map(m => `<tr><td style="${td} text-align:left; white-space:nowrap;">${escapeHtml(m.name)}</td>${c.memb[k][m.id].map(v => `<td style="${td}">${f(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const epms = bar("EPMS COMPLETION RATE") + `<div style="overflow-x:auto;"><table style="width:100%; min-width:1000px; border-collapse:collapse; font-size:12.5px;"><thead>${mHead}</thead><tbody>${T.members.map(m => `<tr><td style="${td} text-align:left; white-space:nowrap;">${escapeHtml(m.name)}</td>${c.months.map(mo => `<td style="${td}"><input type="text" value="${escapeAttr((((r.data || {}).epms || {})[m.id] || {})[mo] || "")}" placeholder="%" onchange="evalSetEpms('${escapeAttr(m.id)}', '${mo}', this.value)" style="width:100%; min-width:50px; text-align:center; padding:3px 2px; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; box-sizing:border-box;" /></td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const indiv = grid("INDIVIDUAL PERFORMANCE", simple("Attendance (Absences)", cp.att.map(a => a ? a.abs : null)) + simple("Attendance (Tardiness)", cp.att.map(a => a ? a.tardy : null)));
+  const teamAll = grid("TEAM OVERALL PERFORMANCE SUMMARY", EVAL_TEAM_METRICS.map(([k, l]) => simple(l, c.team[k])).join(""));
+  const note = T.members.length ? `<div style="font-size:11.5px; color:var(--text3); margin-top:6px;">Team members counted (${T.members.length}): ${escapeHtml(T.members.map(m => m.name).join(", "))}. Team figures are the average of these people's monthly results — attendance from the Attendance data, Productivity / CXQA / CSAT from each person's own Agent evaluation.</div>` : `<div style="font-size:12px; color:var(--yellow); margin-top:6px;">No team members were found for ${escapeHtml(emp.name)} (agents — GM, SGM, APM — in the same team${evalLevel(emp.position) === "SPM" ? " / cluster" : ""}).</div>`;
+  return `<div style="${EVAL_H}">PERFORMANCE SUMMARY</div>
+    <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Evaluated on: personal attendance, team attendance, team KPIs and behavioral factors. Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now; Previous = the 12 months before.</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalMgrSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>${note}
+    <div style="${EVAL_H}">KEY PERFORMANCE INDICATORS [KPI]</div>${indiv}${teamAll}
+    <div style="font-size:13px; font-weight:800; margin:22px 0 0;">TEAM MEMBER PERFORMANCE SUMMARY</div>
+    ${T.members.length ? EVAL_TEAM_METRICS.map(([k, l]) => memberGrid(k, l)).join("") + epms : ""}`;
 }
 function evalPrevRow(r) { return evalRows.find(x => x.empId === r.empId && x.start === evalMonthAdd(r.start, -12)) || null; }
 function evalDelta(cur, ref) { return cur == null || ref == null ? null : evalRound1(cur - ref); }
@@ -12953,6 +13027,7 @@ function evalSummaryRows(emp, r, cp, prev) {
 function evalRefreshCalc() {
   const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId); if (!r || !emp) return;
   const cp = evalCompute(emp, r, toLocalYMD(new Date())), sb = document.getElementById("evSumBody");
+  if (r.track === "Manager") { if (sb) sb.innerHTML = evalMgrSummaryRows(emp, r, cp, evalPrevRow(r)); return; }
   if (sb) sb.innerHTML = evalSummaryRows(emp, r, cp, evalPrevRow(r));
   cp.items.forEach(it => { if (!cp.vals[it.k]) return; cp.vals[it.k].forEach((v, i) => { const el = document.getElementById(`evc_${it.k}_${i}`); if (el) el.textContent = evalFmt(it, v); }); });
 }
@@ -12977,6 +13052,7 @@ function evalTextArea(id, val, onch, ph, disabled) {
 const EVAL_BAR = "background:#7f7f7f; color:#fff; font-weight:700; font-size:12.5px; padding:5px 12px; display:flex; justify-content:space-between; align-items:center; margin-top:14px;";
 const EVAL_H = "font-size:15px; font-weight:800; color:#f08a4b; margin:24px 0 6px;";
 function evalBehavioralHtml(r) {
+  const BF = r.track === "Manager" ? EVAL_BF_MGR : EVAL_BF;
   const d = (r.data && r.data.bfr) || {}, avg = evalBfAvg(r.data);
   const opts = cur => `<option value="">—</option>` + Array.from({ length: 9 }, (_, i) => (1 + i * 0.5).toFixed(1)).map(v => `<option value="${v}" ${evalNum(cur) === Number(v) ? "selected" : ""}>${v}</option>`).join("");
   return `<div style="${EVAL_H}">BEHAVIORAL FACTORS</div>
@@ -12984,7 +13060,7 @@ function evalBehavioralHtml(r) {
     <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:6px;"><thead><tr style="color:var(--text2);"><th style="text-align:left; padding:4px 8px;">RATING</th><th style="padding:4px 8px;">SCORE</th><th style="text-align:left; padding:4px 8px;">DESCRIPTION</th></tr></thead><tbody>
     ${EVAL_SCALE.map(x => `<tr style="border-top:1px solid var(--border);"><td style="padding:5px 8px; font-weight:700;">${x[0]}</td><td style="padding:5px 8px; text-align:center; font-weight:700;">${x[1]}</td><td style="padding:5px 8px; color:var(--text2);">${escapeHtml(x[2])}</td></tr>`).join("")}</tbody></table>
     <div style="font-size:11.5px; color:var(--text3);">Rate each category from 1 to 5 in 0.5 steps. The Behavioral Factor score in the summary is the average of the ratings (now: <b id="evBfAvg">${avg == null ? "—" : avg.toFixed(1)}</b>). Comments are entered once a year.</div>
-    ${EVAL_BF.map(b => `<div style="${EVAL_BAR}"><span>${escapeHtml(b[1])}</span><span style="display:flex; align-items:center; gap:6px; background:#f08a4b; padding:2px 8px; border-radius:4px;">RATING: <select onchange="evalSetBfr('${b[0]}', 'r', this.value)" style="padding:2px 4px; border-radius:4px; border:1px solid var(--border); background:var(--surface); color:var(--text);">${opts((d[b[0]] || {}).r)}</select></span></div>
+    ${BF.map(b => `<div style="${EVAL_BAR}"><span>${escapeHtml(b[1])}</span><span style="display:flex; align-items:center; gap:6px; background:#f08a4b; padding:2px 8px; border-radius:4px;">RATING: <select onchange="evalSetBfr('${b[0]}', 'r', this.value)" style="padding:2px 4px; border-radius:4px; border:1px solid var(--border); background:var(--surface); color:var(--text);">${opts((d[b[0]] || {}).r)}</select></span></div>
       <div style="font-size:12px; color:var(--text2); padding:6px 4px;">${escapeHtml(b[2])}</div>
       <div style="font-size:11.5px; font-weight:700; margin:2px 0 3px;">Comment:</div>${evalTextArea("", (d[b[0]] || {}).c, `evalSetBfr('${b[0]}', 'c', this.value)`)}`).join("")}`;
 }
@@ -13023,7 +13099,7 @@ function renderEvaluation(box) {
       body = `<div style="border:1px dashed var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; font-size:13px;">This evaluation has no KPI items yet. <button class="btn btn-primary btn-sm" onclick="evalEditCfg()">Choose agent type &amp; KPI items</button></div>`;
     } else {
       const cp = evalCompute(emp, r, today);
-      body = `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
+      body = r.track === "Manager" ? evalManagerBodyHtml(emp, r, cp, today) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
         <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now. Previous = the 12 months before the start month (KPIs: the earlier evaluation, if one exists).</div>
         <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>
         <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:22px 0 4px; display:flex; justify-content:space-between; align-items:center;"><span>KEY PERFORMANCE INDICATORS [KPI]</span>${r.track === "Agent" ? `<button class="btn btn-secondary btn-sm" onclick="evalEditCfg()">&#9881; KPI items</button>` : ""}</div>
