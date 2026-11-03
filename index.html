@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-08";
+const BUILD_ID = "2026-11-03-11";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12768,7 +12768,7 @@ function evalBfAvg(data) {
   if (v.length) return evalRound1(v.reduce((a, b) => a + b, 0) / v.length);
   const x = evalNum(data && data.bf); return x == null ? null : x;
 }
-function evalMfDone(data) { const m = (data && data.mf) || {}; return !!(String(m.imp || "").trim() || String(m.ach || "").trim()); }
+function evalMfDone(data) { const m = (data && data.mf) || {}; return !!(String(m.imp || "").trim() || String(m.ach || "").trim() || String(m.opt || "").trim()); }
 function evalItems(data) { const set = EVAL_SETS[data && data.sub]; if (!set) return []; const on = (data.items && data.items.length) ? data.items : set.items.map(i => i.k); return set.items.filter(i => on.includes(i.k)); }
 // Everything a form shows, for one evaluation row. months[i] = attendance stats or null; vals[k][i] = KPI value; avg[k] = yearly figure.
 function evalCompute(emp, r, today) {
@@ -12777,7 +12777,7 @@ function evalCompute(emp, r, today) {
   const vals = {}, avg = {};
   items.forEach(it => {
     if (it.type === "score") { avg[it.k] = evalBfAvg(data); return; }
-    vals[it.k] = months.map((mo, i) => evalItemMonth(it, (data.m || {})[mo], att[i] ? att[i].due : 0));
+    vals[it.k] = months.map((mo, i) => (data.na || {})[mo] ? null : evalItemMonth(it, (data.m || {})[mo], att[i] ? att[i].due : 0));
     const v = vals[it.k].filter(x => x != null);
     avg[it.k] = it.type === "int" ? (v.length ? v.reduce((a, b) => a + b, 0) : null) : (v.length ? (it.type === "time" ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : evalRound1(v.reduce((a, b) => a + b, 0) / v.length)) : null);
   });
@@ -12794,7 +12794,7 @@ function evalTeamMembers(emp) {
 // One member's typed KPI (prod | cxqa | csat) for a month, from whichever of their agent evaluations covers that month.
 function evalMemberKpi(empId, month, key) {
   const row = evalRows.find(x => x.empId === String(empId) && month >= x.start && month <= evalMonthAdd(x.start, 11) && x.data && x.data.sub === "agent");
-  const v = row && row.data.m && row.data.m[month] ? evalNum(row.data.m[month][key]) : null;
+  const v = row && row.data.m && row.data.m[month] && !(row.data.na && row.data.na[month]) ? evalNum(row.data.m[month][key]) : null;
   return v == null ? null : evalRound1(v);
 }
 const EVAL_TEAM_METRICS = [["abs", "Attendance (Absences)"], ["tardy", "Attendance (Tardiness)"], ["prod", "Productivity"], ["cxqa", "CXQA Score"], ["csat", "CSAT Score"], ["epms", "EPMS Completion Rate"]];
@@ -12912,7 +12912,8 @@ async function openEvaluation() {
 function evalPick(id) { evalState.empId = id; evalState.view = "home"; evalState.setup = null; evalState.cur = null; evalState.cfg = null; renderHRModal(); }
 function evalNew() {
   const e = employees.find(x => String(x.id) === evalState.empId); if (!e) return;
-  evalState.setup = { start: toLocalYMD(new Date()).slice(0, 7), track: evalSuggestTrack(e), sub: "agent", items: EVAL_SETS.agent.items.map(i => i.k) }; renderHRModal();
+  const hm = evalProbHire(e).slice(0, 7), now = toLocalYMD(new Date()).slice(0, 7); // a new hire's year starts at the hire month
+  evalState.setup = { start: hm && hm <= now && hm > evalMonthAdd(now, -12) ? hm : now, track: evalSuggestTrack(e), sub: "agent", items: EVAL_SETS.agent.items.map(i => i.k) }; renderHRModal();
 }
 function evalSetupSet(k, v) {
   const s = evalState.setup; if (!s) return; s[k] = v;
@@ -12934,7 +12935,7 @@ async function evalSaveSetup() {
   if (!s || !e || evalState.busy) return;
   if (!/^\d{4}-\d{2}$/.test(s.start)) { toast("Pick the start month first.", "error"); return; }
   if (!s.track) { toast("Choose Agent or Manager evaluation.", "error"); return; }
-  if (evalRows.some(r => r.empId === evalState.empId && r.start === s.start)) { toast("An evaluation starting that month already exists.", "error"); return; }
+  if (evalRows.some(r => r.empId === evalState.empId && r.track !== "Probation" && r.start === s.start)) { toast("An evaluation starting that month already exists.", "error"); return; }
   const data = s.track === "Agent" ? { sub: s.sub, items: s.items.slice(), m: {}, bf: "" } : {};
   evalState.busy = true; renderHRModal();
   try {
@@ -12942,6 +12943,19 @@ async function evalSaveSetup() {
     const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
     const row = { itemId: created.id, empId: String(e.id), start: s.start, track: s.track, superior: "", validated: "", data };
     evalRows.push(row); evalState.setup = null; evalState.cur = row; evalState.view = "form";
+  } catch (err) { console.warn(err); toast("Could not save the evaluation (is the “Data” column added to the list?).", "error"); }
+  evalState.busy = false; renderHRModal();
+}
+async function evalNewProb() { // the probationary evaluation always runs from the hire date
+  const e = employees.find(x => String(x.id) === evalState.empId); if (!e || evalState.busy) return;
+  const hire = evalProbHire(e); if (!hire) { toast("This person has no hire date yet — set it in the HR info first.", "error"); return; }
+  if (evalRows.some(r => r.empId === evalState.empId && r.track === "Probation")) { toast("A probationary evaluation already exists.", "error"); return; }
+  evalState.busy = true;
+  try {
+    const data = { chk: {} }, fields = { Title: `${e.id}|prob`, EmployeeId: String(e.id), EmployeeName: e.name, StartMonth: hire.slice(0, 7), Track: "Probation", Superior: "", ValidatedBy: "", Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() };
+    const created = await graphFetch(`/sites/${siteId}/lists/${evalListId}/items`, { method: "POST", body: JSON.stringify({ fields }) });
+    const row = { itemId: created.id, empId: String(e.id), start: hire.slice(0, 7), track: "Probation", superior: "", validated: "", data };
+    evalRows.push(row); evalState.cur = row; evalState.view = "form";
   } catch (err) { console.warn(err); toast("Could not save the evaluation (is the “Data” column added to the list?).", "error"); }
   evalState.busy = false; renderHRModal();
 }
@@ -12968,6 +12982,7 @@ function evalSetField(key, val) { // key: superior | validated
   if (key === "superior") renderHRModal(); // blank → the automatic name comes back
 }
 function evalSetSuper(v) { const r = evalState.cur, e = r && employees.find(x => String(x.id) === r.empId); if (!e) return; v = v.trim(); evalSetField("superior", v === evalAutoSuperior(e, r.track) ? "" : v); }
+function evalSetNa(month, on) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.na = r.data.na || {}; if (on) r.data.na[month] = true; else delete r.data.na[month]; evalPersist(); renderHRModal(); }
 function evalSetCell(month, key, val) {
   const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.m = r.data.m || {};
   const row = r.data.m[month] = r.data.m[month] || {}; val = String(val).trim();
@@ -13026,10 +13041,12 @@ function evalRefreshCalc() {
   cp.items.forEach(it => { if (!cp.vals[it.k]) return; cp.vals[it.k].forEach((v, i) => { const el = document.getElementById(`evc_${it.k}_${i}`); if (el) el.textContent = evalFmt(it, v); }); });
 }
 function evalMonthlyHtml(emp, r, cp) {
-  const inp = (mo, key, ph) => `<input type="text" value="${escapeAttr(((r.data.m || {})[mo] || {})[key] || "")}" placeholder="${ph || ""}" onchange="evalSetCell('${mo}', '${key}', this.value)" style="width:100%; min-width:58px; text-align:center; padding:4px 3px; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; box-sizing:border-box;" />`;
+  const na = mo => !!(r.data.na || {})[mo];
+  const inp = (mo, key, ph) => `<input type="text" ${na(mo) ? "disabled" : ""} value="${escapeAttr(((r.data.m || {})[mo] || {})[key] || "")}" placeholder="${na(mo) ? "N/A" : (ph || "")}" onchange="evalSetCell('${mo}', '${key}', this.value)" style="width:100%; min-width:58px; text-align:center; padding:4px 3px; border:1px solid var(--border); border-radius:4px; background:var(--surface); color:var(--text); font-size:12px; box-sizing:border-box;" />`;
   const td = EVAL_TD.replace("padding:7px 10px;", "padding:4px 5px;");
   const row = (label, cells, bold) => `<tr><td style="${td} text-align:left; ${bold ? "font-weight:700;" : "padding-left:22px; color:var(--text2);"} white-space:nowrap;">${label}</td>${cells.map(c => `<td style="${td}">${c}</td>`).join("")}</tr>`;
-  let h = row("Attendance (Absences)", cp.att.map(a => a && a.abs != null ? a.abs.toFixed(1) + "%" : "—"), true) + row("Attendance (Tardiness)", cp.att.map(a => a ? a.tardy.toFixed(1) + "%" : "—"), true);
+  let h = row(`KPI N/A <span style="font-weight:400; font-size:10.5px; color:var(--text3);">(training month)</span>`, cp.months.map(mo => `<input type="checkbox" ${na(mo) ? "checked" : ""} onchange="evalSetNa('${mo}', this.checked)" title="No KPI scores this month (e.g. still in training)" />`), true)
+    + row("Attendance (Absences)", cp.att.map(a => a && a.abs != null ? a.abs.toFixed(1) + "%" : "—"), true) + row("Attendance (Tardiness)", cp.att.map(a => a ? a.tardy.toFixed(1) + "%" : "—"), true);
   cp.items.forEach(it => {
     if (it.type === "score") return;
     if (it.type === "ratio" || it.type === "ratioN") {
@@ -13084,14 +13101,150 @@ function evalBehavioralHtml(r) {
       <div style="font-size:11.5px; font-weight:700; margin:2px 0 3px;">Comment:</div>${evalTextArea("", (d[b[0]] || {}).c, `evalSetBfr('${b[0]}', 'c', this.value)`)}`).join("")}`;
 }
 function evalFeedbackHtml(r) {
-  const mf = (r.data && r.data.mf) || {}, ef = (r.data && r.data.ef) || {}, ok = evalMfDone(r.data);
+  const mf = (r.data && r.data.mf) || {}, ef = (r.data && r.data.ef) || {}, ok = evalMfDone(r.data), prob = r.track === "Probation";
+  const probExtra = prob ? `<div style="${EVAL_BAR} margin-top:8px; justify-content:space-around;">${EVAL_PROB_MF.map(([k, l]) => `<label style="display:flex; gap:6px; align-items:center;"><input type="checkbox" ${(mf.types || []).includes(k) ? "checked" : ""} onchange="evalSetMfType('${k}', this.checked)" /> ${l}</label>`).join("")}</div>
+      <div style="font-size:11.5px; font-weight:700; margin:6px 0 3px;">Comment:</div>${evalTextArea("", mf.opt, "evalSetMf('opt', this.value)")}` : "";
   return `<div style="${EVAL_H}">MANAGER'S FEEDBACK</div>
-    ${EVAL_MF.map(m => `<div style="${EVAL_BAR} margin-top:8px;"><span>${escapeHtml(m[1])}</span></div><div style="font-size:12px; color:var(--text2); padding:6px 4px;">${escapeHtml(m[2])}</div>
-      <div style="font-size:11.5px; font-weight:700; margin:2px 0 3px;">Comment:</div>${evalTextArea("", mf[m[0]], `evalSetMf('${m[0]}', this.value)`)}`).join("")}
+    ${(prob ? EVAL_MF.slice(0, 1) : EVAL_MF).map(m => `<div style="${EVAL_BAR} margin-top:8px;"><span>${escapeHtml(m[1])}</span></div><div style="font-size:12px; color:var(--text2); padding:6px 4px;">${escapeHtml(m[2])}</div>
+      <div style="font-size:11.5px; font-weight:700; margin:2px 0 3px;">Comment:</div>${evalTextArea("", mf[m[0]], `evalSetMf('${m[0]}', this.value)`)}`).join("")}${probExtra}
     <div style="${EVAL_H}">EMPLOYEE'S FEEDBACK</div>
     <div style="font-size:12px; color:var(--text2); padding:2px 4px 6px;">${escapeHtml(EVAL_EF_TEXT)}</div>
     <div id="evEfNote" style="${ok ? "display:none; " : ""}font-size:11.5px; color:var(--yellow); margin-bottom:4px;">Available after the manager's feedback has been entered.</div>
     <div style="font-size:11.5px; font-weight:700; margin:2px 0 3px;">Employee's Comments/Feedback:${ef.at ? ` <span style="font-weight:400; color:var(--text3);">(entered ${escapeHtml(ef.at)})</span>` : ""}</div>${evalTextArea("evEf", ef.c, "evalSetEf(this.value)", "", !ok)}`;
+}
+// ── Probationary evaluation (5 months from the hire date) ──
+// Checkpoints: 10th day · 1st month · 3rd month · 5th month. Attendance is cumulative from the hire date to each checkpoint.
+const EVAL_CHK = [["d10", "10th Day"], ["m1", "1st Month"], ["m3", "3rd Month"], ["m5", "5th Month"]];
+const EVAL_CHK_OPTS = ["N/A", "On-Going", "Completed", "Failed"];
+const EVAL_CHK_COLOR = { "N/A": "var(--text3)", "On-Going": "var(--yellow)", "Completed": "var(--green)", "Failed": "var(--red, #ef4444)" };
+const EVAL_PROB = [
+  { k: "w1", title: "1st WEEK TRAINING ORIENTATION", groups: [
+    ["1. Company Introduction", ["Overview, Policies, House Rules & Regulations", "Employee Handbook & Acknowledgment Form"]],
+    ["2. Security and Data privacy", ["Cybercrime prevention & Data privacy Act", "Game Operations & Role Expectations"]],
+    ["3. Company Services & Game Operations Overview", ["Game Master Responsibilities & Requirements", "People Behind a Successful Video Game"]],
+    ["4. Customer Support Essentials", ["CS Ticketing System & Response Composition", "Player Life Cycle & Revenue Models", "Emergency Report Protocols"]],
+    ["5. Community & Game Management", ["Game Management & Community Management", "Social Networking & Marketing"]],
+    ["6. Performance & Quality Assurance", ["CS Exercises (1 & 2)", "Quality Assurance Basics"]],
+    ["7. Health & Workplace Safety", ["Occupational Health & Safety (OHS)", "Smoke Cessation"]],
+    ["8. Skill Development", ["Essay Writing (Novice 2)"]]] },
+  { k: "w2", title: "2nd WEEK TRAINING ORIENTATION", groups: [
+    ["1. Understanding the Client & Team", ["Client & Team Information", "Introduction to CS & Supported Games"]],
+    ["2. Customer Support & Community Management", ["CS Tickets & Live Chat Handling", "Community Management & SNS Monitoring"]],
+    ["3. Practical Exercises & Game Knowledge", ["CS Exercises (3 & 4)", "Game Management & Immersion"]],
+    ["4. Tools & Documentation", ["Support Tools & Reporting", "Documentation Best Practices"]],
+    ["5. Evaluation & Assessment", ["Client & Team Information", "10-Day Training Evaluation"]]] },
+  { k: "tm", title: "TEAM-SPECIFIC TRAINING CHECKLIST", groups: [
+    ["1. Team & Game Operations", ["Team Information & Communication", "Introduction to CS & Supported Games", "CS Tickets & Live Chat Handling", "Community Management & SNS Monitoring", "Game Management & Immersion", "Tools, Reporting, & Documentation", "CS Exercises (3 & 4)"]],
+    ["2. Customer Support – Tier 1 & 2 (Merged for Efficiency)", ["Account & Login Issues (Email Change, Linking, Suspension)", "Billing & payment Support (Denied/Missing purchases, Refund)", "Player Support & Ticket Handling (Rewards, Shop, Gameplay)", "Policy & Compliance (Hacks, Exploits, Harassment Reports, etc.)", "Sales & Feedback (User Suggestions, Packages, Coupons)"]],
+    ["3. Community Operations", ["Discord, Facebook, Instagram Monitoring & Moderation", "Community Documentation & Summaries", "Announcements (Contents, Grammar, and Typo Check)"]],
+    ["4. Internal Operations", ["Attendance & Emergency Reporting", "EoS & Personal KPI Tracking", "CCU Stats & DR Content Management", "Endorsements & Approvals"]],
+    ["5. Tools & System Operations", ["Account Management (Ban Status, Release, Escalations, Blocks)", "System & Documentation (SharePoint , CCU Tool)", "Fraud Prevention & Security"]]] }
+];
+const EVAL_PROB_TARGET = { abs: 98, tardy: 98, bf: 3.0, test: 95, prog: 100 };
+const EVAL_PROB_MF = [["prob", "For Probationary"], ["ext", "For Probationary Extension"], ["reg", "For Regularization"], ["oth", "Others (Please Specify)"]];
+// every checklist item with a stable id: w1_1_1 = section w1, group 1, item 1
+function evalProbItems(sectionKey) {
+  const out = [];
+  EVAL_PROB.forEach(sec => { if (sectionKey && sec.k !== sectionKey) return; sec.groups.forEach((g, gi) => g[1].forEach((label, ii) => out.push({ id: `${sec.k}_${gi + 1}_${ii + 1}`, sec: sec.k, group: `${sec.k}_${gi + 1}`, label }))); });
+  return out;
+}
+// Checkpoint end dates from the hire date (YYYY-MM-DD).
+function evalProbPoints(hire) {
+  if (!hire) return {};
+  const m = n => ymdAdd(toLocalYMD(addMonths(hire, n)), -1);
+  return { d10: ymdAdd(hire, 9), m1: m(1), m3: m(3), m5: m(5) };
+}
+// Cumulative attendance from `from` to `to` (both inclusive). Tardiness base = 480 min per 30 days of the period.
+function evalRangeStats(empId, from, to, today) {
+  if (from > to) return null;
+  const days = attMonthDays(empId, from, to, today), sched = schedMap.get(String(empId)) || null;
+  let due = 0, span = 0;
+  for (let d = from; d <= to; d = ymdAdd(d, 1)) {
+    span++;
+    const works = sched ? !!schedWindow(sched, d) : (ymdDow(d) >= 1 && ymdDow(d) <= 5), k = days[d] && days[d].k;
+    if (works && k !== "holiday" && k !== "rest") due++;
+  }
+  const t = attTotals(days), base = EVAL_TARDY_BASE * Math.max(span, 1) / 30;
+  return { due, absent: t.absent, lateMin: t.lateMin, abs: due > 0 ? evalRound1(Math.max(0, (due - t.absent) / due * 100)) : null, tardy: evalRound1(Math.max(0, (base - t.lateMin) / base * 100)) };
+}
+// Training progress = completed ÷ (items not N/A) × 100 at one checkpoint.
+function evalProbProgress(data, cp, sectionKey) {
+  let done = 0, tot = 0; const chk = (data && data.chk) || {};
+  evalProbItems(sectionKey).forEach(it => { const v = (chk[it.id] || {})[cp]; if (v === "N/A") return; tot++; if (v === "Completed") done++; });
+  return tot ? evalRound1(done / tot * 100) : null;
+}
+function evalProbBf(data, cp) { // typed score for the checkpoint; the 5th month falls back to the average of the five category ratings
+  const typed = evalNum(((data && data.bfc) || {})[cp]); if (typed != null) return typed;
+  return cp === "m5" ? evalBfAvg(data) : null;
+}
+function evalProbHire(emp) { return emp && emp.hireDate ? String(emp.hireDate).slice(0, 10) : ""; }
+function evalTestNA(d, c) { return d && (d.testNA === true || !!(d.testNA && d.testNA[c])); } // per checkpoint (old rows stored one flag for all four)
+function evalProbCompute(emp, r, today) {
+  const hire = evalProbHire(emp), pts = hire ? evalProbPoints(hire) : {}, out = {};
+  EVAL_CHK.forEach(([c]) => {
+    const reached = pts[c] && pts[c] < today, st = reached ? evalRangeStats(emp.id, hire, pts[c], today) : null;
+    const d = r.data || {};
+    out[c] = { end: pts[c] || "", reached: !!reached, abs: st ? st.abs : null, tardy: st ? st.tardy : null, prog: evalProbProgress(d, c), team: evalProbProgress(d, c, "tm"), bf: evalProbBf(d, c),
+      test: evalTestNA(d, c) ? "N/A" : evalNum((d.test || {})[c]) };
+  });
+  return out;
+}
+function evalSetChk(id, cp, val) {
+  const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.chk = r.data.chk || {};
+  const row = r.data.chk[id] = r.data.chk[id] || {};
+  if (val === "N/A") EVAL_CHK.forEach(([c]) => { row[c] = "N/A"; }); // N/A applies to the whole item
+  else if (val === "") delete row[cp]; else row[cp] = val;
+  evalPersist();
+  if (val === "N/A") renderHRModal(); else evalProbRefresh();
+}
+function evalSetProbNote(group, val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.notes = r.data.notes || {}; r.data.notes[group] = String(val).trim(); if (!r.data.notes[group]) delete r.data.notes[group]; evalPersist(); }
+function evalSetProbSn(val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.sn = String(val).trim(); evalPersist(); }
+function evalSetProbBf(cp, val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.bfc = r.data.bfc || {}; if (val === "") delete r.data.bfc[cp]; else r.data.bfc[cp] = val; evalPersist(); }
+function evalSetProbTest(cp, val) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.test = r.data.test || {}; val = String(val).trim(); if (val === "") delete r.data.test[cp]; else r.data.test[cp] = val; evalPersist(); }
+function evalSetTestNA(cp, on) {
+  const r = evalState.cur; if (!r) return; r.data = r.data || {};
+  const m = {}; EVAL_CHK.forEach(([k]) => { if (evalTestNA(r.data, k)) m[k] = true; }); // convert the old single flag
+  if (on) m[cp] = true; else delete m[cp]; r.data.testNA = m; evalPersist(); renderHRModal();
+}
+function evalSetMfType(k, on) { const r = evalState.cur; if (!r) return; r.data = r.data || {}; r.data.mf = r.data.mf || {}; const t = (r.data.mf.types || []).filter(x => x !== k); if (on) t.push(k); r.data.mf.types = t; evalPersist(); }
+function evalProbRefresh() {
+  const r = evalState.cur, emp = r && employees.find(x => String(x.id) === r.empId); if (!emp) return;
+  const c = evalProbCompute(emp, r, toLocalYMD(new Date())), set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  EVAL_CHK.forEach(([k]) => { set(`evp_tp_${k}`, c[k].prog == null ? "—" : c[k].prog.toFixed(1) + "%"); set(`evp_tr_${k}`, c[k].team == null ? "—" : c[k].team.toFixed(1) + "%"); });
+}
+function evalProbBodyHtml(emp, r, today) {
+  const c = evalProbCompute(emp, r, today), d = r.data || {}, chk = d.chk || {}, hire = evalProbHire(emp);
+  const pc = v => v == null ? `<span style="color:var(--text3);">—</span>` : v.toFixed(1) + "%";
+  const th = `${EVAL_TH} white-space:nowrap;`, td = EVAL_TD.replace("padding:7px 10px;", "padding:5px 8px;");
+  const sel = (opts, cur, onch, style) => `<select onchange="${onch}" style="padding:3px 4px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); font-size:12px; ${style || ""}">${opts.map(o => `<option value="${escapeAttr(o[0])}" ${String(cur) === String(o[0]) ? "selected" : ""}>${escapeHtml(o[1])}</option>`).join("")}</select>`;
+  const bfOpts = [["", "—"]].concat(Array.from({ length: 9 }, (_, i) => { const v = (1 + i * 0.5).toFixed(1); return [v, v]; }));
+  const cell = (inner) => `<td style="${td}">${inner}</td>`;
+  const sumRow = (label, target, cells) => `<tr><td style="${td} text-align:left; font-weight:700;">${label}</td>${cell(target)}${cells.map(cell).join("")}</tr>`;
+  const pending = `<span style="color:var(--text3);" title="Not reached yet">—</span>`;
+  const summary = `<div style="${EVAL_H}">PERFORMANCE SUMMARY</div>
+    <div style="font-size:12.5px; font-weight:800; margin-bottom:4px;">AGENT PERFORMANCE</div>
+    <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Hired ${escapeHtml(evalHireText(hire))}. Checkpoints: ${EVAL_CHK.map(([k, l]) => `${l} (${c[k].end || "—"})`).join(" · ")}. Attendance is cumulative from the hire date and appears once a checkpoint has passed. Tardiness: the cumulative late minutes are converted to a monthly figure (× 30 ÷ days) and scored against 480 minutes.</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${th} text-align:left;">CRITERIA</th><th style="${th}">Target</th>${EVAL_CHK.map(([k, l]) => `<th style="${th}">${l}</th>`).join("")}</tr></thead><tbody>
+    ${sumRow("Attendance (Absences)", EVAL_PROB_TARGET.abs.toFixed(1) + "%", EVAL_CHK.map(([k]) => c[k].reached ? pc(c[k].abs) : pending))}
+    ${sumRow("Attendance (Tardiness)", EVAL_PROB_TARGET.tardy.toFixed(1) + "%", EVAL_CHK.map(([k]) => c[k].reached ? pc(c[k].tardy) : pending))}
+    ${sumRow("Behavioral Factor", EVAL_PROB_TARGET.bf.toFixed(1), EVAL_CHK.map(([k]) => sel(bfOpts, ((d.bfc || {})[k]) || (k === "m5" && c[k].bf != null ? c[k].bf.toFixed(1) : ""), `evalSetProbBf('${k}', this.value)`, "width:64px;")))}
+    ${sumRow("Test Score", EVAL_PROB_TARGET.test + "%", EVAL_CHK.map(([k]) => { const na = evalTestNA(d, k); return `<div style="display:flex; gap:6px; align-items:center; justify-content:center;"><input type="text" ${na ? "disabled" : ""} value="${na ? "" : escapeAttr((d.test || {})[k] || "")}" placeholder="${na ? "N/A" : "%"}" onchange="evalSetProbTest('${k}', this.value)" style="width:58px; text-align:center; padding:3px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); font-size:12px;" /><label style="font-size:11px; color:var(--text3); white-space:nowrap;"><input type="checkbox" ${na ? "checked" : ""} onchange="evalSetTestNA('${k}', this.checked)" /> N/A</label></div>`; }))}
+    ${sumRow("Training Progress", EVAL_PROB_TARGET.prog + "%", EVAL_CHK.map(([k]) => `<span id="evp_tp_${k}">${c[k].prog == null ? "—" : c[k].prog.toFixed(1) + "%"}</span>`))}
+    </tbody></table>
+    <div style="font-size:11.5px; font-weight:700; margin:8px 0 3px;">NOTES:</div>${evalTextArea("", d.sn, "evalSetProbSn(this.value)")}`;
+  const section = sec => {
+    const rows = sec.groups.map((g, gi) => {
+      const gid = `${sec.k}_${gi + 1}`;
+      const items = g[1].map((label, ii) => { const id = `${gid}_${ii + 1}`, row = chk[id] || {};
+        return `<tr><td style="${td} text-align:left; padding-left:22px; color:var(--text2);">${escapeHtml(label)}</td>${EVAL_CHK.map(([k]) => cell(sel([["", "—"]].concat(EVAL_CHK_OPTS.map(o => [o, o])), row[k] || "", `evalSetChk('${id}', '${k}', this.value)`, `color:${EVAL_CHK_COLOR[row[k]] || "var(--text)"}; width:100%; min-width:92px;`))).join("")}<td style="${td}"></td></tr>`; }).join("");
+      return `<tr><td style="${td} text-align:left; font-weight:700; border-bottom:2px solid var(--border);">${escapeHtml(g[0])}</td><td colspan="4" style="${td} border-bottom:2px solid var(--border);"></td><td style="${td} border-bottom:2px solid var(--border);"><input type="text" value="${escapeAttr((d.notes || {})[gid] || "")}" placeholder="Notes" onchange="evalSetProbNote('${gid}', this.value)" style="width:100%; box-sizing:border-box; padding:3px 6px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); font-size:12px;" /></td></tr>${items}`;
+    }).join("");
+    const prog = sec.k === "tm" ? `<tr><td style="${td} text-align:left; font-weight:800;">PROGRESSION RATE:</td>${EVAL_CHK.map(([k]) => cell(`<b id="evp_tr_${k}">${c[k].team == null ? "—" : c[k].team.toFixed(1) + "%"}</b>`)).join("")}<td style="${td}"></td></tr>` : "";
+    return `<div style="${EVAL_BAR} margin-top:16px; font-size:13.5px;"><span>${sec.title}</span></div>
+      <div style="overflow-x:auto;"><table style="width:100%; min-width:900px; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${th} text-align:left;">&nbsp;</th>${EVAL_CHK.map(([k, l]) => `<th style="${th}">${l}</th>`).join("")}<th style="${th} text-align:left; width:200px;">NOTES:</th></tr></thead><tbody>${rows}${prog}</tbody></table></div>`;
+  };
+  return summary + `<div style="${EVAL_H}">PROBATIONARY / TRAINING PROGRESS</div>
+    <div style="font-size:11.5px; color:var(--text3); margin-bottom:4px;">Choose N/A on any checkpoint to mark the whole item N/A (it is then left out of the progress rate).</div>` + EVAL_PROB.map(section).join("");
 }
 function renderEvaluation(box) {
   box.style.width = "min(1120px, 97vw)";
@@ -13118,14 +13271,14 @@ function renderEvaluation(box) {
       body = `<div style="border:1px dashed var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; font-size:13px;">This evaluation has no KPI items yet. <button class="btn btn-primary btn-sm" onclick="evalEditCfg()">Choose agent type &amp; KPI items</button></div>`;
     } else {
       const cp = evalCompute(emp, r, today);
-      body = r.track === "Manager" ? evalManagerBodyHtml(emp, r, cp, today) + evalAdminHtml(emp, r) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
+      body = r.track === "Probation" ? evalProbBodyHtml(emp, r, today) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : r.track === "Manager" ? evalManagerBodyHtml(emp, r, cp, today) + evalAdminHtml(emp, r) + evalBehavioralHtml(r) + evalFeedbackHtml(r) : `<div style="font-size:15px; font-weight:800; color:#f08a4b; margin:20px 0 6px;">PERFORMANCE SUMMARY</div>
         <div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Current = average of the monthly figures from ${escapeHtml(evalMonthLabel(r.start))} to now. Previous = the 12 months before the start month (KPIs: the earlier evaluation, if one exists).</div>
         <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="${EVAL_TH} text-align:left;">CRITERIA</th><th style="${EVAL_TH}">Target</th><th style="${EVAL_TH}">Previous</th><th style="${EVAL_TH}">Current</th><th style="${EVAL_TH}">vs Previous</th><th style="${EVAL_TH}">vs. Target</th></tr></thead><tbody id="evSumBody">${evalSummaryRows(emp, r, cp, evalPrevRow(r))}</tbody></table>
         <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:22px 0 4px; display:flex; justify-content:space-between; align-items:center;"><span>KEY PERFORMANCE INDICATORS [KPI]</span>${r.track === "Agent" ? `<button class="btn btn-secondary btn-sm" onclick="evalEditCfg()">&#9881; KPI items</button>` : ""}</div>
         ${r.track === "Agent" ? `<div style="font-size:11.5px; color:var(--text3); margin-bottom:6px;">Type the monthly figures (blank = not counted). Percentages as 97.3, times as 0:09:02. ${r.data.sub === "qa" ? "Rates are calculated for you; Total Working Days can be left blank to use the scheduled days." : ""} Attendance fills in automatically.</div>${evalMonthlyHtml(emp, r, cp)}` : `<div style="font-size:12px; color:var(--text3);">Manager KPIs will be added next.</div>`}
         ${evalAdminHtml(emp, r)}${r.track === "Agent" && cp.items.some(i => i.k === "bf") ? evalBehavioralHtml(r) : ""}${evalFeedbackHtml(r)}`;
     }
-    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${escapeHtml(evalPeriodLabel(r.start))}`, true) + `
+    box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Probation" ? "Probationary" : r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${r.track === "Probation" ? escapeHtml(evalHireText(evalProbHire(emp))) + " – " + escapeHtml(evalHireText(evalProbPoints(evalProbHire(emp)).m5)) : escapeHtml(evalPeriodLabel(r.start))}`, true) + `
       <div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 18px;">
         <div><div style="${lab}">Employee Name:</div>${ro(emp.name)}</div><div><div style="${lab}">Position:</div>${ro(emp.position)}</div>
@@ -13154,9 +13307,11 @@ function renderEvaluation(box) {
       ${s.track === "Agent" ? evalCfgHtml(s, "setup") : ""}
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;"><button class="btn btn-secondary" onclick="evalCancelSetup()">Cancel</button><button class="btn btn-primary" ${evalState.busy ? "disabled" : ""} onclick="evalSaveSetup()">${evalState.busy ? "Saving…" : "Start evaluation"}</button></div></div>`;
   } else if (emp) {
-    body = `<div style="margin-top:12px;">${mine.length ? mine.map(r => `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track} evaluation</div></div><span style="color:var(--accent); font-size:12px;">Open &#9654;</span></div>`).join("")
+    body = `<div style="margin-top:12px;">${mine.length ? mine.map(r => `<div onclick="evalOpenForm('${escapeAttr(r.itemId)}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:8px;"><div><b>${r.track === "Probation" ? "Probationary evaluation" : escapeHtml(evalPeriodLabel(r.start))}</b><div style="font-size:12px; color:var(--text2);">${r.track === "Probation" ? "From the hire date to the 5th month" : (r.track === "Agent" && r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : r.track) + " evaluation"}</div></div><span style="color:var(--accent); font-size:12px;">Open &#9654;</span></div>`).join("")
       : `<div style="color:var(--text3); font-size:13px; margin-bottom:10px;">No evaluation yet for ${escapeHtml(emp.name)}.</div>`}
-      <button class="btn btn-primary btn-sm" onclick="evalNew()">+ ${mine.length ? "New yearly evaluation" : "Start the first evaluation"}</button></div>`;
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">${mine.some(r => r.track === "Probation") ? "" : `<button class="btn btn-primary btn-sm" onclick="evalNewProb()">+ Probationary evaluation</button>`}
+      <button class="btn btn-primary btn-sm" onclick="evalNew()">+ ${mine.some(r => r.track !== "Probation") ? "New yearly evaluation" : "Yearly evaluation (Agent / Manager)"}</button></div>
+      ${!mine.length && emp.hireDate && evalProbHire(emp) > evalMonthAdd(toLocalYMD(new Date()).slice(0, 7), -6) + "-01" ? `<div style="font-size:11.5px; color:var(--text3); margin-top:8px;">New hire: open <b>both</b> evaluations — the probationary one (first 5 months) and the yearly one (keeps running from the hire month). Attendance is shared between them.</div>` : ""}</div>`;
   }
   box.innerHTML = head("Performance Evaluation", "Yearly evaluation form. Pick an employee, then choose the start month of the 12-month period.", false) + `<div style="margin-top:8px;">${picker}</div>${body}`;
 }
