@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-04-02";
+const BUILD_ID = "2026-11-04-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13030,6 +13030,7 @@ function evalSetMf(k, val) {
 }
 function evalSetEf(val) {
   const r = evalState.cur; if (!r || !evalMfDone(r.data)) return; r.data = r.data || {}; r.data.ef = { c: String(val).trim(), at: String(val).trim() ? toLocalYMD(new Date()) : "" };
+  const rq = document.getElementById("evEfReq"); if (rq) rq.style.display = r.data.ef.c ? "none" : "";
   evalPersist();
 }
 function evalSyncEf() { // unlock / lock the employee box without re-drawing the page (keeps typing focus)
@@ -13321,7 +13322,6 @@ function renderEvaluation(box) {
     const ro = v => `<div style="background:var(--surface2); border-radius:4px; padding:7px 10px; text-align:center; min-height:32px;">${v ? escapeHtml(v) : "&nbsp;"}</div>`;
     const auto = evalAutoSuperior(emp, r.track);
     const supInp = `<input type="text" value="${escapeAttr(r.superior || auto)}" maxlength="80" onchange="evalSetSuper(this.value)" style="${fld} width:100%; text-align:center;" /><div style="font-size:10.5px; color:var(--text3); margin-top:2px;">${r.superior ? "Typed in manually — clear the box to go back to the automatic name." : (auto ? "Automatic — type to override." : "No superior could be worked out automatically — type one.")}</div>`;
-    const valInp = `<input type="text" value="${escapeAttr(r.validated)}" maxlength="80" onchange="evalSetField('validated', this.value.trim())" style="${fld} width:100%; text-align:center;" />`;
     let body = "";
     const a = emp && evalPeriod(emp.id, r.start, today), nSched = !schedMap.has(String(emp.id));
     if (r.track === "Agent" && evalState.cfg) {
@@ -13339,18 +13339,18 @@ function renderEvaluation(box) {
         ${evalAdminHtml(emp, r)}${r.track === "Agent" && cp.items.some(i => i.k === "bf") ? evalBehavioralHtml(r) : ""}${evalFeedbackHtml(r)}`;
     }
     box.innerHTML = head(`Performance Evaluation — ${escapeHtml(emp.name)}`, `${r.track === "Probation" ? "Probationary" : r.track === "Agent" ? (r.data && r.data.sub ? EVAL_SETS[r.data.sub].label : "Agent") : "Manager"} evaluation · ${r.track === "Probation" ? escapeHtml(evalHireText(evalProbHire(emp))) + " – " + escapeHtml(evalHireText(evalProbPoints(evalProbHire(emp)).m5)) : escapeHtml(evalPeriodLabel(r.start))} · ${evalStatusBadge(r)}`, true) + `
-      ${(() => { const nx = evalNextStage(r); return nx && evalCanSign(r, nx) ? `<div style="margin:6px 0; padding:8px 12px; border:1px solid var(--accent); border-radius:8px; font-size:12.5px;">&#9998; Your signature is needed (${escapeHtml(evalStageLabel(r, nx))}) — review the evaluation and sign at the bottom of the page.</div>` : ""; })()}
+      ${(() => { const nx = evalNextStage(r); return nx && evalCanSign(r, nx) ? `<div style="margin:6px 0; padding:10px 14px; border:2px solid var(--yellow); background:color-mix(in srgb, var(--yellow) 14%, transparent); border-radius:8px; font-size:13px;">${nx === "emp" ? "&#9998; <b>Action needed:</b> review your evaluation, <b>write your feedback</b> in the Employee's Feedback box (required), then sign at the bottom of the page." : `&#9998; Your signature is needed (${escapeHtml(evalStageLabel(r, nx))}) — review the evaluation and sign at the bottom of the page.`}</div>` : ""; })()}
       <div id="evBody"><div style="font-size:15px; font-weight:800; color:#f08a4b; margin:12px 0 4px;">EMPLOYEE INFORMATION</div>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 18px;">
         <div><div style="${lab}">Employee Name:</div>${ro(emp.name)}</div><div><div style="${lab}">Position:</div>${ro(emp.position)}</div>
         <div><div style="${lab}">Department:</div>${ro(displayTeam(emp))}</div><div><div style="${lab}">Immediate Superior:</div>${supInp}</div>
-        <div><div style="${lab}">Hired Date:</div>${ro(evalHireText(emp.hireDate))}</div><div><div style="${lab}">Validated By:</div>${valInp}</div>
+        <div><div style="${lab}">Hired Date:</div>${ro(evalHireText(emp.hireDate))}</div><div></div>
       </div>` + body + `</div>
       <details style="margin-top:16px;" ${a.months.some(m => !m.recorded) ? "open" : ""}><summary style="cursor:pointer; font-size:12.5px; font-weight:700;">Attendance detail (due days, absences, late minutes)${a.months.some(m => !m.recorded) ? ` <span style="color:var(--yellow); font-weight:600;">— ${a.months.filter(m => !m.recorded).length} month(s) not recorded</span>` : ""}</summary>
       <div style="font-size:11.5px; color:var(--text3); margin:6px 0;">A month counts only after attendance has been recorded for it (late / absent entries, or “No issues”, or HR closing the month) — until then it shows “Not recorded” and is left out of the figures. Tardiness % = (${EVAL_TARDY_BASE} − late min) ÷ ${EVAL_TARDY_BASE} × 100 · Absence % = (due days − absent days) ÷ due days × 100. Due days = scheduled working days (rest days and holidays excluded, approved leave and sick days included).${nSched ? " <b style=\"color:var(--yellow);\">No work schedule is set for this person — Mon–Fri is assumed.</b>" : ""}</div>
       <table style="width:100%; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${EVAL_TH} text-align:left;">Month</th><th style="${EVAL_TH}">Due days</th><th style="${EVAL_TH}">Absent</th><th style="${EVAL_TH}">Late min</th><th style="${EVAL_TH}">Absence %</th><th style="${EVAL_TH}">Tardiness %</th><th style="${EVAL_TH}">Status</th>${evalLockMode(r) === "edit" && attListId ? `<th style="${EVAL_TH}">Record</th>` : ""}</tr></thead>
       <tbody>${a.months.length ? a.months.map(m => `<tr><td style="${EVAL_TD} text-align:left;">${escapeHtml(evalMonthLabel(m.month))}</td><td style="${EVAL_TD}">${m.due}</td><td style="${EVAL_TD}">${m.absent}</td><td style="${EVAL_TD}">${m.lateMin}</td>${m.recorded ? `<td style="${EVAL_TD}">${m.abs == null ? "—" : m.abs.toFixed(1)}</td><td style="${EVAL_TD}">${m.tardy == null ? "—" : m.tardy.toFixed(1)}</td>` : `<td colspan="2" style="${EVAL_TD} color:var(--yellow);">Not recorded</td>`}<td style="${EVAL_TD} color:${m.recorded ? "var(--green)" : "var(--yellow)"};">${m.closed ? "Closed" : m.recorded ? "Recorded" : "Not recorded"}${m.running ? " · in progress" : ""}</td>${evalLockMode(r) === "edit" && attListId ? `<td style="${EVAL_TD} white-space:nowrap;"><button class="btn btn-secondary btn-sm" onclick="evalAttRecord('${m.month}')">+ Late / absent</button>${m.recorded ? "" : ` <button class="btn btn-secondary btn-sm" onclick="evalAttNoIssues('${m.month}')" title="Nothing to report for this month">No issues</button>`}</td>` : ""}</tr>`).join("") : `<tr><td colspan="8" style="${EVAL_TD} color:var(--text3);">This period has not started yet.</td></tr>`}</tbody></table></details>${evalSignPanelHtml(r, emp)}`;
-    evalApplyLock(box, r);
+    evalApplyLock(box, r); evalHighlightEf(box, r);
     if (document.getElementById("evSigPad")) initSignaturePad("evSigPad");
     return;
   }
@@ -13466,6 +13466,13 @@ function evalApplyLock(box, r) {
   body.querySelectorAll("input,select,textarea,button").forEach(el => { if (mode === "ef" && el.id === "evEf") return; el.disabled = true; });
   body.querySelectorAll("[onclick]").forEach(el => { if (!/^(INPUT|BUTTON|SELECT|TEXTAREA)$/.test(el.tagName)) el.style.pointerEvents = "none"; });
 }
+function evalHighlightEf(box, r) { // the employee must write feedback before signing — make that box impossible to miss
+  if (evalLockMode(r) !== "ef" || !box.querySelector) return;
+  const ta = box.querySelector("#evEf"); if (!ta) return;
+  const filled = !!String((r.data && r.data.ef && r.data.ef.c) || "").trim();
+  ta.style.border = "2px solid var(--yellow)"; ta.style.boxShadow = "0 0 0 4px color-mix(in srgb, var(--yellow) 25%, transparent)";
+  ta.insertAdjacentHTML("beforebegin", `<div id="evEfReq" style="${filled ? "display:none; " : ""}margin:4px 0 6px; padding:7px 12px; border-radius:6px; background:color-mix(in srgb, var(--yellow) 18%, transparent); border:1px solid var(--yellow); font-size:12.5px; font-weight:700;">&#9998; Required — please write your feedback here before you sign.</div>`);
+}
 function evalSigStripHtml(r) {
   const f = r.flow || {}, nx = evalNextStage(r), st = evalStages(r);
   return `<div style="display:grid; grid-template-columns:repeat(${st.length}, 1fr); gap:10px;">${st.map(([k, label]) => {
@@ -13495,8 +13502,8 @@ function evalSignPanelHtml(r, emp) {
   }
   h += evalSigStripHtml(r);
   if (nx && evalCanSign(r, nx)) {
-    h += `<div style="margin-top:14px; border:1px solid var(--accent); border-radius:10px; padding:12px 14px;"><div style="font-weight:700; margin-bottom:4px;">Your signature — ${escapeHtml(evalStageLabel(r, nx))}</div>
-      <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">${nx === "emp" ? "Write your feedback above (optional), then sign. Your signature does not necessarily imply agreement." : "By signing you confirm that you have reviewed this evaluation."}</div>
+    h += `<div style="margin-top:14px; border:2px solid var(--accent); box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); border-radius:10px; padding:12px 14px;"><div style="font-weight:800; font-size:14px; margin-bottom:4px;">&#9998; Your signature — ${escapeHtml(evalStageLabel(r, nx))}</div>
+      <div style="font-size:12px; color:var(--text2); margin-bottom:8px;">${nx === "emp" ? "<b>Step 1:</b> write your feedback in the Employee's Feedback box above (required). <b>Step 2:</b> sign here. Your signature does not necessarily imply agreement." : "By signing you confirm that you have reviewed this evaluation."}</div>
       ${signaturePadHtml("evSigPad")}
       <div style="display:flex; justify-content:flex-end; margin-top:10px;"><button class="btn btn-primary" id="evSignBtn" ${evalState.busy ? "disabled" : ""} onclick="evalSign()">Sign &amp; submit</button></div></div>`;
   } else if (status === "Sent") h += `<div style="font-size:12px; color:var(--text3); margin-top:10px;">Waiting for the ${escapeHtml(evalStageLabel(r, nx))}'s signature.</div>`;
@@ -13550,6 +13557,11 @@ async function evalRecall() {
 async function evalSign() {
   const r = evalState.cur; if (!r || evalState.busy) return;
   const stage = evalNextStage(r); if (!stage || !evalCanSign(r, stage)) { toast("It is not your turn to sign this evaluation.", "error"); return; }
+  if (stage === "emp" && !String((r.data && r.data.ef && r.data.ef.c) || "").trim()) {
+    toast("Please write your feedback in the Employee's Feedback box before signing.", "error");
+    const ta = document.getElementById("evEf"); if (ta) { ta.scrollIntoView({ behavior: "smooth", block: "center" }); ta.focus(); }
+    return;
+  }
   const url = signatureDataUrl("evSigPad"); if (!url) { toast("Please draw your signature first.", "error"); return; }
   const me = myEmployeeRecord(), now = new Date().toISOString();
   const payload = buildSignaturePayload(url, me ? me.name : "", me ? me.position : "", now);
