@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-04-03";
+const BUILD_ID = "2026-11-04-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -13704,6 +13704,87 @@ function evalHomeList(mine) { // current evaluations first, finished years under
   return (cur.length ? `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin:2px 0 6px;">Current</div>${cur.map(evalHomeRowHtml).join("")}` : "")
     + (past.length ? `<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin:12px 0 6px;">Past evaluations</div>${past.map(evalHomeRowHtml).join("")}` : "");
 }
+// ── KPI Entry: one monthly grid for the monthly KPI figures of many people ──
+// CXQA Manager and HR enter for everybody; PM / APM (and SPM for the cluster) enter for their own team. The figures are stored in each person's yearly Agent evaluation.
+let kpiState = { month: "", save: "" };
+let kpiSaveChain = Promise.resolve();
+function evalIsCxqaMgr(e) { return !!e && /cxqa\s*manager/i.test(e.position || ""); }
+function kpiScopeAll() { return evalIsHr() || evalIsCxqaMgr(myEmployeeRecord()); }
+function kpiPeople() {
+  const me = myEmployeeRecord();
+  if (kpiScopeAll()) return activeStaff().filter(e => !me || String(e.id) !== String(me.id) || evalIsHr());
+  if (me && ["PM", "APM", "SPM"].includes(evalLevel(me.position))) return evalTeamMembers(me);
+  return [];
+}
+function kpiCanOpen() { return !!evalListId && kpiPeople().length > 0; }
+function kpiCard() { return kpiCanOpen() ? [{ icon: "&#128202;", title: "KPI Entry", desc: kpiScopeAll() ? "Enter the monthly KPI figures for everyone." : "Enter the monthly KPI figures for your team.", onclick: "openKpiEntry()" }] : []; }
+function kpiFields(r) { // the typed fields of this person's KPI items: [key, label]
+  const out = [];
+  evalItems(r.data).forEach(it => {
+    if (it.type === "score") return;
+    if (it.type === "ratio" || it.type === "ratioN") { out.push([it.num[0], it.num[1]]); out.push([it.den[0], it.den[1]]); }
+    else out.push([it.k, it.label]);
+  });
+  return out;
+}
+function kpiRowFor(e, month) { return evalRows.find(x => x.empId === String(e.id) && x.track === "Agent" && x.hasData && x.data && x.data.sub && month >= x.start && month <= evalMonthAdd(x.start, 11)) || null; }
+async function openKpiEntry() {
+  if (!kpiCanOpen()) return;
+  if (!kpiState.month) kpiState.month = toLocalYMD(new Date()).slice(0, 7);
+  kpiState.save = "";
+  hrView = { mode: "kpiEntry" };
+  document.getElementById("hrModal").classList.add("open");
+  renderHRModal();
+  try { await loadEvaluations(); } catch (e) { /* ignore */ }
+  if (hrView && hrView.mode === "kpiEntry") renderHRModal();
+}
+function kpiShift(d) { kpiState.month = evalMonthAdd(kpiState.month, d); renderHRModal(); }
+function kpiPersist(r) {
+  const fields = { Data: JSON.stringify(r.data || {}), UpdatedAt: new Date().toISOString() };
+  kpiState.save = "Saving…"; kpiShowSave();
+  kpiSaveChain = kpiSaveChain.then(() => graphFetch(`/sites/${siteId}/lists/${evalListId}/items/${r.itemId}/fields`, { method: "PATCH", body: JSON.stringify(fields) }))
+    .then(() => { kpiState.save = "Saved"; kpiShowSave(); })
+    .catch(err => { console.warn(err); kpiState.save = "Not saved"; kpiShowSave(); toast("Could not save that figure.", "error"); });
+}
+function kpiShowSave() { const el = document.getElementById("kpiSave"); if (el) el.textContent = kpiState.save; }
+function kpiSet(itemId, field, val) {
+  const r = evalRows.find(x => x.itemId === itemId); if (!r || evalStatus(r) !== "Draft") return;
+  r.data = r.data || {}; r.data.m = r.data.m || {};
+  const row = r.data.m[kpiState.month] = r.data.m[kpiState.month] || {}; val = String(val).trim();
+  if (val === "") delete row[field]; else row[field] = val;
+  kpiPersist(r);
+}
+function kpiNa(itemId, on) {
+  const r = evalRows.find(x => x.itemId === itemId); if (!r || evalStatus(r) !== "Draft") return;
+  r.data = r.data || {}; r.data.na = r.data.na || {};
+  if (on) r.data.na[kpiState.month] = true; else delete r.data.na[kpiState.month];
+  kpiPersist(r); renderHRModal();
+}
+function renderKpiEntry(box) {
+  box.style.width = "min(1250px, 97vw)";
+  const month = kpiState.month, people = kpiPeople().slice().sort((a, b) => a.name.localeCompare(b.name));
+  const found = [], missing = [];
+  people.forEach(e => { const r = kpiRowFor(e, month); if (r) found.push({ e, r }); else if (e.hireDate ? String(e.hireDate).slice(0, 7) <= month : true) missing.push(e); });
+  const th = `${EVAL_TH} white-space:nowrap; font-size:11.5px;`, td = EVAL_TD.replace("padding:7px 10px;", "padding:4px 6px;");
+  const groups = ["agent", "qa"].map(sub => {
+    const list = found.filter(x => x.r.data.sub === sub); if (!list.length) return "";
+    const cols = []; list.forEach(x => kpiFields(x.r).forEach(([k, l]) => { if (!cols.some(c => c[0] === k)) cols.push([k, l]); }));
+    return `<div style="font-size:12.5px; font-weight:800; margin:16px 0 4px;">${escapeHtml(EVAL_SETS[sub].label)}</div>
+      <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:12.5px;"><thead><tr><th style="${th} text-align:left;">Name</th><th style="${th}">KPI N/A<br><span style="font-weight:400;">(training)</span></th>${cols.map(([k, l]) => `<th style="${th}">${escapeHtml(l)}</th>`).join("")}</tr></thead>
+      <tbody>${list.map(({ e, r }) => {
+        const fs = kpiFields(r).map(f => f[0]), locked = evalStatus(r) !== "Draft", na = !!(r.data.na && r.data.na[month]), vals = (r.data.m && r.data.m[month]) || {};
+        return `<tr><td style="${td} text-align:left; white-space:nowrap;"><b>${escapeHtml(e.name)}</b><div style="font-size:10.5px; color:var(--text3);">${escapeHtml(e.position || "")} · ${escapeHtml(displayTeam(e))}${locked ? ` · <span style="color:var(--yellow);">locked (${escapeHtml(evalStatus(r))})</span>` : ""}</div></td>
+          <td style="${td}"><input type="checkbox" ${na ? "checked" : ""} ${locked ? "disabled" : ""} onchange="kpiNa('${escapeAttr(r.itemId)}', this.checked)" /></td>
+          ${cols.map(([k]) => fs.includes(k) ? `<td style="${td}"><input type="text" value="${escapeAttr(vals[k] || "")}" ${locked || na ? "disabled" : ""} placeholder="${na ? "N/A" : ""}" onchange="kpiSet('${escapeAttr(r.itemId)}', '${escapeAttr(k)}', this.value)" style="width:78px; text-align:center; padding:4px 5px; border:1px solid var(--border); border-radius:5px; background:var(--surface); color:var(--text); font-size:12.5px;" /></td>` : `<td style="${td} color:var(--text3);">—</td>`).join("")}</tr>`;
+      }).join("")}</tbody></table></div>`;
+  }).join("");
+  box.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+      <div><h3 style="margin-bottom:2px;">KPI Entry</h3><div style="font-size:12px; color:var(--text2);">${kpiScopeAll() ? "Everybody with a yearly Agent evaluation." : "Your team."} Type the monthly figures (blank = not counted). Percentages as 97.3, times as 0:09:02. Everything saves as you leave a box and feeds the people's yearly evaluations.</div></div>
+      <div style="display:flex; gap:6px; align-items:center;"><span id="kpiSave" style="font-size:11.5px; color:var(--text3);">${escapeHtml(kpiState.save || "")}</span><button class="btn btn-secondary" onclick="closeHRModal()">✕</button></div></div>
+    <div style="display:flex; align-items:center; gap:10px; margin:10px 0;"><button class="btn btn-secondary btn-sm" onclick="kpiShift(-1)">&#9664;</button><b style="font-size:15px;">${escapeHtml(evalMonthLabel(month))}</b><button class="btn btn-secondary btn-sm" onclick="kpiShift(1)">&#9654;</button></div>
+    ${groups || `<div style="padding:24px 0; color:var(--text3); font-size:13px;">No evaluation covers ${escapeHtml(evalMonthLabel(month))} for the people you can enter for.</div>`}
+    ${missing.length ? `<div style="margin-top:14px; font-size:11.5px; color:var(--text3);"><b style="color:var(--yellow);">No yearly Agent evaluation for this month yet</b> (HR starts it under Performance Evaluation): ${escapeHtml(missing.map(e => e.name).join(", "))}</div>` : ""}`;
+}
 async function openDirectory() {
   if (!canAccessHR || !employeesListId) return;
   hrView = { mode: "directory" };
@@ -13913,6 +13994,7 @@ function renderHRModal() {
   if (hrView.mode === "mySchedule") { renderScheduleEditor(box); return; }
   if (hrView.mode === "attendance") { renderAttendance(box); return; }
   if (hrView.mode === "evaluation") { renderEvaluation(box); return; }
+  if (hrView.mode === "kpiEntry") { renderKpiEntry(box); return; }
   if (hrView.mode === "attRecord") { renderAttRecord(box); return; }
   if (hrView.mode === "ecForm") { renderEmergencyContactForm(box); return; }
   if (hrView.mode === "ceDetail") { renderCompanyEventDetail(box); return; }
@@ -15142,6 +15224,7 @@ function renderRequests() {
     { icon: "&#128203;", title: "General Task Request", desc: "Assign a one-off task with a deadline and track it to submission.",
       actions: generalTasksListId ? [{ label: "New Request", onclick: "openGeneralTaskNewForm()" }, { label: "My Requests", onclick: "openGeneralTaskList(true)", badge: genTasksNeedingMyApproval().length }] : undefined },
     { icon: "&#128221;", title: "Performance Evaluation", desc: "Yearly & probationary evaluations for the people you manage — fill in, send for signature.", onclick: evalListId && employeesListId && evalCanOpen() ? "openEvaluation()" : "" },
+    ...kpiCard(),
     { icon: "&#128221;", title: "Quarterly Feedback / Recommendation", desc: "Write a session for anyone eligible on your team — recognition requests are separate.",
       actions: quarterlyFeedbackListId ? [{ label: "Team Board", onclick: "openQfBoard()", badge: qfBoardBadge() }, { label: "My Submissions", onclick: "openQuarterlyFeedbackList(true)" }, ...(qfCanOverview() ? [{ label: "Overview", onclick: "openQfOverview()" }] : [])] : undefined },
     qrMgmtCard()
@@ -15151,6 +15234,7 @@ function renderRequests() {
     ...mpHrCard(),
     ...qrReviewCards(),
     ...itCards(),
+    ...(isMgmt ? [] : kpiCard()),
     ...(canAccessHR && employeesListId ? [{ icon: "&#128101;", title: "Employee Directory", desc: "All employees in one sortable, filterable table — team, position, hire date, salary.", onclick: "openDirectory()" }] : []),
     { icon: "&#128203;", title: "HR Report", desc: "Weekly / monthly HR reports.", onclick: (canAccessHR && reportsListId) ? "openReports()" : "" },
     mpsCard(),
@@ -15173,6 +15257,7 @@ function renderRequests() {
     ${isMgmt ? reqGroup("Management", "Assistant Product Manager and above", management) : ""}
     ${isHR ? reqGroup("HR / Admin", "HR and administrators", hr) : (qrReviewCards().length ? reqGroup("Review", "Quarterly Recommendation reviewers", qrReviewCards()) : "")}
     ${!isHR && itCards().length ? reqGroup("IT", "IT team", itCards()) : ""}
+    ${!isMgmt && !isHR && kpiCard().length ? reqGroup("Management", "KPI entry", kpiCard()) : ""}
   </div>`;
 }
 
