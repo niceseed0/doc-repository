@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-04-01";
+const BUILD_ID = "2026-11-04-02";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -6233,7 +6233,7 @@ function unifiedTaskAlerts() {
   }));
   const qa = qfAlert();
   const quarterly = qa ? [qa] : [];
-  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts(), ...mrUnifiedAlerts(), ...evalUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
+  return [...weekly, ...general, ...quarterly, ...peUnifiedAlerts(), ...mrUnifiedAlerts()].sort((a, b) => a.sortMs - b.sortMs);
 }
 function taskAlertBadgeCount() { return unifiedTaskAlerts().filter(x => x.level === "due" || x.level === "d1").length; }
 
@@ -11704,7 +11704,8 @@ function hubDeadlineRows() {
   return rows.sort((a, b) => a.sortMs - b.sortMs);
 }
 function hubNeedsAction() {
-  const todos = requestsTodoRows().filter(r => r.sub !== "Reminder").map(r => ({ level: null, title: r.label, sub: r.sub, click: r.click }));
+  const todos = requestsTodoRows().filter(r => r.sub !== "Reminder").map(r => ({ level: null, title: r.label, sub: r.sub, click: r.click }))
+    .concat(evalUnifiedAlerts().map(a => ({ level: null, title: "\u270D " + a.title, sub: a.dueLabel, click: a.onclick }))); // evaluations waiting for my signature
   const have = new Set(todos.map(r => r.click));
   const endToday = new Date(); endToday.setHours(23, 59, 59, 999);
   const endTomorrow = endToday.getTime() + 86400000, endWeek = endToday.getTime() + 7 * 86400000;
