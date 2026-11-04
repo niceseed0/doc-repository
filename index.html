@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-03-22";
+const BUILD_ID = "2026-11-04-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2474,6 +2474,7 @@ async function enterTestMode(employeeId) {
   closeHRModal();
   setSyncing(true);
   try { await reloadIdentityScopedLists(); } catch (e) { console.warn("Could not reload scoped lists for test mode:", e); }
+  await evalPoll();
   setSyncing(false, true);
   renderUserPill();
   renderTestModeBanner();
@@ -2496,6 +2497,7 @@ async function exitTestMode() {
   closeHRModal();
   setSyncing(true);
   try { await reloadIdentityScopedLists(); } catch (e) { console.warn("Could not reload scoped lists after exiting test mode:", e); }
+  await evalPoll();
   setSyncing(false, true);
   renderUserPill();
   renderTestModeBanner();
@@ -13602,12 +13604,18 @@ async function evalAutoRollover() { // a yearly evaluation whose 12 months are o
   } catch (err) { console.warn("Evaluation rollover:", err); }
   evalRollBusy = false; return made;
 }
+let evalPollTimer = null;
+async function evalPoll() { // picks up evaluations that were sent / signed since the page was loaded, so the alerts stay current
+  if (!evalListId || document.hidden || evalState.busy) return;
+  try { await loadEvaluations({ light: true }); renderTabs(); if (activeTab === "__MYTASKS__" && !document.getElementById("hrModal").classList.contains("open")) renderContent(); } catch (e) {}
+}
 async function evalInit() { // after sign-in: everybody gets the light copy (for the alerts), HR gets everything and the yearly rollover runs
   if (!evalListId) return;
   const hr = canAccessHR || isPermissionAdmin;
   await loadEvaluations({ light: !hr });
   if (hr) { const n = await evalAutoRollover(); if (n) toast(`${n} new yearly evaluation${n === 1 ? "" : "s"} opened automatically.`, "success"); }
   try { renderTabs(); if (activeTab === "__MYTASKS__") renderContent(); } catch (e) {}
+  if (!evalPollTimer) { evalPollTimer = setInterval(evalPoll, 60000); window.addEventListener("focus", evalPoll); }
 }
 // ── HR profile: Current Evaluation + past evaluations with their summary scores ──
 function evalKpiScore(cp) { // average % of target reached over the KPI items that have a target (each capped at 100; APT: lower is better)
