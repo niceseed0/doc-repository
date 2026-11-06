@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-06-03";
+const BUILD_ID = "2026-11-06-04";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12175,6 +12175,19 @@ async function loadEmployeeDetail(employeeId) {
   result.salaries.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   result.evaluations.sort((a, b) => String(b.year).localeCompare(String(a.year)));
   result.incidents.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  // Keep "last salary change" on the HR Employees row current whenever someone with salary access opens (or edits) the history,
+  // so team managers and the employee themselves can see the date without ever reading the amounts.
+  if ((canAccessHR || canAccessSalary) && salaryHistoryListId && employeesListId) {
+    try {
+      const emp = employees.find(e => String(e.id) === String(employeeId));
+      const latest = (result.salaries.map(x => String(x.date || "").slice(0, 10)).filter(Boolean).sort().pop()) || "";
+      const have = emp && emp.lastSalaryChangeDate ? String(emp.lastSalaryChangeDate).slice(0, 10) : "";
+      if (emp && latest !== have) {
+        await graphFetch(`/sites/${siteId}/lists/${employeesListId}/items/${emp.id}/fields`, { method: "PATCH", body: JSON.stringify({ LastSalaryChangeDate: latest ? latest + "T00:00:00Z" : null }) });
+        emp.lastSalaryChangeDate = latest || null;
+      }
+    } catch (err) { console.warn("Could not sync LastSalaryChangeDate (does the HR Employees column exist?):", err); }
+  }
   return result;
 }
 
@@ -14714,7 +14727,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
         ${sectionLabel(6, "Salary history")}
         ${canAccessSalary ? addBtn("salary", "+ Add") : ""}
       </div>
-      ${isTeamManagerView ? `
+      ${(isTeamManagerView || (selfView && !canAccessSalary)) ? `
         <div style="font-size:12px; color:var(--text2);">Last salary change: ${escapeHtml(dateOnly(emp.lastSalaryChangeDate) || "—")}</div>
       ` : (detail.salaries.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
