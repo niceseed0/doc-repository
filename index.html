@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-06-04";
+const BUILD_ID = "2026-11-06-05";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -12114,11 +12114,11 @@ async function openMyProfile() {
   hrDetail = null;
   document.getElementById("hrModal").classList.add("open");
   renderHRModal();
-  hrDetail = await loadEmployeeDetail(emp.id);
+  hrDetail = await loadEmployeeDetail(emp.id, true);
   if (hrView && hrView.mode === "detail" && hrView.employeeId === emp.id) renderHRModal();
 }
 
-async function loadEmployeeDetail(employeeId) {
+async function loadEmployeeDetail(employeeId, selfView) {
   const result = { positions: [], salaries: [], evaluations: [], incidents: [] };
   async function loadList(listId, mapFn) {
     if (!listId) return [];
@@ -12148,7 +12148,7 @@ async function loadEmployeeDetail(employeeId) {
     // viewers get their "last change" date from emp.lastSalaryChangeDate instead (synced by Power
     // Automate onto HR Employees), so this Graph call never fires for them and a manager account
     // never needs — and should never be granted — SharePoint read access to HR Salary History.
-    loadList((canAccessHR || canAccessSalary) ? salaryHistoryListId : null, it => ({
+    loadList((canAccessHR || canAccessSalary || selfView) ? salaryHistoryListId : null, it => ({
       itemId: it.id,
       date: it.fields["EffectiveDate"] || "",
       amount: it.fields["Amount"] != null ? Number(it.fields["Amount"]) : null
@@ -14727,7 +14727,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
         ${sectionLabel(6, "Salary history")}
         ${canAccessSalary ? addBtn("salary", "+ Add") : ""}
       </div>
-      ${(isTeamManagerView || (selfView && !canAccessSalary)) ? `
+      ${(isTeamManagerView || (selfView && !canAccessSalary && !detail.salaries.length)) ? `
         <div style="font-size:12px; color:var(--text2);">Last salary change: ${escapeHtml(dateOnly(emp.lastSalaryChangeDate) || "—")}</div>
       ` : (detail.salaries.length ? `
         <table style="width:100%; font-size:12px; border-collapse:collapse;">
