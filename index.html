@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-06-01";
+const BUILD_ID = "2026-11-06-03";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -14541,7 +14541,7 @@ function renderEmployeeDetailHtml(emp, detail, selfView) {
   const evalHtml = evalProfileHtml(emp, selfView);
   // Read-only, team-scoped HR access: can open this employee's page only because they manage this
   // employee's HR team (not because of a real HR-Sensitive-Access/salary/incidents group grant).
-  const isTeamManagerView = !canAccessHR && !canAccessSalary && !canAccessIncidents && !selfView && managedTeams.has(emp.team);
+  const isTeamManagerView = !canAccessHR && !canAccessSalary && !canAccessIncidents && !selfView && (managedTeams.has(emp.team) || isOwnTeamManagerOf(emp));
   const canViewSalary = canAccessSalary || selfView;
   const canViewIncidents = canAccessIncidents || selfView || isTeamManagerView;
   const delBtn = (kind, itemId) => `<span onclick="deleteHRSubRecord('${kind}','${itemId}')" title="Delete" style="cursor:pointer; color:var(--text3); font-size:11px; padding:2px 4px;">✕</span>`;
@@ -14802,11 +14802,19 @@ function refreshAccessFlags() {
       .map(r => r.team.slice(HR_MANAGER_PREFIX.length))
   );
 }
+// SPM / PM / APM always get read-only HR access to the people of their OWN team (same team and cluster), no Permissions grant needed.
+// Salary stays hidden (only the last salary change date shows) because this is the team-manager view, not salary access.
+function isOwnTeamManagerOf(e) {
+  const me = myEmployeeRecord();
+  if (!me || !e || String(me.id) === String(e.id)) return false;
+  if (!/^(senior |assistant )?product manager$/i.test(String(me.position || "").trim())) return false;
+  return !!me.team && me.team === e.team && (me.cluster || "") === (e.cluster || "");
+}
 
 // Whether the signed-in user is allowed to open this employee's detail page at all — full HR/salary/
 // incidents access, OR (read-only) because they manage the employee's HR team via an HR_MANAGER_PREFIX grant.
 function canOpenEmployee(e) {
-  return canAccessHR || canAccessSalary || canAccessIncidents || (!!e && managedTeams.has(e.team));
+  return canAccessHR || canAccessSalary || canAccessIncidents || (!!e && (managedTeams.has(e.team) || isOwnTeamManagerOf(e)));
 }
 
 // All distinct HR team names known to the app (from pre-declared HR Teams plus any team actually
