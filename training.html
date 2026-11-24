@@ -70,7 +70,7 @@ const QS = [{"d":"d1","s":"co_who","q":"What does ELITE Global Sourcing provide 
 const SCENARIOS = [{"id":"w1","title":"Scenario 1: Billing Discrepancy & Double Charge","situation":"A customer named Maria Santos contacts support (Ticket ID: MS-98214) furious because she was double-charged for her in-game purchase.","task":"Draft a professional email response acknowledging her concern, inviting her to contact support privately to safely investigate her billing, and avoiding any request for sensitive credit card details in the public reply.","rubric":["Uses the email format: greeting by name, branding, acknowledgment & empathy, action, next steps, closing","Acknowledges her concern and apologizes for the inconvenience","Invites her to contact support privately through an approved channel","Does NOT ask for credit card or other sensitive details publicly","Stays professional — no arguing or defending the billing system"]},{"id":"w2","title":"Scenario 2: Technical Lag and Layout Bug","situation":"A user named Kenji Sato leaves a ticket reporting that the recent app update ruined the layout, caused severe lagging, and keeps logging them out.","task":"Draft a response that apologizes for the inconvenience, provides a helpful workaround (such as clearing cache or using an in-app link), and reassures them that the feedback has been shared with the engineering team.","rubric":["Apologizes sincerely for the lag, layout and logout problems","Gives a workaround (e.g. clear the cache or use the in-app contact link)","Reassures him the feedback was shared with the engineering team","Follows the Sandwich Method (positive opening, clear middle, positive closing)","Avoids jargon and false promises about a fix date"]},{"id":"w3","title":"Scenario 3: Product Feature Request (Dark Mode)","situation":"A customer named Jean Dupont writes in praising the app's story arc, but strongly requests the addition of a complete dark mode.","task":"Draft a polite, appreciative response acknowledging their loyalty, validating their suggestion, and confirming that their idea has been forwarded to the development team.","rubric":["Thanks the customer and acknowledges their loyalty","Validates the suggestion as a good idea","Confirms the idea was forwarded to the development team","Does not promise that dark mode will be added","Warm, concise and professional tone"]},{"id":"w4","title":"Scenario 4: Live Chat Wait Time & Account Troubleshooting","situation":"You are assisting a customer over live chat who is waiting for you to verify their account details in the admin tool. The system is loading slowly and the check is taking longer than a minute.","task":"Write the exact interim live chat message you must send to the customer to set proper expectations while you continue investigating.","rubric":["Thanks the customer for waiting","Says you are still checking their account","Sets an expectation / next update time (e.g. \"in about 2 minutes\")","Short, warm and plain language — no wall of text, no jargon","Does not ask for sensitive data in the chat"]},{"id":"w5","title":"Scenario 5: Policy Enforcement (Refusing an Out-of-Policy Refund)","situation":"A customer demands a full cash refund for a digital game pack they purchased 45 days ago. Company policy strictly prohibits refunds after a 14-day window.","task":"Draft a response using the Sandwich Method to deliver this difficult policy news smoothly while keeping the customer engaged and valued.","rubric":["Positive opening: thanks and shows empathy","Middle layer clearly and honestly explains the 14-day refund policy","Offers alternatives or next steps where possible","Positive closing that reassures and offers further help","No blaming, defensive language or false promises"]}];
 const PROGRAM = [
  ['1','Orientation & Compliance','Company foundations, house rules, data security','d1'],
- ['2','Health & Safety','OHS and fire safety',null],
+ ['2','Occupational Health and Safety (OHS)','Film showing — watch the OHS video (no test)','film'],
  ['3','Customer Support Operations','Tickets, live chat, reviews, escalation and reporting','d3'],
  ['4','Community & Game Management','Community engagement and game monitoring','d4'],
  ['5','Quality Assurance & Gaming Operations','Testing, events and specialized functions','d5a,d5b'],
@@ -84,7 +84,7 @@ const TARGETS = [['Attendance (Absenteeism)','98.0%','No absences allowed — mi
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
 const KEY = "newHireTraining.v1";
-let S = { name:"", studied:{}, attempts:[], written:{} };
+let S = { name:"", studied:{}, attempts:[], written:{}, film:null };
 try { const j = JSON.parse(localStorage.getItem(KEY) || "null"); if (j) S = Object.assign(S, j); } catch (e) { /* ignore */ }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* storage may be blocked */ } }
 function applyTheme(t) { document.documentElement.setAttribute("data-theme", t); $("themeBtn").innerHTML = t === "light" ? "&#127769;" : "&#9728;&#65039;"; }
@@ -158,8 +158,9 @@ function dayStatus(dayIds) {
 }
 function pageOverview() {
   const rows = PROGRAM.map(([n, t, d, ids]) => {
-    const st = ids ? dayStatus(ids) : ["n", "Materials not added yet"];
-    const links = ids ? ids.split(",").map(i => `<a href="#/learn/${i}">Study ${esc(dayById[i].name)}</a> · <a href="#/test/${i}">Test</a>`).join("<br>") : "";
+    const isFilm = ids === "film";
+    const st = isFilm ? (S.film ? ["g", "Watched"] : ["n", "Not watched"]) : ids ? dayStatus(ids) : ["n", "Materials not added yet"];
+    const links = isFilm ? `<label class="chk"><input type="checkbox" ${S.film ? "checked" : ""} onchange="setFilm(this.checked)"> I watched the OHS film</label>` : ids ? ids.split(",").map(i => `<a href="#/learn/${i}">Study ${esc(dayById[i].name)}</a> · <a href="#/test/${i}">Test</a>`).join("<br>") : "";
     return `<tr><td><b>Day ${n}</b></td><td>${esc(t)}<div class="muted">${esc(d)}</div></td><td><span class="chip ${st[0]}">${st[1]}</span></td><td>${links}</td></tr>`;
   }).join("");
   const unstudied = LESSONS.reduce((n, d) => n + d.sections.filter(s => !S.studied[d.id + "/" + s.id]).length, 0);
@@ -167,7 +168,7 @@ function pageOverview() {
     <div class="row"><a class="btn primary" href="#/learn">Start learning</a><a class="btn" href="#/tests">Go to tests</a><a class="btn" href="#/progress">My results</a></div></div>
   <div class="card"><h3>How it works</h3><div class="tiles"><div class="tile"><b>1 · Learn</b><p>Read each section of the day's training deck. Tick "Mark as studied" as you go.</p></div><div class="tile"><b>2 · Test</b><p>Take the day's test. Options are shuffled every attempt.</p></div><div class="tile"><b>3 · Result</b><p>Your score, pass/not-yet and a topic-by-topic breakdown appear immediately.</p></div><div class="tile"><b>4 · Diagnose &amp; review</b><p>The site lists your weak topics, shows the lesson for each, and lets you re-practise just those questions.</p></div></div></div>
   <div class="card"><h3>10-day roadmap</h3><div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Topic</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="muted">Phase 1 (Days 1–5): general orientation &amp; operational familiarization · Phase 2 (Days 6–9): product &amp; client-specific training · Phase 3 (Day 10): final assessment &amp; onboarding completion. Days without materials are placeholders until the content is added.</p></div>
+    <p class="muted">Phase 1 (Days 1–5): general orientation &amp; operational familiarization · Phase 2 (Days 6–9): product &amp; client-specific training · Phase 3 (Day 10): final assessment &amp; onboarding completion. Day 2 is a film showing (no test). Days without materials are placeholders until the content is added.</p></div>
   <div class="card"><h3>How your progress is measured</h3><div style="overflow-x:auto"><table><thead><tr><th>Indicator</th><th>Target</th><th>What it means</th></tr></thead><tbody>${TARGETS.map(t => `<tr><td><b>${esc(t[0])}</b></td><td>${esc(t[1])}</td><td>${esc(t[2])}</td></tr>`).join("")}</tbody></table></div>
     <p class="muted">Day tests use the pass marks shown on the Tests page. Your score here is practice and review — official assessment is recorded by your trainer.</p></div>
   <p class="muted">${unstudied} section(s) not yet marked as studied. Progress is saved in this browser only (see <a href="#/progress">My Results</a> to print or export).</p>`;
@@ -189,6 +190,7 @@ function pageLearn(dayId, secId) {
   }
   return `<div class="layout"><aside class="toc">${toc}</aside><div>${body}</div></div>`;
 }
+function setFilm(v) { S.film = v ? Date.now() : null; save(); route(); }
 function setStudied(k, v) { if (v) S.studied[k] = Date.now(); else delete S.studied[k]; save(); route(); }
 function pageTests() {
   const cards = LESSONS.map(d => {
