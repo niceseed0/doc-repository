@@ -508,7 +508,7 @@
 // Bump this string every time you deploy a change (any value works — a date, a counter, etc.).
 // The app uses it to detect when someone's browser is still running a cached old version and
 // nudge them to refresh, instead of silently behaving differently from what you just deployed.
-const BUILD_ID = "2026-11-24-01";
+const BUILD_ID = "2026-11-25-01";
 
 const CONFIG = {
   clientId: "0b2bac3c-b1fb-4b99-bd0e-4dbb18875505",
@@ -2666,6 +2666,29 @@ async function submitAddTeam() {
   } catch (err) {
     setSyncing(false, false);
     toast("Could not add team: " + err.message, "error");
+  }
+}
+
+async function deleteTeam(team, cluster) {
+  if (!canAccessHR || !teamsListId) return;
+  const active = employees.filter(e => e.cluster === cluster && e.team === team && e.status !== "Resigned").length;
+  if (active) { toast("This team still has active members. Move them to another team first.", "error"); return; }
+  const used = employees.filter(e => e.cluster === cluster && e.team === team).length;
+  if (used) { toast(`Cannot delete: ${used} former employee record(s) still reference "${team}". Their history would be changed.`, "error"); return; }
+  const rows = hrTeams.filter(t => t.cluster === cluster && t.team === team);
+  if (!rows.length) { toast("Team not found.", "error"); return; }
+  if (!confirm(`Delete the empty team "${team}" from ${cluster}? This cannot be undone.`)) return;
+  setSyncing(true);
+  try {
+    for (const r of rows) await graphFetch(`/sites/${siteId}/lists/${teamsListId}/items/${r.itemId}`, { method: "DELETE" });
+    hrTeams = hrTeams.filter(t => !(t.cluster === cluster && t.team === team));
+    setSyncing(false, true);
+    toast("Team deleted ✓", "success");
+    hrView = { mode: "clusterTeams", cluster };
+    renderHRModal();
+  } catch (err) {
+    setSyncing(false, false);
+    toast("Could not delete team: " + err.message, "error");
   }
 }
 
@@ -13936,7 +13959,10 @@ function renderHRModal() {
         ${subteams.length ? subteams.map(s => `
           <div onclick="openTeamRoster('${jsAttrEscape(s.team)}', '${jsAttrEscape(cluster)}')" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
             <span style="font-size:13px; color:var(--accent);">${escapeHtml(s.team)}</span>
-            <span style="font-size:11px; color:var(--text2);">${s.activeCount} member${s.activeCount === 1 ? "" : "s"} ›</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:11px; color:var(--text2);">${s.activeCount} member${s.activeCount === 1 ? "" : "s"} ›</span>
+              ${canAccessHR && teamsListId && !s.activeCount ? `<button class="btn btn-secondary" title="Delete this empty team" onclick="event.stopPropagation(); deleteTeam('${jsAttrEscape(s.team)}', '${jsAttrEscape(cluster)}')" style="padding:2px 8px; font-size:11px; color:var(--red);">Delete</button>` : ""}
+            </span>
           </div>
         `).join("") : `<div style="font-size:12px; color:var(--text2); padding:8px 0;">No teams on file yet.</div>`}
       </div>
